@@ -59,6 +59,14 @@ class MusicClient:
         self._in_flight: set[str] = set()
         self._play_lock = threading.Lock()
 
+    @property
+    def on_track_end(self) -> Callable[[], None] | None:
+        return self.player.on_track_end
+
+    @on_track_end.setter
+    def on_track_end(self, callback: Callable[[], None] | None) -> None:
+        self.player.on_track_end = callback
+
     def search(
         self,
         query: str,

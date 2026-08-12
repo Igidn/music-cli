@@ -241,6 +241,67 @@ def test_transport_actions():
     _run(scenario())
 
 
+def test_tui_auto_next_toggle_stops_at_track_end():
+    from music_cli.tui.app import MusicTUI
+    from music_cli.tui.now_playing import NowPlaying
+
+    async def scenario():
+        client = make_client()
+        client.queue = [
+            PlaylistTrack(video_id="t1", title="Up next", artists=["B"]),
+        ]
+        app = MusicTUI(client)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            assert app._auto_next is True
+
+            app.action_toggle_auto_next()
+            assert app._auto_next is False
+            assert "off" in str(app.query_one("#auto-next").content)
+
+            client.current = FakeExtractor().resolve("v1")
+            app.on_track_ended()
+            await pilot.pause()
+            assert client.current is None
+            assert not client.player.played
+            assert "auto next is off" in str(
+                app.query_one(NowPlaying).query_one("#np-status").content
+            )
+
+            app.action_toggle_auto_next()
+            assert app._auto_next is True
+            app.on_track_ended()
+            await pilot.pause()
+            assert client.player.played[-1].video_id == "t1"
+
+    _run(scenario())
+
+
+def test_tui_wires_player_eof_and_auto_advances():
+    from music_cli.tui.app import MusicTUI
+    from music_cli.tui.now_playing import NowPlaying
+
+    async def scenario():
+        client = make_client()
+        client.queue = [
+            PlaylistTrack(video_id="t1", title="Up next", artists=["B"]),
+        ]
+        app = MusicTUI(client)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            assert client.player.on_track_end == app._on_player_eof
+
+            client.current = FakeExtractor().resolve("v1")
+            client.player.on_track_end()
+            await pilot.pause()
+            await pilot.pause()
+            assert client.player.played[-1].video_id == "t1"
+            np = app.query_one(NowPlaying)
+            assert str(np.query_one("#np-title").content) == "Stream of t1"
+
+    _run(scenario())
+
+
 class CountingExtractor(FakeExtractor):
     """Fake extractor that counts how many resolutions actually happen."""
 

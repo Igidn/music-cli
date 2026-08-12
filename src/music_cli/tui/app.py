@@ -61,6 +61,7 @@ class TopBar(Widget):
 
     def compose(self) -> ComposeResult:
         yield Label("♪ music-cli", id="brand")
+        yield Label("", id="auto-next")
         yield Label("", id="queue-count")
 
 
@@ -177,6 +178,7 @@ class MusicTUI(App[None]):
         Binding("ctrl+right", "seek_forward", "Seek +5s"),
         Binding("ctrl+left", "seek_back", "Seek -5s"),
         Binding("n", "next_track", "Next"),
+        Binding("a", "toggle_auto_next", "Auto next"),
         Binding("plus", "volume_up", "Vol +", show=False),
         Binding("minus", "volume_down", "Vol -"),
         Binding("m", "toggle_mute", "Mute"),
@@ -186,7 +188,8 @@ class MusicTUI(App[None]):
 
     def __init__(self, client: MusicClient | None = None) -> None:
         super().__init__()
-        self.client = client or MusicClient(on_track_end=self._on_player_eof)
+        self.client = client or MusicClient()
+        self.client.on_track_end = self._on_player_eof
         self._search_timer: Timer | None = None
         self._search_worker: Worker[list[SearchResult]] | None = None
         self._queue_worker: Worker[list[PlaylistTrack]] | None = None
@@ -197,11 +200,13 @@ class MusicTUI(App[None]):
         self._last_video_id: str = ""
         self._pending_track: PlaylistTrack | None = None
         self._pending_index: int = 0
+        self._auto_next = True
 
     def on_mount(self) -> None:
         self.set_interval(0.5, self._tick)
         self.query_one("#search-input", Input).focus()
         self.run_worker(self.pump_platform(), exclusive=False)
+        self._render_auto_next()
 
     def on_unmount(self) -> None:
         if self._search_timer is not None:
@@ -500,7 +505,20 @@ class MusicTUI(App[None]):
 
     def on_track_ended(self) -> None:
         self.client.current = None
-        self.action_next_track()
+        if self._auto_next:
+            self.action_next_track()
+        else:
+            self.set_status("Track ended — auto next is off")
+
+    def action_toggle_auto_next(self) -> None:
+        self._auto_next = not self._auto_next
+        self._render_auto_next()
+        self.set_status(f"Auto next {'on' if self._auto_next else 'off'}")
+
+    def _render_auto_next(self) -> None:
+        label = self.query_one("#auto-next", Label)
+        label.update(f"auto next {'on' if self._auto_next else 'off'}")
+        label.set_classes(("on",) if self._auto_next else ())
 
     def action_toggle_playback(self) -> None:
         if self.client.current is not None:

@@ -446,7 +446,7 @@ class AVFoundationPlayer:
         fetch_stream: Callable[[StreamInfo], LocalFile] | None = None,
         cache: AudioCache | None = None,
     ) -> None:
-        self._on_track_end = on_track_end
+        self.on_track_end = on_track_end
         self._ended = threading.Event()
         self._title = ""
         self._observer_token: Any = None
@@ -533,8 +533,8 @@ class AVFoundationPlayer:
 
     def _on_item_ended(self, notification: Any) -> None:
         self._ended.set()
-        if self._on_track_end:
-            self._on_track_end()
+        if self.on_track_end:
+            self.on_track_end()
 
     def _unobserve(self) -> None:
         if self._observer_token is not None:
