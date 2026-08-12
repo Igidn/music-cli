@@ -5,7 +5,9 @@ from __future__ import annotations
 import threading
 import time
 from collections.abc import Callable
+from pathlib import Path
 
+from .cache import AudioCache, DownloadResult, TrackMeta
 from .player import (
     AVFoundationPlayer,
     Cookies,
@@ -38,9 +40,11 @@ class MusicClient:
         volume: int = 80,
         on_track_end: Callable[[], None] | None = None,
         extractor_factory: Callable[..., StreamExtractor] = StreamExtractor,
+        cache: AudioCache | None = None,
     ) -> None:
         self._cookies = cookies
         self._extractor_factory = extractor_factory
+        self.cache = cache or AudioCache()
         self.search_api = YTmusicSearch()
         self.extractor = extractor_factory(cookies)
         self.watch = WatchPlaylist(cookies=cookies)
@@ -48,6 +52,7 @@ class MusicClient:
             volume=volume,
             on_track_end=on_track_end,
             cookies=cookies,
+            cache=self.cache,
         )
         self.queue: list[PlaylistTrack] = []
         self.current: StreamInfo | None = None
@@ -97,6 +102,25 @@ class MusicClient:
 
     def _play_attempts(self, video_id: str) -> None:
         last_error: PlayerError | None = None
+        if self.cache is not None:
+            cached = self.cache.lookup(video_id)
+            if cached is not None:
+                stream = StreamInfo(
+                    video_id=cached.video_id,
+                    title=cached.title,
+                    stream_url="",
+                    artists=list(cached.artists),
+                    duration=cached.duration,
+                    ext=cached.ext,
+                )
+                self.player.play(stream)
+                if self._playback_started():
+                    self.current = stream
+                    return
+                # The cached file is broken or stale; drop it and fall
+                # through to a fresh resolution and download.
+                self.cache.discard(video_id)
+                last_error = PlayerError(f"Playback did not start for {video_id}")
         for client_name in (None, *FALLBACK_PLAYER_CLIENTS):
             attempts = PRIMARY_PLAY_ATTEMPTS if client_name is None else 1
             extractor = self.extractor
@@ -117,6 +141,35 @@ class MusicClient:
                 last_error = PlayerError(f"Playback did not start for {video_id}")
         self.current = None
         raise last_error or PlayerError(f"Failed to play {video_id}")
+
+    def prefetch(self, video_id: str) -> bool:
+        """Download ``video_id`` into the cache without playing it.
+
+        Returns True when the track is cached afterwards. Best-effort:
+        failures are swallowed. Downloads of the same video are shared with
+        the player, so a prefetch never doubles up on a playback download.
+        """
+        if self.cache is None:
+            return False
+
+        def downloader(target: Path) -> DownloadResult:
+            stream = self.extractor.resolve(video_id)
+            filepath = self.extractor.download(video_id, str(target))
+            return DownloadResult(
+                path=filepath,
+                meta=TrackMeta(
+                    title=stream.title,
+                    artists=tuple(stream.artists),
+                    duration=stream.duration,
+                    ext=Path(filepath).suffix.lstrip("."),
+                ),
+            )
+
+        try:
+            path = self.cache.get_or_download(video_id, downloader)
+        except PlayerError:
+            return False
+        return path is not None
 
     def _playback_started(self, timeout: float = PLAY_START_TIMEOUT) -> bool:
         """Whether playback is actually underway, failing fast on load errors."""
@@ -156,3 +209,5 @@ class MusicClient:
 
     def close(self) -> None:
         self.player.close()
+        if self.cache is not None:
+            self.cache.close()

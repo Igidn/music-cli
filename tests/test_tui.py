@@ -132,6 +132,7 @@ def make_client() -> MusicClient:
     client.watch = FakeWatch()
     client.queue = []
     client.current = None
+    client.cache = None
     client.player = FakePlayer()
     client._in_flight = set()
     client._play_lock = threading.Lock()

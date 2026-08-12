@@ -19,6 +19,7 @@ import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from http.cookiejar import MozillaCookieJar
+from pathlib import Path
 from typing import Any
 
 import requests
@@ -43,6 +44,8 @@ from Foundation import (
 )
 from yt_dlp.cookies import SUPPORTED_BROWSERS
 from ytmusicapi import YTMusic
+
+from .cache import AudioCache, DownloadResult, TrackMeta
 
 # Not exposed by pyobjc's AVFoundation bindings; the constant's runtime value
 # is its own name string (see AVURLAsset.h).
@@ -155,6 +158,19 @@ class StreamInfo:
     thumbnail: str = ""
     webpage_url: str = ""
     http_headers: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class LocalFile:
+    """A local audio file handed to the player by a stream fetcher.
+
+    ``owned`` files are temporary downloads the player deletes when they are
+    replaced or playback stops; cache-managed files (``owned=False``) are
+    removed by the cache's eviction policy instead.
+    """
+
+    path: str
+    owned: bool = True
 
 
 @dataclass(frozen=True)
@@ -355,21 +371,55 @@ def _default_player() -> AVPlayer:
     return AVPlayer.alloc().init()
 
 
-def _default_fetch_stream(cookies: Cookies | None) -> Callable[[StreamInfo], str]:
-    """Build the default stream fetcher: download via yt-dlp to a temp file."""
-    extractor = StreamExtractor(cookies)
-
-    def fetch(stream: StreamInfo) -> str:
-        file = tempfile.NamedTemporaryFile(prefix="music-cli-", delete=False)
-        file.close()
+def _download_temp(extractor: StreamExtractor, stream: StreamInfo) -> LocalFile:
+    """Download ``stream`` to a temporary file the player owns and deletes."""
+    file = tempfile.NamedTemporaryFile(prefix="music-cli-", delete=False)
+    file.close()
+    try:
+        return LocalFile(extractor.download(stream.video_id, file.name), owned=True)
+    except PlayerError:
         try:
-            return extractor.download(stream.video_id, file.name)
-        except PlayerError:
-            try:
-                os.unlink(file.name)
-            except OSError:
-                pass
-            raise
+            os.unlink(file.name)
+        except OSError:
+            pass
+        raise
+
+
+def _default_fetch_stream(
+    cookies: Cookies | None,
+    cache: AudioCache | None = None,
+    *,
+    extractor: StreamExtractor | None = None,
+) -> Callable[[StreamInfo], LocalFile]:
+    """Build the default stream fetcher: cache-aware, else a temp download.
+
+    Tracks already in the cache are returned directly (no network at all);
+    the rest are downloaded with yt-dlp into the cache, with concurrent
+    requests for the same video sharing one download. Without a cache,
+    downloads go to temporary files the player deletes after playback.
+    """
+    extractor = extractor or StreamExtractor(cookies)
+
+    def fetch(stream: StreamInfo) -> LocalFile:
+        if cache is None:
+            return _download_temp(extractor, stream)
+
+        def downloader(target: Path) -> DownloadResult:
+            filepath = extractor.download(stream.video_id, str(target))
+            return DownloadResult(
+                path=filepath,
+                meta=TrackMeta(
+                    title=stream.title,
+                    artists=tuple(stream.artists),
+                    duration=stream.duration,
+                    ext=Path(filepath).suffix.lstrip("."),
+                ),
+            )
+
+        path = cache.get_or_download(stream.video_id, downloader)
+        if path is None:
+            raise PlayerError(f"Failed to download {stream.video_id}")
+        return LocalFile(str(path), owned=False)
 
     return fetch
 
@@ -393,7 +443,8 @@ class AVFoundationPlayer:
         on_track_end: Callable[[], None] | None = None,
         cookies: Cookies | None = None,
         player_factory: Callable[[], AVPlayer] = _default_player,
-        fetch_stream: Callable[[StreamInfo], str] | None = None,
+        fetch_stream: Callable[[StreamInfo], LocalFile] | None = None,
+        cache: AudioCache | None = None,
     ) -> None:
         self._on_track_end = on_track_end
         self._ended = threading.Event()
@@ -401,7 +452,7 @@ class AVFoundationPlayer:
         self._observer_token: Any = None
         self._current_item: AVPlayerItem | None = None
         self._local_url: str | None = None
-        self._fetch_stream = fetch_stream or _default_fetch_stream(cookies)
+        self._fetch_stream = fetch_stream or _default_fetch_stream(cookies, cache=cache)
         self._player = player_factory()
         self._player.setVolume_(max(0, min(100, volume)) / 100.0)
         self._player.setMuted_(False)
@@ -427,17 +478,15 @@ class AVFoundationPlayer:
         self._unobserve()
         self._remove_local_file()
         try:
-            path = self._fetch_stream(stream)
+            local = self._fetch_stream(stream)
         except PlayerError:
             self._title = ""
             self._current_item = None
             self._player.replaceCurrentItemWithPlayerItem_(None)
             return
         self._title = stream.title
-        if path.startswith("file://"):
-            url = path
-        else:
-            url = f"file://{path}"
+        url = local.path if local.path.startswith("file://") else f"file://{local.path}"
+        if local.owned:
             self._local_url = url
         asset = AVURLAsset.alloc().initWithURL_options_(
             NSURL.URLWithString_(url),

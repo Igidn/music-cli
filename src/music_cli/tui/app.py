@@ -379,6 +379,7 @@ class MusicTUI(App[None]):
     def _on_queue_fetched(self, worker: Worker[list[PlaylistTrack]]) -> None:
         if worker.state is WorkerState.SUCCESS:
             self._refresh_queue()
+            self._prefetch_next()
             self.set_status(
                 "Playing" if self.client.queue else "Playing — no up next available"
             )
@@ -389,6 +390,15 @@ class MusicTUI(App[None]):
                 title="Queue",
                 severity="warning",
             )
+
+    def _prefetch_next(self) -> None:
+        """Background-download the next queued track so the transition is instant."""
+        if self.client.queue:
+            self.prefetch_worker(self.client.queue[0].video_id)
+
+    @work(thread=True, exit_on_error=False)
+    def prefetch_worker(self, video_id: str) -> None:
+        self.client.prefetch(video_id)
 
     @on(QueueList.Selected)
     def _on_queue_selected(self, event: QueueList.Selected) -> None:
@@ -430,6 +440,7 @@ class MusicTUI(App[None]):
                 stream.duration,
             )
             self._refresh_queue()
+            self._prefetch_next()
             self.set_status("Playing from queue")
         else:
             self.client.queue.insert(self._pending_index, self._pending_track)
@@ -460,6 +471,7 @@ class MusicTUI(App[None]):
         if worker.state is WorkerState.SUCCESS:
             if self.client.queue:
                 self._play_queued_track(self.client.queue[0])
+                self._prefetch_next()
             else:
                 self._refresh_queue()
                 self.set_status("End of station")

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import threading
+from pathlib import Path
 
 import pytest
 
+from music_cli.cache import AudioCache, TrackMeta
 from music_cli.client import MusicClient
 from music_cli.player import PlayerError, PlaylistTrack, StreamExtractor, StreamInfo
 
@@ -78,7 +80,7 @@ class FakeSearch:
 
 
 @pytest.fixture
-def client():
+def client(tmp_path):
     c = MusicClient.__new__(MusicClient)
     c.extractor = FakeExtractor()
     c.player = FakePlayer()
@@ -88,7 +90,36 @@ def client():
     c._extractor_factory = StreamExtractor
     c._in_flight = set()
     c._play_lock = threading.Lock()
+    c.cache = AudioCache(directory=tmp_path / "cache")
     return c
+
+
+def seed_cache(client, video_id="abc", *, title="Cached Title"):
+    target = client.cache.tmp_path(video_id)
+    src = Path(f"{target}.m4a")
+    src.write_bytes(b"audio-bytes")
+    return client.cache.commit(
+        video_id,
+        TrackMeta(title=title, artists=("Cached Artist",), duration=120.0, ext="m4a"),
+        src=src,
+    )
+
+
+class FlakyPlayer(FakePlayer):
+    """FakePlayer whose first play call fails to start playback."""
+
+    def __init__(self):
+        super().__init__()
+        self._failed_once = False
+
+    def play(self, stream):
+        if not self._failed_once:
+            self._failed_once = True
+            self.playing = False
+            self.position = 0.0
+            self.duration = None
+            return
+        super().play(stream)
 
 
 class TestMusicClient:
@@ -192,3 +223,41 @@ class TestMusicClient:
         client.play_result(make_result("xyz"))
         assert client.extractor.resolved == ["abc", "xyz"]
         assert len(client.player.played) == 2
+
+
+class TestCacheIntegration:
+    def test_play_result_uses_cached_track_without_extraction(self, client):
+        seed_cache(client)
+        stream = client.play_result(make_result("abc"))
+        assert stream.title == "Cached Title"
+        assert client.extractor.resolved == []
+        assert client.current is stream
+        assert len(client.player.played) == 1
+
+    def test_play_result_invalidates_broken_cache_and_redownloads(self, client):
+        seed_cache(client)
+        client.player = FlakyPlayer()
+        stream = client.play_result(make_result("abc"))
+        assert client.cache.lookup("abc") is None
+        assert client.extractor.resolved == ["abc"]
+        assert stream.video_id == "abc"
+        assert client.current.video_id == "abc"
+
+    def test_prefetch_populates_cache(self, client):
+        class DownloadingExtractor(FakeExtractor):
+            def download(self, video_id, outtmpl):
+                path = f"{outtmpl}.m4a"
+                Path(path).write_bytes(b"audio")
+                return path
+
+        client.extractor = DownloadingExtractor()
+        assert client.prefetch("xyz") is True
+        track = client.cache.lookup("xyz")
+        assert track is not None
+        assert track.title == "Stream xyz"
+        assert track.ext == "m4a"
+
+    def test_prefetch_is_noop_when_already_cached(self, client):
+        seed_cache(client, video_id="xyz")
+        assert client.prefetch("xyz") is True
+        assert client.extractor.resolved == []

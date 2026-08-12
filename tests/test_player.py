@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from pathlib import Path
 
 import pytest
 import yt_dlp
@@ -10,14 +11,17 @@ from AVFoundation import (
     CMTimeMakeWithSeconds,
 )
 
+from music_cli.cache import AudioCache, TrackMeta
 from music_cli.player import (
     AVFoundationPlayer,
     Cookies,
+    LocalFile,
     PlayerError,
     PlaylistTrack,
     StreamExtractor,
     StreamInfo,
     WatchPlaylist,
+    _default_fetch_stream,
     parse_watch_track,
 )
 
@@ -329,8 +333,8 @@ class FakeItem:
         return self._status
 
 
-def _local(stream: StreamInfo) -> str:
-    return "file:///tmp/fake-audio.m4a"
+def _local(stream: StreamInfo) -> LocalFile:
+    return LocalFile(path="file:///tmp/fake-audio.m4a")
 
 
 class TestAVFoundationPlayer:
@@ -431,3 +435,136 @@ class TestAVFoundationPlayer:
         player.close()
         assert fake._item is None
         assert player._observer_token is None
+
+
+class TestFileOwnership:
+    def test_unowned_file_survives_stop(self, tmp_path):
+        audio = tmp_path / "cached.m4a"
+        audio.write_bytes(b"audio")
+
+        def fetch(stream):
+            return LocalFile(path=str(audio), owned=False)
+
+        player = AVFoundationPlayer(
+            player_factory=lambda: FakeAVPlayer(), fetch_stream=fetch
+        )
+        player.play(StreamInfo(video_id="v", title="T", stream_url="https://u"))
+        player.stop()
+        assert audio.exists()
+
+    def test_owned_file_is_deleted_on_stop(self, tmp_path):
+        audio = tmp_path / "temp.m4a"
+        audio.write_bytes(b"audio")
+
+        def fetch(stream):
+            return LocalFile(path=str(audio), owned=True)
+
+        player = AVFoundationPlayer(
+            player_factory=lambda: FakeAVPlayer(), fetch_stream=fetch
+        )
+        player.play(StreamInfo(video_id="v", title="T", stream_url="https://u"))
+        player.stop()
+        assert not audio.exists()
+
+    def test_replacing_track_removes_owned_but_keeps_cached(self, tmp_path):
+        temp = tmp_path / "temp.m4a"
+        cached = tmp_path / "cached.m4a"
+        temp.write_bytes(b"a")
+        cached.write_bytes(b"b")
+        first = {"value": True}
+
+        def fetch(stream):
+            if first["value"]:
+                first["value"] = False
+                return LocalFile(path=str(temp), owned=True)
+            return LocalFile(path=str(cached), owned=False)
+
+        player = AVFoundationPlayer(
+            player_factory=lambda: FakeAVPlayer(), fetch_stream=fetch
+        )
+        player.play(StreamInfo(video_id="v1", title="T1", stream_url="https://u"))
+        player.play(StreamInfo(video_id="v2", title="T2", stream_url="https://u"))
+        assert not temp.exists()
+        assert cached.exists()
+
+
+class WritingYDL:
+    """Writes a file at the yt-dlp outtmpl location and reports it back."""
+
+    def __init__(self):
+        self.options = {}
+        self.calls = []
+
+    @staticmethod
+    def factory(ydl):
+        return lambda opts: WritingYDL._set_options(ydl, opts)
+
+    @staticmethod
+    def _set_options(ydl, opts):
+        ydl.options = opts
+        return ydl
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def extract_info(self, url, download=False):
+        self.calls.append((url, download))
+        path = self.options["outtmpl"].replace("%(ext)s", "m4a")
+        Path(path).write_bytes(b"audio-bytes")
+        return {"requested_downloads": [{"filepath": path}]}
+
+
+class TestCachedFetch:
+    def test_hit_returns_cached_file_without_downloading(self, tmp_path):
+        cache = AudioCache(directory=tmp_path / "cache")
+        target = cache.tmp_path("abc")
+        src = Path(f"{target}.m4a")
+        src.write_bytes(b"audio-bytes")
+        cache.commit(
+            "abc",
+            TrackMeta(title="T", artists=("A",), duration=1.0, ext="m4a"),
+            src=src,
+        )
+
+        ydl = WritingYDL()
+        fetch = _default_fetch_stream(
+            None,
+            cache=cache,
+            extractor=StreamExtractor(ydl_factory=WritingYDL.factory(ydl)),
+        )
+        local = fetch(StreamInfo(video_id="abc", title="T", stream_url="https://u"))
+        assert local.owned is False
+        assert Path(local.path).is_file()
+        assert local.path.endswith("abc.m4a")
+        assert ydl.calls == []
+
+    def test_miss_downloads_and_commits(self, tmp_path):
+        cache = AudioCache(directory=tmp_path / "cache")
+        ydl = WritingYDL()
+        fetch = _default_fetch_stream(
+            None,
+            cache=cache,
+            extractor=StreamExtractor(ydl_factory=WritingYDL.factory(ydl)),
+        )
+        stream = StreamInfo(video_id="abc", title="T", stream_url="https://u")
+        local = fetch(stream)
+        assert local.owned is False
+        assert Path(local.path).is_file()
+        assert ydl.calls == [("https://www.youtube.com/watch?v=abc", True)]
+        track = cache.lookup("abc")
+        assert track is not None
+        assert track.title == "T"
+        assert track.ext == "m4a"
+
+    def test_without_cache_falls_back_to_temp_download(self, tmp_path):
+        ydl = WritingYDL()
+        fetch = _default_fetch_stream(
+            None,
+            extractor=StreamExtractor(ydl_factory=WritingYDL.factory(ydl)),
+        )
+        local = fetch(StreamInfo(video_id="abc", title="T", stream_url="https://u"))
+        assert local.owned is True
+        assert Path(local.path).is_file()
