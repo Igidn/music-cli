@@ -45,17 +45,6 @@ TopBar {
     color: $text-dim;
 }
 
-#auto-next {
-    width: auto;
-    content-align: right middle;
-    color: $text-dim;
-    margin-right: 2;
-}
-
-#auto-next.-on {
-    color: $accent-soft;
-}
-
 #queue-count {
     width: auto;
     content-align: right middle;

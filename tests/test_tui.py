@@ -326,7 +326,6 @@ def test_tui_auto_next_toggle_stops_at_track_end():
 
             app.action_toggle_auto_next()
             assert app._auto_next is False
-            assert "off" in str(app.query_one("#auto-next").content)
 
             client.current = FakeExtractor().resolve("v1")
             app.on_track_ended()

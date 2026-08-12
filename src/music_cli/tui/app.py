@@ -61,7 +61,6 @@ class TopBar(Widget):
 
     def compose(self) -> ComposeResult:
         yield Label("♪ music-cli", id="brand")
-        yield Label("", id="auto-next")
         yield Label("", id="queue-count")
 
 
@@ -253,7 +252,6 @@ class MusicTUI(App[None]):
         self.set_interval(0.5, self._tick)
         self.query_one("#search-input", Input).focus()
         self.run_worker(self.pump_platform(), exclusive=False)
-        self._render_auto_next()
 
     def on_unmount(self) -> None:
         if self._search_timer is not None:
@@ -559,13 +557,6 @@ class MusicTUI(App[None]):
 
     def action_toggle_auto_next(self) -> None:
         self._auto_next = not self._auto_next
-        self._render_auto_next()
-        self.set_status(f"Auto next {'on' if self._auto_next else 'off'}")
-
-    def _render_auto_next(self) -> None:
-        label = self.query_one("#auto-next", Label)
-        label.update(f"auto next {'on' if self._auto_next else 'off'}")
-        label.set_classes(("on",) if self._auto_next else ())
 
     def action_toggle_playback(self) -> None:
         if self.client.current is not None:
