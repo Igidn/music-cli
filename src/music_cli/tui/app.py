@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import ClassVar
 
 from rich.cells import cell_len, set_cell_size
@@ -52,7 +53,7 @@ TYPE_COLORS = {
 
 
 class TrackEnded(Message):
-    """Posted on the app thread when mpv reports end-of-file."""
+    """Posted on the app thread when the player reports end-of-file."""
 
 
 class TopBar(Widget):
@@ -185,7 +186,7 @@ class MusicTUI(App[None]):
 
     def __init__(self, client: MusicClient | None = None) -> None:
         super().__init__()
-        self.client = client or MusicClient(on_track_end=self._on_mpv_eof)
+        self.client = client or MusicClient(on_track_end=self._on_player_eof)
         self._search_timer: Timer | None = None
         self._search_worker: Worker[list[SearchResult]] | None = None
         self._queue_worker: Worker[list[PlaylistTrack]] | None = None
@@ -200,6 +201,7 @@ class MusicTUI(App[None]):
     def on_mount(self) -> None:
         self.set_interval(0.5, self._tick)
         self.query_one("#search-input", Input).focus()
+        self.run_worker(self.pump_platform(), exclusive=False)
 
     def on_unmount(self) -> None:
         if self._search_timer is not None:
@@ -469,7 +471,17 @@ class MusicTUI(App[None]):
                 severity="warning",
             )
 
-    def _on_mpv_eof(self) -> None:
+    async def pump_platform(self) -> None:
+        """Pump the main NSRunLoop so the AVFoundation pipeline advances.
+
+        Runs on the app's main thread (asyncio task); the player requires the
+        main run loop to be serviced for playback to progress.
+        """
+        while True:
+            self.client.player.pump()
+            await asyncio.sleep(0.02)
+
+    def _on_player_eof(self) -> None:
         if not self.is_running:
             return
         self.post_message(TrackEnded())

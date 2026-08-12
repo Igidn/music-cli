@@ -4,10 +4,15 @@ import threading
 
 import pytest
 import yt_dlp
+from AVFoundation import (
+    AVPlayerActionAtItemEndPause,
+    CMTimeGetSeconds,
+    CMTimeMakeWithSeconds,
+)
 
 from music_cli.player import (
+    AVFoundationPlayer,
     Cookies,
-    MpvPlayer,
     PlayerError,
     PlaylistTrack,
     StreamExtractor,
@@ -125,7 +130,7 @@ class TestStreamExtractor:
         assert seen["extractor_args"] == {
             "youtube": {"player_client": ["web_embedded"]}
         }
-        assert seen["format"] == "bestaudio/best"
+        assert seen["format"] == "bestaudio[ext=m4a]/bestaudio[acodec=aac]/bestaudio"
         assert seen["skip_download"] is True
 
     def test_resolve_missing_url_raises(self):
@@ -152,6 +157,52 @@ class TestStreamExtractor:
 
         with pytest.raises(PlayerError, match="Failed to extract stream"):
             StreamExtractor(ydl_factory=lambda opts: BrokenYDL()).resolve("abc")
+
+    def test_download_returns_filepath(self, tmp_path):
+        out = tmp_path / "music-cli-x"
+
+        class DownloadingYDL(FakeYDL):
+            def __init__(self, result):
+                super().__init__(result)
+                self.downloads = []
+
+            def extract_info(self, url, download=False):
+                self.downloads.append((url, download))
+                return {"requested_downloads": [{"filepath": f"{out}.webm"}]}
+
+        ydl = DownloadingYDL({})
+        seen = {}
+
+        def factory(opts):
+            seen.update(opts)
+            return ydl
+
+        extractor = StreamExtractor(ydl_factory=factory)
+        path = extractor.download("abc", str(out))
+        assert path == f"{out}.webm"
+        assert ydl.downloads == [("https://www.youtube.com/watch?v=abc", True)]
+        assert seen["skip_download"] is False
+        assert seen["outtmpl"] == f"{out}.%(ext)s"
+
+    def test_download_wraps_download_error(self, tmp_path):
+        class BrokenYDL:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def extract_info(self, url, download=False):
+                raise yt_dlp.utils.DownloadError("rate limit")
+
+        with pytest.raises(PlayerError, match="Failed to download stream"):
+            StreamExtractor(ydl_factory=lambda opts: BrokenYDL()).download(
+                "abc", str(tmp_path / "x")
+            )
+
+    def test_download_empty_video_id_raises(self, tmp_path):
+        with pytest.raises(PlayerError, match="video id is required"):
+            StreamExtractor().download("", str(tmp_path / "x"))
 
 
 class TestWatchPlaylist:
@@ -214,63 +265,85 @@ class TestWatchPlaylist:
         assert tracks[1].title == "Track Two"
 
 
-class FakeMPV:
-    def __init__(self, **kwargs):
-        self.kwargs = kwargs
-        self.pause = False
-        self.mute = False
-        self.volume = kwargs.get("volume", 80)
-        self.playback_time = 0.0
-        self.duration = 100.0
-        self.media_title = "title"
-        self.audio_params = {"format": "floatp", "samplerate": 48000}
-        self.audio_codec = "opus"
-        self.force_media_title = None
-        self.http_header_fields = None
-        self.idle_active = True
-        self.playlist = []
-        self._handlers = {}
-        self._loaded = None
+class FakeAVPlayer:
+    """Minimal stand-in for AVPlayer exposing the pyobjc call surface used."""
 
-    def observe_property(self, name, handler):
-        self._handlers[name] = handler
+    def __init__(self):
+        self._rate = 0.0
+        self._volume = 0.8
+        self._muted = False
+        self._time = CMTimeMakeWithSeconds(0.0, 600)
+        self._item = None
+        self.action_at_item_end = None
+        self.seek_calls = []
 
-    def play(self, filename):
-        self._loaded = filename
-        self.playback_time = 0.1
-        self.playlist = [{"filename": filename}]
-        self.idle_active = False
+    def setVolume_(self, value):
+        self._volume = value
 
-    def stop(self):
-        pass
+    def volume(self):
+        return self._volume
 
-    def seek(self, seconds, reference):
-        self.playback_time = seconds
+    def setMuted_(self, value):
+        self._muted = value
 
-    def terminate(self):
-        self.playback_time = -1
+    def isMuted(self):
+        return self._muted
 
-    def fire_eof(self):
-        self._handlers["eof-reached"]("eof-reached", True)
+    def setActionAtItemEnd_(self, action):
+        self.action_at_item_end = action
+
+    def rate(self):
+        return self._rate
+
+    def play(self):
+        self._rate = 1.0
+
+    def pause(self):
+        self._rate = 0.0
+
+    def currentTime(self):
+        return self._time
+
+    def seekToTime_toleranceBefore_toleranceAfter_(self, time, before, after):
+        self.seek_calls.append((CMTimeGetSeconds(time), before, after))
+        self._time = time
+
+    def replaceCurrentItemWithPlayerItem_(self, item):
+        self._item = item
+
+    def currentItem(self):
+        return self._item
 
 
-class TestMpvPlayer:
-    def test_constructor_options(self):
-        player = MpvPlayer(
-            volume=50,
-            audio_output="coreaudio",
-            mpv_factory=FakeMPV,
-        )
-        assert player._mpv.kwargs == {
-            "ytdl": False,
-            "volume": 50,
-            "keep_open": False,
-            "idle": True,
-            "ao": "coreaudio",
-        }
+class FakeItem:
+    """Stand-in for AVPlayerItem, controllable per test."""
 
-    def test_play_applies_headers_and_url(self):
-        player = MpvPlayer(mpv_factory=FakeMPV)
+    def __init__(self, duration=100.0, status=1):
+        self._duration = CMTimeMakeWithSeconds(duration, 600)
+        self._status = status
+
+    def duration(self):
+        return self._duration
+
+    def status(self):
+        return self._status
+
+
+def _local(stream: StreamInfo) -> str:
+    return "file:///tmp/fake-audio.m4a"
+
+
+class TestAVFoundationPlayer:
+    def test_constructor_applies_volume(self):
+        fake = FakeAVPlayer()
+        AVFoundationPlayer(volume=50, player_factory=lambda: fake)
+        assert fake.volume() == 0.5
+        assert not fake.isMuted()
+        assert fake.action_at_item_end == AVPlayerActionAtItemEndPause
+
+    def test_play_sets_item_and_starts(self):
+        fake = FakeAVPlayer()
+        player = AVFoundationPlayer(player_factory=lambda: fake, fetch_stream=_local)
         stream = StreamInfo(
             video_id="v",
             title="T",
@@ -278,12 +351,15 @@ class TestMpvPlayer:
             http_headers={"User-Agent": "ua"},
         )
         player.play(stream)
-        assert player._mpv._loaded == "https://u/audio"
-        assert player._mpv.http_header_fields == ["User-Agent: ua"]
-        assert player._mpv.force_media_title == "T"
+        assert fake._item is not None
+        assert fake.rate() == 1.0
+        assert player.media_title == "T"
 
     def test_transport_controls(self):
-        player = MpvPlayer(mpv_factory=FakeMPV)
+        fake = FakeAVPlayer()
+        player = AVFoundationPlayer(player_factory=lambda: fake, fetch_stream=_local)
+        assert player.paused is True
+        player.play(StreamInfo(video_id="v", title="T", stream_url="https://u"))
         assert player.paused is False
         player.pause()
         assert player.paused is True
@@ -291,25 +367,46 @@ class TestMpvPlayer:
         assert player.paused is False
         player.toggle()
         assert player.paused is True
+        player.toggle()
+        assert player.paused is False
         player.seek(42.0)
-        assert player.position == 42.0
+        assert fake.seek_calls[-1][0] == 42.0
         player.volume = 120
+        assert fake.volume() == 1.0
         assert player.volume == 100
         player.muted = True
-        assert player.muted is True
+        assert fake.isMuted() is True
+
+    def test_seek_relative(self):
+        fake = FakeAVPlayer()
+        player = AVFoundationPlayer(player_factory=lambda: fake, fetch_stream=_local)
+        player.play(StreamInfo(video_id="v", title="T", stream_url="https://u"))
+        fake._time = CMTimeMakeWithSeconds(30.0, 600)
+        player.seek_relative(-5)
+        assert fake.seek_calls[-1][0] == 25.0
 
     def test_metadata_properties(self):
-        player = MpvPlayer(mpv_factory=FakeMPV)
-        assert player.duration == 100.0
-        assert player.media_title == "title"
-        assert player.audio_codec == "opus"
-
-    def test_playing_state(self):
-        player = MpvPlayer(mpv_factory=FakeMPV)
-        assert not player.playing
+        fake = FakeAVPlayer()
+        player = AVFoundationPlayer(player_factory=lambda: fake, fetch_stream=_local)
         player.play(StreamInfo(video_id="v", title="T", stream_url="https://u"))
+        player._current_item = FakeItem(duration=100.0, status=1)
+        assert player.duration == 100.0
+        assert player.media_title == "T"
+        fake._time = CMTimeMakeWithSeconds(41.5, 600)
+        assert player.position == 41.5
+
+    def test_duration_none_without_item(self):
+        player = AVFoundationPlayer(player_factory=lambda: FakeAVPlayer())
+        assert player.duration is None
+        assert not player.playing
+
+    def test_playing_state_follows_item_status(self):
+        fake = FakeAVPlayer()
+        player = AVFoundationPlayer(player_factory=lambda: fake, fetch_stream=_local)
+        player.play(StreamInfo(video_id="v", title="T", stream_url="https://u"))
+        player._current_item = FakeItem(status=1)
         assert player.playing
-        player._mpv.idle_active = True
+        player._current_item = FakeItem(status=2)  # Failed
         assert not player.playing
 
     def test_eof_event_and_wait(self):
@@ -318,14 +415,19 @@ class TestMpvPlayer:
         def on_end():
             event.set()
 
-        player = MpvPlayer(on_track_end=on_end, mpv_factory=FakeMPV)
+        player = AVFoundationPlayer(
+            on_track_end=on_end, player_factory=lambda: FakeAVPlayer()
+        )
         assert not player.eof_reached
-        player._mpv.fire_eof()
+        player._on_item_ended(None)
         assert player.eof_reached
         assert event.is_set()
         assert player.wait_for_end(0.1) is True
 
-    def test_close_terminates(self):
-        player = MpvPlayer(mpv_factory=FakeMPV)
+    def test_close_stops_and_unloads(self):
+        fake = FakeAVPlayer()
+        player = AVFoundationPlayer(player_factory=lambda: fake, fetch_stream=_local)
+        player.play(StreamInfo(video_id="v", title="T", stream_url="https://u"))
         player.close()
-        assert player._mpv.playback_time == -1
+        assert fake._item is None
+        assert player._observer_token is None

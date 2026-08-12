@@ -7,8 +7,8 @@ import time
 from collections.abc import Callable
 
 from .player import (
+    AVFoundationPlayer,
     Cookies,
-    MpvPlayer,
     PlayerError,
     PlaylistTrack,
     StreamExtractor,
@@ -26,7 +26,7 @@ class MusicClient:
     """Wires search, stream resolution, playback and the autoplay queue.
 
     Owns the ``YTmusicSearch``, ``StreamExtractor``, ``WatchPlaylist`` and
-    ``MpvPlayer`` instances and exposes the operations the UI needs:
+    ``AVFoundationPlayer`` instances and exposes the operations the UI needs:
     searching, playing search results or queued tracks, fetching the autoplay
     queue, and transport controls.
     """
@@ -36,7 +36,6 @@ class MusicClient:
         *,
         cookies: Cookies | None = None,
         volume: int = 80,
-        audio_output: str | None = None,
         on_track_end: Callable[[], None] | None = None,
         extractor_factory: Callable[..., StreamExtractor] = StreamExtractor,
     ) -> None:
@@ -45,10 +44,10 @@ class MusicClient:
         self.search_api = YTmusicSearch()
         self.extractor = extractor_factory(cookies)
         self.watch = WatchPlaylist(cookies=cookies)
-        self.player = MpvPlayer(
+        self.player = AVFoundationPlayer(
             volume=volume,
-            audio_output=audio_output,
             on_track_end=on_track_end,
+            cookies=cookies,
         )
         self.queue: list[PlaylistTrack] = []
         self.current: StreamInfo | None = None

@@ -121,6 +121,9 @@ class FakePlayer:
     def close(self):
         pass
 
+    def pump(self):
+        pass
+
 
 def make_client() -> MusicClient:
     client = MusicClient.__new__(MusicClient)

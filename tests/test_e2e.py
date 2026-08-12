@@ -3,8 +3,8 @@
 These require a YouTube account cookie file (defaults to ``cookie.txt`` in the
 project root, overridable via ``MUSIC_CLI_COOKIE_FILE``). They verify that a
 real audio stream is extracted, that real audio bytes are delivered, that the
-watch playlist (autoplay queue) comes back, and that mpv actually decodes and
-plays the audio.
+watch playlist (autoplay queue) comes back, and that AVFoundation actually
+decodes and plays the audio.
 
 Run with:  uv run pytest -m e2e tests/test_e2e.py -v
 """
@@ -17,7 +17,12 @@ import time
 
 import pytest
 
-from music_cli.player import Cookies, MpvPlayer, StreamExtractor, WatchPlaylist
+from music_cli.player import (
+    AVFoundationPlayer,
+    Cookies,
+    StreamExtractor,
+    WatchPlaylist,
+)
 
 KNOWN_VIDEO = "dQw4w9WgXcQ"  # Rick Astley - Never Gonna Give You Up
 
@@ -32,7 +37,7 @@ STREAM_CMD = [
     "--extractor-args",
     "youtube:player_client=web_embedded",
     "-f",
-    "bestaudio",
+    "bestaudio[ext=m4a]/bestaudio",
     "-o",
     "-",
 ]
@@ -73,8 +78,8 @@ class TestStreamExtraction:
         )
         data = proc.stdout[:262144]
         assert len(data) == 262144, "expected at least 256 KiB of audio bytes"
-        assert data[:4] == b"\x1aE\xdf\xa3", (
-            f"expected EBML (WebM/Opus) header, got {data[:4].hex()}"
+        assert data[:4] == b"\x1aE\xdf\xa3" or data[4:8] == b"ftyp", (
+            f"expected EBML (WebM) or MP4 header, got {data[:8].hex()}"
         )
 
 
@@ -94,25 +99,49 @@ class TestWatchPlaylist:
         assert len(tracks) >= 5
 
 
-class TestMpvPlayback:
-    def test_plays_real_audio(self, stream, extractor):
-        audio_output = os.environ.get("MUSIC_CLI_E2E_AO", "null")
+class TestAVFoundationPlayback:
+    def test_plays_real_audio(self, cookies, stream, extractor):
         candidate = stream
         for _attempt in range(3):
-            player = MpvPlayer(audio_output=audio_output)
+            player = AVFoundationPlayer(cookies=cookies)
             try:
                 player.play(candidate)
                 deadline = time.monotonic() + 30
                 while time.monotonic() < deadline and player.position < 1.0:
+                    player.pump()
                     time.sleep(0.2)
                 if player.position >= 1.0:
-                    assert player.audio_codec, "mpv reported no active audio codec"
                     assert player.media_title == candidate.title
+                    assert player.playing
                     return
             finally:
                 player.close()
             candidate = extractor.resolve(stream.video_id)  # throttle: try a fresh URL
-        raise AssertionError("mpv failed to decode audio after 3 attempts")
+        raise AssertionError("AVFoundation failed to decode audio after 3 attempts")
+
+    def test_end_of_track_event(self, cookies, stream, extractor):
+        """Seek to the last seconds and expect the end-of-track notification."""
+        for _attempt in range(3):
+            player = AVFoundationPlayer(cookies=cookies)
+            try:
+                player.play(stream)
+                deadline = time.monotonic() + 30
+                while time.monotonic() < deadline and not player.duration:
+                    player.pump()
+                    time.sleep(0.2)
+                duration = player.duration
+                assert duration and duration > 100, "duration did not resolve"
+                player.seek(duration - 5)
+                deadline = time.monotonic() + 30
+                while not player.eof_reached and time.monotonic() < deadline:
+                    player.pump()
+                    time.sleep(0.2)
+                assert player.eof_reached, "end-of-track event did not fire"
+                return
+            finally:
+                player.close()
+            stream = extractor.resolve(stream.video_id)
+        raise AssertionError("AVFoundation never reached end of track")
 
 
 class TestTuiIntegration:
@@ -126,8 +155,7 @@ class TestTuiIntegration:
         from music_cli.tui.now_playing import NowPlaying
 
         async def scenario():
-            audio_output = os.environ.get("MUSIC_CLI_E2E_AO", "null")
-            client = MusicClient(cookies=cookies, audio_output=audio_output)
+            client = MusicClient(cookies=cookies)
             app = MusicTUI(client)
             async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
@@ -142,7 +170,6 @@ class TestTuiIntegration:
                 while time.monotonic() < deadline and client.player.position < 1.0:
                     await pilot.pause(1.0)
                 assert client.player.position >= 1.0, "TUI playback did not start"
-                assert client.player.audio_codec
                 now_playing = app.query_one(NowPlaying)
                 assert (
                     str(now_playing.query_one("#np-title").content)

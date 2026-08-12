@@ -1,14 +1,20 @@
 """Audio player for YouTube Music.
 
-Streams audio through mpv. Stream URLs and autoplay queues are resolved with
-yt-dlp (stream extraction) and ytmusicapi (watch playlist) respectively, both
-optionally authenticated with YouTube account cookies.
+Streams audio through AVFoundation (``AVPlayer`` + ``AVURLAsset``) via pyobjc.
+Stream URLs and autoplay queues are resolved with yt-dlp (stream extraction)
+and ytmusicapi (watch playlist) respectively, both optionally authenticated
+with YouTube account cookies.
+
+googlevideo rejects plain HTTP fetches of these stream URLs (they require
+decoded signing parameters and byte-range requests), so each track is
+downloaded to a temporary file with yt-dlp before AVFoundation plays it.
 """
 
 from __future__ import annotations
 
-import locale
+import math
 import os
+import tempfile
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -17,12 +23,37 @@ from typing import Any
 
 import requests
 import yt_dlp
-from mpv import MPV
+from AVFoundation import (
+    AVPlayer,
+    AVPlayerActionAtItemEndPause,
+    AVPlayerItem,
+    AVPlayerItemDidPlayToEndTimeNotification,
+    AVPlayerItemStatusFailed,
+    AVURLAsset,
+    CMTimeGetSeconds,
+    CMTimeMakeWithSeconds,
+    kCMTimeZero,
+)
+from Foundation import (
+    NSURL,
+    NSDate,
+    NSDefaultRunLoopMode,
+    NSNotificationCenter,
+    NSRunLoop,
+)
 from yt_dlp.cookies import SUPPORTED_BROWSERS
 from ytmusicapi import YTMusic
 
+# Not exposed by pyobjc's AVFoundation bindings; the constant's runtime value
+# is its own name string (see AVURLAsset.h).
+AVURLAssetHTTPHeaderFieldsKey = "AVURLAssetHTTPHeaderFieldsKey"
+
 DEFAULT_PLAYER_CLIENT = "web_embedded"
-AUDIO_FORMAT = "bestaudio/best"
+# Prefer AAC in an MP4 container: AVFoundation plays it on every system,
+# whereas WebM/Opus support is missing on some macOS installs (the system's
+# own avconvert fails on webm, so downloads falling back to opus simply
+# won't play). bestaudio remains as a last resort.
+AUDIO_FORMAT = "bestaudio[ext=m4a]/bestaudio[acodec=aac]/bestaudio"
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
@@ -41,15 +72,6 @@ class _QuietLogger:
         pass
 
     def error(self, msg: str) -> None:
-        pass
-
-
-def _ensure_c_numeric_locale() -> None:
-    """ytmusicapi sets LC_ALL to the UI language, but libmpv refuses to
-    initialize (hangs) unless LC_NUMERIC is "C"."""
-    try:
-        locale.setlocale(locale.LC_NUMERIC, "C")
-    except locale.Error:
         pass
 
 
@@ -208,6 +230,33 @@ class StreamExtractor:
             http_headers=dict(info.get("http_headers") or {}),
         )
 
+    def download(self, video_id: str, outtmpl: str) -> str:
+        """Download the best audio for ``video_id`` to a file, returning its path.
+
+        Re-extracts so the signing parameters (``n``, ``pot``) are freshly
+        decoded: googlevideo frequently rejects direct fetches of previously
+        extracted URLs with HTTP 403.
+        """
+        if not video_id:
+            raise PlayerError("A video id is required to download a stream")
+        url = f"https://www.youtube.com/watch?v={video_id}"
+        opts: dict[str, Any] = {
+            **self._options(),
+            "skip_download": False,
+            "outtmpl": outtmpl + ".%(ext)s",
+        }
+        with self._ydl_factory(opts) as ydl:
+            try:
+                info = ydl.extract_info(url, download=True)
+            except yt_dlp.utils.DownloadError as error:
+                raise PlayerError(
+                    f"Failed to download stream for {video_id}: {error}"
+                ) from error
+        downloads = (info or {}).get("requested_downloads") or []
+        if not downloads or not downloads[0].get("filepath"):
+            raise PlayerError(f"No audio was downloaded for {video_id}")
+        return downloads[0]["filepath"]
+
 
 def _parse_artists(info: dict[str, Any]) -> list[str]:
     artists = info.get("artists")
@@ -244,7 +293,6 @@ class WatchPlaylist:
             return self._api
         session = self._cookies.requests_session() if self._cookies else None
         client = YTMusic(requests_session=session) if session else YTMusic()
-        _ensure_c_numeric_locale()
         return client
 
     def get(
@@ -291,101 +339,200 @@ def parse_watch_track(raw: dict[str, Any]) -> PlaylistTrack:
     )
 
 
-class MpvPlayer:
-    """Plays audio streams through mpv (python-mpv/libmpv)."""
+def _cmtime_seconds(value: Any) -> float | None:
+    """Seconds from a CMTime, or ``None`` for non-numeric values.
+
+    Indefinite (streaming until the container is parsed) and infinite times
+    yield ``None`` so callers can fall back to a sensible default.
+    """
+    seconds = CMTimeGetSeconds(value)
+    if math.isnan(seconds) or math.isinf(seconds):
+        return None
+    return seconds
+
+
+def _default_player() -> AVPlayer:
+    return AVPlayer.alloc().init()
+
+
+def _default_fetch_stream(cookies: Cookies | None) -> Callable[[StreamInfo], str]:
+    """Build the default stream fetcher: download via yt-dlp to a temp file."""
+    extractor = StreamExtractor(cookies)
+
+    def fetch(stream: StreamInfo) -> str:
+        file = tempfile.NamedTemporaryFile(prefix="music-cli-", delete=False)
+        file.close()
+        try:
+            return extractor.download(stream.video_id, file.name)
+        except PlayerError:
+            try:
+                os.unlink(file.name)
+            except OSError:
+                pass
+            raise
+
+    return fetch
+
+
+class AVFoundationPlayer:
+    """Plays audio streams through AVFoundation (AVPlayer/AVURLAsset).
+
+    No ``NSApplication`` is ever created, so the process never gets a Dock
+    icon by construction; audio output goes straight through CoreAudio.
+
+    AVFoundation's media pipeline is serviced by the main ``NSRunLoop``, so
+    the main thread must pump it periodically via :meth:`pump`. The TUI does
+    this automatically while the app is running. All AVPlayer access is
+    thread-safe; only :meth:`pump` must run on the main thread.
+    """
 
     def __init__(
         self,
         *,
         volume: int = 80,
-        audio_output: str | None = None,
-        keep_open: bool = False,
         on_track_end: Callable[[], None] | None = None,
-        mpv_factory: Callable[..., MPV] = MPV,
+        cookies: Cookies | None = None,
+        player_factory: Callable[[], AVPlayer] = _default_player,
+        fetch_stream: Callable[[StreamInfo], str] | None = None,
     ) -> None:
-        kwargs: dict[str, Any] = {
-            "ytdl": False,
-            "volume": volume,
-            "keep_open": keep_open,
-            "idle": True,
-        }
-        if audio_output:
-            kwargs["ao"] = audio_output
-        _ensure_c_numeric_locale()
-        self._mpv = mpv_factory(**kwargs)
         self._on_track_end = on_track_end
         self._ended = threading.Event()
-        self._mpv.observe_property("eof-reached", self._on_eof)
+        self._title = ""
+        self._observer_token: Any = None
+        self._current_item: AVPlayerItem | None = None
+        self._local_url: str | None = None
+        self._fetch_stream = fetch_stream or _default_fetch_stream(cookies)
+        self._player = player_factory()
+        self._player.setVolume_(max(0, min(100, volume)) / 100.0)
+        self._player.setMuted_(False)
+        self._player.setActionAtItemEnd_(AVPlayerActionAtItemEndPause)
 
-    def _on_eof(self, name: str, value: Any) -> None:
-        if value:
-            self._ended.set()
-            if self._on_track_end:
-                self._on_track_end()
+    def pump(self) -> None:
+        """Service the main run loop for one short slice.
+
+        AVFoundation advances the media pipeline only while the main run loop
+        runs; the TUI calls this from its own event loop on the main thread.
+        """
+        NSRunLoop.currentRunLoop().runMode_beforeDate_(
+            NSDefaultRunLoopMode, NSDate.dateWithTimeIntervalSinceNow_(0.02)
+        )
 
     def play(self, stream: StreamInfo) -> None:
+        """Fetch the stream locally and start playing it.
+
+        Streams that cannot be fetched leave the player idle; the client's
+        retry loop detects that and tries a fresh URL.
+        """
         self._ended.clear()
-        self._mpv.force_media_title = stream.title
-        if stream.http_headers:
-            self._mpv.http_header_fields = [
-                f"{name}: {value}" for name, value in stream.http_headers.items()
-            ]
-        self._mpv.play(stream.stream_url)
+        self._unobserve()
+        self._remove_local_file()
+        try:
+            path = self._fetch_stream(stream)
+        except PlayerError:
+            self._title = ""
+            self._current_item = None
+            self._player.replaceCurrentItemWithPlayerItem_(None)
+            return
+        self._title = stream.title
+        if path.startswith("file://"):
+            url = path
+        else:
+            url = f"file://{path}"
+            self._local_url = url
+        asset = AVURLAsset.alloc().initWithURL_options_(
+            NSURL.URLWithString_(url),
+            {AVURLAssetHTTPHeaderFieldsKey: stream.http_headers},
+        )
+        item = AVPlayerItem.alloc().initWithAsset_(asset)
+        self._observer_token = NSNotificationCenter.defaultCenter().addObserverForName_object_queue_usingBlock_(
+            AVPlayerItemDidPlayToEndTimeNotification,
+            item,
+            None,
+            self._on_item_ended,
+        )
+        self._current_item = item
+        self._player.replaceCurrentItemWithPlayerItem_(item)
+        self._player.play()
 
     def stop(self) -> None:
-        self._mpv.stop()
+        self._unobserve()
+        self._current_item = None
+        self._player.replaceCurrentItemWithPlayerItem_(None)
+        self._remove_local_file()
 
     def pause(self) -> None:
-        self._mpv.pause = True
+        self._player.pause()
 
     def resume(self) -> None:
-        self._mpv.pause = False
+        self._player.play()
 
     def toggle(self) -> None:
-        self._mpv.pause = not self._mpv.pause
+        if self.paused:
+            self.resume()
+        else:
+            self.pause()
 
     def seek(self, seconds: float) -> None:
-        self._mpv.seek(seconds, "absolute")
+        if self._current_item is None:
+            return
+        self._player.seekToTime_toleranceBefore_toleranceAfter_(
+            CMTimeMakeWithSeconds(seconds, 600), kCMTimeZero, kCMTimeZero
+        )
 
     def seek_relative(self, delta: float) -> None:
-        self._mpv.seek(delta, "relative")
+        self.seek(self.position + delta)
+
+    def _on_item_ended(self, notification: Any) -> None:
+        self._ended.set()
+        if self._on_track_end:
+            self._on_track_end()
+
+    def _unobserve(self) -> None:
+        if self._observer_token is not None:
+            NSNotificationCenter.defaultCenter().removeObserver_(self._observer_token)
+            self._observer_token = None
+
+    def _remove_local_file(self) -> None:
+        if self._local_url is not None:
+            try:
+                os.unlink(self._local_url.removeprefix("file://"))
+            except OSError:
+                pass
+            self._local_url = None
 
     @property
     def volume(self) -> int:
-        return int(self._mpv.volume)
+        return round(self._player.volume() * 100)
 
     @volume.setter
     def volume(self, value: int) -> None:
-        self._mpv.volume = max(0, min(100, value))
+        self._player.setVolume_(max(0, min(100, int(value))) / 100.0)
 
     @property
     def muted(self) -> bool:
-        return bool(self._mpv.mute)
+        return bool(self._player.isMuted())
 
     @muted.setter
     def muted(self, value: bool) -> None:
-        self._mpv.mute = value
+        self._player.setMuted_(bool(value))
 
     @property
     def paused(self) -> bool:
-        return bool(self._mpv.pause)
+        return self._player.rate() == 0.0
 
     @property
     def position(self) -> float:
-        return float(self._mpv.playback_time or 0.0)
+        return _cmtime_seconds(self._player.currentTime()) or 0.0
 
     @property
     def duration(self) -> float | None:
-        value = self._mpv.duration
-        return float(value) if value else None
+        if self._current_item is None:
+            return None
+        return _cmtime_seconds(self._current_item.duration())
 
     @property
     def media_title(self) -> str:
-        return str(self._mpv.media_title or "")
-
-    @property
-    def audio_codec(self) -> str:
-        return str(self._mpv.audio_codec or "")
+        return self._title
 
     @property
     def eof_reached(self) -> bool:
@@ -393,11 +540,13 @@ class MpvPlayer:
 
     @property
     def playing(self) -> bool:
-        """Whether a file is loaded and mpv is not sitting idle."""
-        return not bool(self._mpv.idle_active) and bool(self._mpv.playlist)
+        """Whether a track is loaded and its item hasn't failed to load."""
+        if self._current_item is None:
+            return False
+        return int(self._current_item.status()) != AVPlayerItemStatusFailed
 
     def wait_for_end(self, timeout: float | None = None) -> bool:
         return self._ended.wait(timeout)
 
     def close(self) -> None:
-        self._mpv.terminate()
+        self.stop()
