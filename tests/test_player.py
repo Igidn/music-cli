@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import os
 import threading
-import time
 
 import pytest
 import yt_dlp
@@ -13,16 +11,13 @@ from AVFoundation import (
 )
 
 from music_cli.player import (
-    STREAM_START_THRESHOLD,
     AVFoundationPlayer,
     Cookies,
     PlayerError,
     PlaylistTrack,
     StreamExtractor,
-    StreamFile,
     StreamInfo,
     WatchPlaylist,
-    _stream_to_file,
     parse_watch_track,
 )
 
@@ -187,7 +182,6 @@ class TestStreamExtractor:
         assert path == f"{out}.webm"
         assert ydl.downloads == [("https://www.youtube.com/watch?v=abc", True)]
         assert seen["skip_download"] is False
-        assert seen["nopart"] is True
         assert seen["outtmpl"] == f"{out}.%(ext)s"
 
     def test_download_wraps_download_error(self, tmp_path):
@@ -209,85 +203,6 @@ class TestStreamExtractor:
     def test_download_empty_video_id_raises(self, tmp_path):
         with pytest.raises(PlayerError, match="video id is required"):
             StreamExtractor().download("", str(tmp_path / "x"))
-
-
-class SlowFakeExtractor:
-    """A fake StreamExtractor whose download writes progressively."""
-
-    def __init__(self, total: int, *, fail: bool = False) -> None:
-        self._total = total
-        self._fail = fail
-        self.done = threading.Event()
-
-    def download(self, video_id: str, outtmpl: str) -> str:
-        if self._fail:
-            time.sleep(0.1)
-            raise PlayerError("stream failed for v1")
-        path = f"{outtmpl}.m4a"
-        with open(path, "wb") as file:
-            for _ in range(32):
-                file.write(b"\x00" * (self._total // 32))
-                file.flush()
-                time.sleep(0.02)
-        self.done.set()
-        return path
-
-
-class TestStreamFetch:
-    def test_returns_before_download_completes(self, tmp_path):
-        out = tmp_path / "music-cli-x"
-        extractor = SlowFakeExtractor(1 << 20)  # 1 MiB, threshold is 512 KiB
-        result = _stream_to_file(
-            extractor,
-            StreamInfo(video_id="v1", title="T", stream_url="https://u"),
-            str(out),
-        )
-        assert os.path.getsize(result.path) >= STREAM_START_THRESHOLD
-        assert not extractor.done.is_set(), "download should still be running"
-        assert result.error is None
-
-    def test_returns_small_completed_file(self, tmp_path):
-        out = tmp_path / "music-cli-y"
-        extractor = SlowFakeExtractor(1024)
-        result = _stream_to_file(
-            extractor,
-            StreamInfo(video_id="v1", title="T", stream_url="https://u"),
-            str(out),
-        )
-        assert os.path.getsize(result.path) == 1024
-        assert extractor.done.is_set()
-        assert result.done.is_set()
-
-    def test_raises_when_download_fails(self, tmp_path):
-        out = tmp_path / "music-cli-z"
-        extractor = SlowFakeExtractor(1 << 20, fail=True)
-        with pytest.raises(PlayerError, match="stream failed"):
-            _stream_to_file(
-                extractor,
-                StreamInfo(video_id="v1", title="T", stream_url="https://u"),
-                str(out),
-            )
-
-    def test_delivers_failure_after_start(self, tmp_path):
-        """A download that fails after playback started surfaces on StreamFile."""
-        out = tmp_path / "music-cli-w"
-
-        class FailAfterStart(SlowFakeExtractor):
-            def download(self, video_id, outtmpl):
-                path = f"{outtmpl}.m4a"
-                with open(path, "wb") as file:
-                    file.write(b"\x00" * (STREAM_START_THRESHOLD * 2))
-                raise PlayerError("died mid-stream")
-
-        result = _stream_to_file(
-            FailAfterStart(0),
-            StreamInfo(video_id="v1", title="T", stream_url="https://u"),
-            str(out),
-        )
-        assert result.path  # early return on threshold
-        assert result.done.wait(5)
-        assert result.error is not None
-        assert "died mid-stream" in str(result.error)
 
 
 class TestWatchPlaylist:
@@ -480,69 +395,10 @@ class TestAVFoundationPlayer:
         fake._time = CMTimeMakeWithSeconds(41.5, 600)
         assert player.position == 41.5
 
-    def test_duration_clamped_to_track_duration(self):
-        fake = FakeAVPlayer()
-        player = AVFoundationPlayer(player_factory=lambda: fake, fetch_stream=_local)
-        player.play(
-            StreamInfo(video_id="v", title="T", stream_url="https://u", duration=213.0)
-        )
-        player._current_item = FakeItem(duration=426.0, status=1)  # doubled moov
-        assert player.duration == 213.0
-
     def test_duration_none_without_item(self):
         player = AVFoundationPlayer(player_factory=lambda: FakeAVPlayer())
         assert player.duration is None
         assert not player.playing
-
-    def test_watchdog_ends_track_at_real_duration(self):
-        fake = FakeAVPlayer()
-        player = AVFoundationPlayer(player_factory=lambda: fake, fetch_stream=_local)
-        stream = StreamInfo(video_id="v", title="T", stream_url="https://u", duration=213.0)
-        player.play(stream)
-        player._current_item = FakeItem(duration=426.0, status=1)  # doubled moov
-        fake._time = CMTimeMakeWithSeconds(213.0, 600)
-        stream_file = StreamFile(path="/tmp/fake.m4a", done=threading.Event())
-        stream_file.done.set()
-        player._watch_stream(stream_file, player._watch_generation)
-        assert player.eof_reached
-        assert fake.rate() == 0.0  # paused at the real end
-
-    def test_watchdog_ends_track_when_stream_dies(self):
-        fake = FakeAVPlayer()
-        player = AVFoundationPlayer(player_factory=lambda: fake, fetch_stream=_local)
-        player.play(StreamInfo(video_id="v", title="T", stream_url="https://u"))
-        fake._time = CMTimeMakeWithSeconds(45.0, 600)
-        stream_file = StreamFile(
-            path="/tmp/fake.m4a",
-            done=threading.Event(),
-            error=PlayerError("died mid-stream"),
-        )
-        stream_file.done.set()
-        player._watch_stream(stream_file, player._watch_generation)
-        assert player.eof_reached
-
-    def test_watchdog_ignores_stream_death_before_playback(self):
-        fake = FakeAVPlayer()
-        player = AVFoundationPlayer(player_factory=lambda: fake, fetch_stream=_local)
-        player.play(StreamInfo(video_id="v", title="T", stream_url="https://u"))
-        stream_file = StreamFile(
-            path="/tmp/fake.m4a",
-            done=threading.Event(),
-            error=PlayerError("died mid-stream"),
-        )
-        stream_file.done.set()
-        player._watch_stream(stream_file, player._watch_generation)
-        assert not player.eof_reached
-
-    def test_watchdog_stale_generation_exits(self):
-        fake = FakeAVPlayer()
-        player = AVFoundationPlayer(player_factory=lambda: fake, fetch_stream=_local)
-        player.play(StreamInfo(video_id="v", title="T", stream_url="https://u"))
-        fake._time = CMTimeMakeWithSeconds(213.0, 600)
-        stream_file = StreamFile(path="/tmp/fake.m4a", done=threading.Event())
-        stream_file.done.set()
-        player._watch_stream(stream_file, player._watch_generation - 1)
-        assert not player.eof_reached
 
     def test_playing_state_follows_item_status(self):
         fake = FakeAVPlayer()

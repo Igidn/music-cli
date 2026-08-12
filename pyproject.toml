@@ -9,7 +9,6 @@ authors = [
 requires-python = ">=3.14"
 dependencies = [
     "pyobjc-framework-avfoundation>=12.2.2",
-    "pyobjc-framework-mediatoolbox>=12.2.2",
     "requests>=2.32",
     "textual>=8.2.8",
     "yt-dlp>=2026.7.4",
