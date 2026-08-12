@@ -60,7 +60,6 @@ class TopBar(Widget):
 
     def compose(self) -> ComposeResult:
         yield Label("♪ music-cli", id="brand")
-        yield Label("Ad-free YouTube Music for your terminal", id="tagline")
         yield Label("", id="queue-count")
 
 
