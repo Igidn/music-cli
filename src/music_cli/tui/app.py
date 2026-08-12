@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from rich.cells import cell_len, set_cell_size
 from rich.text import Text
 
 from textual import on, work
@@ -63,7 +64,7 @@ class ResultsTable(DataTable):
 
     def on_mount(self) -> None:
         self.add_column("", key="type", width=10)
-        self.add_column("Title", key="title", width=16)
+        self.add_column("Title", key="title", width=34)
         self.add_column("Artist", key="artist", width=13)
         self.add_column("Album", key="album", width=8)
         self.add_column("Time", key="duration", width=7)
@@ -78,13 +79,21 @@ class ResultsTable(DataTable):
             artists = ", ".join(result.artists)
             self.add_row(
                 Text(f" {result.type_label}", style=TYPE_COLORS.get(result.type_label, "grey58")),
-                result.title,
-                artists,
-                result.album,
-                result.duration,
+                self._fit(result.title, "title"),
+                self._fit(artists, "artist"),
+                self._fit(result.album or "", "album"),
+                self._fit(result.duration or "", "duration"),
                 key=key,
             )
             self._results[key] = result
+
+    def _fit(self, value: str, column_key: str) -> str:
+        """Truncate a cell value to its column width, appending '...' when cut off."""
+        column = self.columns[column_key]
+        max_width = column.get_render_width(self) - 2 * self.cell_padding
+        if cell_len(value) <= max_width:
+            return value
+        return set_cell_size(value, max_width - 3) + "... "
 
     def selected_result(self) -> SearchResult | None:
         coordinate = self.coordinate_to_cell_key(self.cursor_coordinate)
@@ -178,7 +187,7 @@ class MusicTUI(App[None]):
                     zebra_stripes=True,
                     cursor_type="row",
                     show_row_labels=False,
-                    cell_padding=0,
+                    cell_padding=1,
                     id="results",
                 )
             yield QueueList(id="queue-pane")
@@ -307,7 +316,6 @@ class MusicTUI(App[None]):
             self.set_status("Playing — queue unavailable")
             self.notify(f"Could not load the queue: {worker.error}", title="Queue", severity="warning")
 
-    # ----------------------------------------------------------------- queue
 
     @on(QueueList.Selected)
     def _on_queue_selected(self, event: QueueList.Selected) -> None:
