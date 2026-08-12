@@ -27,10 +27,14 @@ COOKIE_FILE = os.environ.get("MUSIC_CLI_COOKIE_FILE", "cookie.txt")
 
 STREAM_CMD = [
     ".venv/bin/yt-dlp",
-    "--cookies", COOKIE_FILE,
-    "--extractor-args", "youtube:player_client=web_embedded",
-    "-f", "bestaudio",
-    "-o", "-",
+    "--cookies",
+    COOKIE_FILE,
+    "--extractor-args",
+    "youtube:player_client=web_embedded",
+    "-f",
+    "bestaudio",
+    "-o",
+    "-",
 ]
 
 
@@ -94,7 +98,7 @@ class TestMpvPlayback:
     def test_plays_real_audio(self, stream, extractor):
         audio_output = os.environ.get("MUSIC_CLI_E2E_AO", "null")
         candidate = stream
-        for attempt in range(3):
+        for _attempt in range(3):
             player = MpvPlayer(audio_output=audio_output)
             try:
                 player.play(candidate)
@@ -140,7 +144,10 @@ class TestTuiIntegration:
                 assert client.player.position >= 1.0, "TUI playback did not start"
                 assert client.player.audio_codec
                 now_playing = app.query_one(NowPlaying)
-                assert str(now_playing.query_one("#np-title").content) == client.current.title
+                assert (
+                    str(now_playing.query_one("#np-title").content)
+                    == client.current.title
+                )
                 await pilot.pause(8.0)
                 assert len(client.queue) > 0, "autoplay queue was not loaded"
                 assert len(app.query_one(QueueList).children) > 0

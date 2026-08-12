@@ -11,7 +11,7 @@ from textual.widgets import ProgressBar, Static
 BAR_GRADIENT = Gradient((0.0, "#8b5cf6"), (0.6, "#a78bfa"), (1.0, "#67e8f9"))
 
 
-def format_time(seconds: float | int | None) -> str:
+def format_time(seconds: float | None) -> str:
     if not seconds or seconds < 0:
         return "--:--"
     total = int(seconds)
@@ -37,7 +37,10 @@ class NowPlaying(Widget):
             yield Static("♪", id="np-icon")
             with Vertical(id="np-meta"):
                 yield Static("Nothing playing", id="np-title")
-                yield Static("Type to search, or press / to focus the search box", id="np-subtitle")
+                yield Static(
+                    "Type to search, or press / to focus the search box",
+                    id="np-subtitle",
+                )
             yield Static("--:-- / --:--", id="np-time")
         yield ProgressBar(
             total=0,
@@ -50,7 +53,9 @@ class NowPlaying(Widget):
             yield Static("Ready", id="np-status")
             yield Static("", id="np-volume")
 
-    def set_track(self, title: str, subtitle: str, duration: float | None = None) -> None:
+    def set_track(
+        self, title: str, subtitle: str, duration: float | None = None
+    ) -> None:
         self.query_one("#np-title", Static).update(title)
         self.query_one("#np-subtitle", Static).update(subtitle)
         self._has_track = True
@@ -65,7 +70,9 @@ class NowPlaying(Widget):
         self._duration = 0.0
         self._position = 0.0
         self.query_one("#np-title", Static).update("Nothing playing")
-        self.query_one("#np-subtitle", Static).update("Type to search, or press / to focus the search box")
+        self.query_one("#np-subtitle", Static).update(
+            "Type to search, or press / to focus the search box"
+        )
         self.query_one("#np-progress", ProgressBar).update(progress=0, total=0)
         self.query_one("#np-time", Static).update("--:-- / --:--")
         self._render_icon()

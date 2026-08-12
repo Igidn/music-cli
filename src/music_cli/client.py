@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import time
-from typing import Callable
+from collections.abc import Callable
 
 from .player import (
     Cookies,
     MpvPlayer,
-    PlaylistTrack,
     PlayerError,
+    PlaylistTrack,
     StreamExtractor,
     StreamInfo,
     WatchPlaylist,
@@ -83,7 +83,9 @@ class MusicClient:
             attempts = PRIMARY_PLAY_ATTEMPTS if client_name is None else 1
             extractor = self.extractor
             if client_name is not None:
-                extractor = self._extractor_factory(self._cookies, player_client=client_name)
+                extractor = self._extractor_factory(
+                    self._cookies, player_client=client_name
+                )
             for _ in range(attempts):
                 try:
                     stream = extractor.resolve(video_id)

@@ -32,7 +32,9 @@ class FakeExtractor:
 
     def resolve(self, video_id):
         self.resolved.append(video_id)
-        return StreamInfo(video_id=video_id, title=f"Stream {video_id}", stream_url="https://u")
+        return StreamInfo(
+            video_id=video_id, title=f"Stream {video_id}", stream_url="https://u"
+        )
 
 
 class FakePlayer:
@@ -56,7 +58,9 @@ class FakeWatch:
         self._tracks = tracks
         self.calls = []
 
-    def get(self, video_id=None, playlist_id=None, radio=False, shuffle=False, limit=None):
+    def get(
+        self, video_id=None, playlist_id=None, radio=False, shuffle=False, limit=None
+    ):
         self.calls.append((video_id, radio))
         return self._tracks
 
@@ -132,7 +136,7 @@ class TestMusicClient:
         client.queue = [make_track("t1")]
 
         class BrokenExtractor:
-            def resolve(self, video_id):  # noqa: ARG002
+            def resolve(self, video_id):
                 raise PlayerError("nope")
 
         client.extractor = BrokenExtractor()

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import threading
-from types import SimpleNamespace
 
 import pytest
 import yt_dlp
@@ -51,7 +50,9 @@ class TestCookies:
         assert not Cookies().enabled
 
     def test_ydl_options_manual(self, cookie_file):
-        assert Cookies.from_file(cookie_file).ydl_options() == {"cookiefile": cookie_file}
+        assert Cookies.from_file(cookie_file).ydl_options() == {
+            "cookiefile": cookie_file
+        }
 
     def test_ydl_options_browser(self):
         assert Cookies.from_browser("chrome").ydl_options() == {
@@ -81,7 +82,7 @@ class FakeYDL:
     def __exit__(self, *args):
         return False
 
-    def extract_info(self, url, download=False):  # noqa: ARG002
+    def extract_info(self, url, download=False):
         return self._result
 
 
@@ -121,7 +122,9 @@ class TestStreamExtractor:
         extractor = StreamExtractor(Cookies.from_file(cookie_file), ydl_factory=factory)
         extractor.resolve("abc")
         assert seen["cookiefile"] == cookie_file
-        assert seen["extractor_args"] == {"youtube": {"player_client": ["web_embedded"]}}
+        assert seen["extractor_args"] == {
+            "youtube": {"player_client": ["web_embedded"]}
+        }
         assert seen["format"] == "bestaudio/best"
         assert seen["skip_download"] is True
 
@@ -144,7 +147,7 @@ class TestStreamExtractor:
             def __exit__(self, *args):
                 return False
 
-            def extract_info(self, url, download=False):  # noqa: ARG002
+            def extract_info(self, url, download=False):
                 raise yt_dlp.utils.DownloadError("bot check")
 
         with pytest.raises(PlayerError, match="Failed to extract stream"):
@@ -193,7 +196,11 @@ class TestWatchPlaylist:
                     assert kwargs["shuffle"] is False
                     return {
                         "tracks": [
-                            {"videoId": "t1", "title": "Track One", "artists": [{"name": "A"}]},
+                            {
+                                "videoId": "t1",
+                                "title": "Track One",
+                                "artists": [{"name": "A"}],
+                            },
                             {"videoId": "t2", "title": "Track Two"},
                         ]
                     }
@@ -237,7 +244,7 @@ class FakeMPV:
     def stop(self):
         pass
 
-    def seek(self, seconds, reference):  # noqa: ARG002
+    def seek(self, seconds, reference):
         self.playback_time = seconds
 
     def terminate(self):
@@ -300,9 +307,7 @@ class TestMpvPlayer:
     def test_playing_state(self):
         player = MpvPlayer(mpv_factory=FakeMPV)
         assert not player.playing
-        player.play(
-            StreamInfo(video_id="v", title="T", stream_url="https://u")
-        )
+        player.play(StreamInfo(video_id="v", title="T", stream_url="https://u"))
         assert player.playing
         player._mpv.idle_active = True
         assert not player.playing

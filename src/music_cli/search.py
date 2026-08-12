@@ -29,6 +29,7 @@ TYPE_LABELS = {
     "episode": "EPISODE",
 }
 
+
 def _format_duration(raw: Any) -> str:
     if isinstance(raw, int):
         minutes, seconds = divmod(raw, 60)
@@ -108,6 +109,7 @@ class SearchResult:
         if self.year:
             parts.append(self.year)
         return " • ".join(p for p in parts if p)
+
 
 class YTmusicSearch:
     def __init__(self, api: YTMusic | None = None) -> None:

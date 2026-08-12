@@ -42,7 +42,9 @@ def build_client(args: argparse.Namespace) -> MusicClient:
         if not os.path.isfile(args.cookies):
             raise PlayerError(f"Cookie file not found: {args.cookies}")
         cookies = Cookies.from_file(args.cookies)
-    return MusicClient(cookies=cookies, volume=args.volume, audio_output=args.audio_output)
+    return MusicClient(
+        cookies=cookies, volume=args.volume, audio_output=args.audio_output
+    )
 
 
 def main() -> None:

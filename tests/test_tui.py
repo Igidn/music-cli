@@ -48,12 +48,16 @@ class FakeExtractor:
 
 
 class FakeWatch:
-    def get(self, video_id=None, playlist_id=None, radio=False, shuffle=False, limit=None):
+    def get(
+        self, video_id=None, playlist_id=None, radio=False, shuffle=False, limit=None
+    ):
         if radio:
             return []
         return [
             PlaylistTrack(video_id=video_id or "t0", title="Current", artists=["A"]),
-            PlaylistTrack(video_id="t1", title="Up next", artists=["B"], duration="3:00"),
+            PlaylistTrack(
+                video_id="t1", title="Up next", artists=["B"], duration="3:00"
+            ),
             PlaylistTrack(video_id="t2", title="Later", artists=["C"]),
         ]
 
@@ -173,7 +177,7 @@ def test_tui_search_play_queue_and_next():
 
 
 def test_tui_search_empty_and_track_end():
-    from music_cli.tui.app import MusicTUI, NowPlaying, ResultsTable
+    from music_cli.tui.app import MusicTUI, ResultsTable
     from music_cli.tui.now_playing import NowPlaying
 
     async def scenario():
@@ -199,7 +203,10 @@ def test_tui_search_empty_and_track_end():
             await pilot.pause()
             await pilot.pause(0.6)
             assert app.client.player.played[-1] == "x"
-            assert str(app.query_one(NowPlaying).query_one("#np-status").content) == "End of station"
+            assert (
+                str(app.query_one(NowPlaying).query_one("#np-status").content)
+                == "End of station"
+            )
 
     _run(scenario())
 

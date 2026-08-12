@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 from rich.cells import cell_len, set_cell_size
 from rich.text import Text
-
 from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -12,11 +13,19 @@ from textual.containers import Horizontal, Vertical
 from textual.message import Message
 from textual.timer import Timer
 from textual.widget import Widget
-from textual.widgets import DataTable, Footer, Input, Label, ListItem, ListView, Select, Static
+from textual.widgets import (
+    DataTable,
+    Footer,
+    Input,
+    Label,
+    ListItem,
+    ListView,
+    Select,
+)
 from textual.worker import Worker, WorkerState
 
 from music_cli.client import MusicClient
-from music_cli.player import PlaylistTrack, PlayerError, StreamInfo
+from music_cli.player import PlaylistTrack, StreamInfo
 from music_cli.search import SearchFilter, SearchResult
 
 from .now_playing import NowPlaying
@@ -78,7 +87,10 @@ class ResultsTable(DataTable):
                 continue
             artists = ", ".join(result.artists)
             self.add_row(
-                Text(f" {result.type_label}", style=TYPE_COLORS.get(result.type_label, "grey58")),
+                Text(
+                    f" {result.type_label}",
+                    style=TYPE_COLORS.get(result.type_label, "grey58"),
+                ),
                 self._fit(result.title, "title"),
                 self._fit(artists, "artist"),
                 self._fit(result.album or "", "album"),
@@ -110,7 +122,14 @@ class QueueList(ListView):
         self.clear()
         if not tracks:
             self.index = None
-            self.append(ListItem(Label("Queue is empty — play a song to start autoplay", classes="queue-empty")))
+            self.append(
+                ListItem(
+                    Label(
+                        "Queue is empty — play a song to start autoplay",
+                        classes="queue-empty",
+                    )
+                )
+            )
             return
         for track in tracks:
             self.append(self._item(track))
@@ -135,7 +154,7 @@ class MusicTUI(App[None]):
     CSS_PATH = "theme.tcss"
     TITLE = "music-cli"
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[Binding]] = [
         Binding("slash", "focus_search", "Search"),
         Binding("space", "toggle_playback", "Play/Pause"),
         Binding("ctrl+right", "seek_forward", "Seek +5s"),
@@ -177,7 +196,10 @@ class MusicTUI(App[None]):
                         id="search-input",
                     )
                     yield Select(
-                        [(label, index) for index, (label, _) in enumerate(SEARCH_FILTERS)],
+                        [
+                            (label, index)
+                            for index, (label, _) in enumerate(SEARCH_FILTERS)
+                        ],
                         prompt="Filter",
                         value=0,
                         compact=True,
@@ -259,7 +281,9 @@ class MusicTUI(App[None]):
             self.set_status(f"{len(results)} results" if results else "No results")
         else:
             self.set_status("Search failed")
-            self.notify(f"Search failed: {worker.error}", title="Search", severity="error")
+            self.notify(
+                f"Search failed: {worker.error}", title="Search", severity="error"
+            )
 
     @on(ResultsTable.RowSelected)
     def _on_result_selected(self, event: ResultsTable.RowSelected) -> None:
@@ -293,7 +317,9 @@ class MusicTUI(App[None]):
             self._queue_worker = self.fetch_queue_worker(stream.video_id)
         else:
             self.set_status("Playback failed")
-            self.notify(f"Could not play: {worker.error}", title="Playback", severity="error")
+            self.notify(
+                f"Could not play: {worker.error}", title="Playback", severity="error"
+            )
 
     def _cancel_queue_fetch(self) -> None:
         if self._queue_worker is not None and self._queue_worker.is_running:
@@ -307,11 +333,16 @@ class MusicTUI(App[None]):
     def _on_queue_fetched(self, worker: Worker[list[PlaylistTrack]]) -> None:
         if worker.state is WorkerState.SUCCESS:
             self._refresh_queue()
-            self.set_status("Playing" if self.client.queue else "Playing — no up next available")
+            self.set_status(
+                "Playing" if self.client.queue else "Playing — no up next available"
+            )
         else:
             self.set_status("Playing — queue unavailable")
-            self.notify(f"Could not load the queue: {worker.error}", title="Queue", severity="warning")
-
+            self.notify(
+                f"Could not load the queue: {worker.error}",
+                title="Queue",
+                severity="warning",
+            )
 
     @on(QueueList.Selected)
     def _on_queue_selected(self, event: QueueList.Selected) -> None:
@@ -348,11 +379,15 @@ class MusicTUI(App[None]):
             self.client.queue.insert(self._pending_index, self._pending_track)
             self._refresh_queue()
             self.set_status("Playback failed")
-            self.notify(f"Could not play: {worker.error}", title="Playback", severity="error")
+            self.notify(
+                f"Could not play: {worker.error}", title="Playback", severity="error"
+            )
 
     def _refresh_queue(self) -> None:
         self.query_one(QueueList).set_tracks(self.client.queue)
-        self.query_one("#queue-count", Label).update(f"{len(self.client.queue)} up next")
+        self.query_one("#queue-count", Label).update(
+            f"{len(self.client.queue)} up next"
+        )
 
     def action_next_track(self) -> None:
         if self.client.queue:
@@ -374,15 +409,16 @@ class MusicTUI(App[None]):
                 self.set_status("End of station")
         else:
             self.set_status("Station unavailable")
-            self.notify(f"Could not refill the queue: {worker.error}", title="Queue", severity="warning")
+            self.notify(
+                f"Could not refill the queue: {worker.error}",
+                title="Queue",
+                severity="warning",
+            )
 
     def _on_mpv_eof(self) -> None:
         if not self.is_running:
             return
-        try:
-            self.call_from_thread(self.post_message, TrackEnded())
-        except Exception:
-            pass
+        self.post_message(TrackEnded())
 
     def on_track_ended(self) -> None:
         self.client.current = None
@@ -429,5 +465,7 @@ class MusicTUI(App[None]):
         player = self.client.player
         now_playing = self.query_one(NowPlaying)
         now_playing.set_progress(player.position, player.duration or 0.0)
-        now_playing.set_paused(player.paused if self.client.current is not None else False)
+        now_playing.set_paused(
+            player.paused if self.client.current is not None else False
+        )
         now_playing.set_volume(player.volume, player.muted)

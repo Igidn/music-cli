@@ -10,9 +10,10 @@ from __future__ import annotations
 import locale
 import os
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from http.cookiejar import MozillaCookieJar
-from typing import Any, Callable
+from typing import Any
 
 import requests
 import yt_dlp
@@ -33,13 +34,13 @@ class PlayerError(Exception):
 
 
 class _QuietLogger:
-    def debug(self, msg: str) -> None:  # noqa: ARG002
+    def debug(self, msg: str) -> None:
         pass
 
-    def warning(self, msg: str) -> None:  # noqa: ARG002
+    def warning(self, msg: str) -> None:
         pass
 
-    def error(self, msg: str) -> None:  # noqa: ARG002
+    def error(self, msg: str) -> None:
         pass
 
 
@@ -82,7 +83,11 @@ class Cookies:
                 f"Unsupported browser {browser!r} for cookie extraction. "
                 f"Supported: {supported}"
             )
-        return cls(cookiesfrombrowser=tuple(x for x in (browser, profile, keyring, container) if x))
+        return cls(
+            cookiesfrombrowser=tuple(
+                x for x in (browser, profile, keyring, container) if x
+            )
+        )
 
     @property
     def enabled(self) -> bool:
@@ -277,8 +282,12 @@ def parse_watch_track(raw: dict[str, Any]) -> PlaylistTrack:
         artists=artists,
         duration=raw.get("length") or "",
         video_type=raw.get("videoType") or "",
-        thumbnail=thumbnail[0]["url"] if isinstance(thumbnail, list) and thumbnail else "",
-        counterpart_video_id=counterpart.get("videoId") if isinstance(counterpart, dict) else "",
+        thumbnail=thumbnail[0]["url"]
+        if isinstance(thumbnail, list) and thumbnail
+        else "",
+        counterpart_video_id=counterpart.get("videoId")
+        if isinstance(counterpart, dict)
+        else "",
     )
 
 
@@ -308,7 +317,7 @@ class MpvPlayer:
         self._ended = threading.Event()
         self._mpv.observe_property("eof-reached", self._on_eof)
 
-    def _on_eof(self, name: str, value: Any) -> None:  # noqa: ARG002
+    def _on_eof(self, name: str, value: Any) -> None:
         if value:
             self._ended.set()
             if self._on_track_end:
