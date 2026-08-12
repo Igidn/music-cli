@@ -220,6 +220,8 @@ class FakeMPV:
         self.audio_codec = "opus"
         self.force_media_title = None
         self.http_header_fields = None
+        self.idle_active = True
+        self.playlist = []
         self._handlers = {}
         self._loaded = None
 
@@ -229,6 +231,8 @@ class FakeMPV:
     def play(self, filename):
         self._loaded = filename
         self.playback_time = 0.1
+        self.playlist = [{"filename": filename}]
+        self.idle_active = False
 
     def stop(self):
         pass
@@ -292,6 +296,16 @@ class TestMpvPlayer:
         assert player.duration == 100.0
         assert player.media_title == "title"
         assert player.audio_codec == "opus"
+
+    def test_playing_state(self):
+        player = MpvPlayer(mpv_factory=FakeMPV)
+        assert not player.playing
+        player.play(
+            StreamInfo(video_id="v", title="T", stream_url="https://u")
+        )
+        assert player.playing
+        player._mpv.idle_active = True
+        assert not player.playing
 
     def test_eof_event_and_wait(self):
         event = threading.Event()

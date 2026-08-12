@@ -1,0 +1,270 @@
+$bg: #0d1117;
+$surface: #141a24;
+$surface-2: #1c2432;
+$border: #2a3242;
+$border-soft: #232b3a;
+$text: #e2e8f0;
+$text-dim: #8a93a6;
+$accent: #a78bfa;
+$accent-soft: #c4b5fd;
+$cyan: #67e8f9;
+$amber: #fbbf24;
+$danger: #f87171;
+
+$scrollbar-background: #141a24;
+$scrollbar-background-hover: #1c2432;
+$scrollbar-background-active: #1c2432;
+$scrollbar: #3a4358;
+$scrollbar-active: #a78bfa;
+$scrollbar-hover: #5b6580;
+$scrollbar-corner-color: #0d1117;
+
+Screen {
+    background: $bg;
+    color: $text;
+}
+
+/* ---------------------------------------------------------------- top bar */
+
+TopBar {
+    height: 3;
+    layout: horizontal;
+    align-vertical: middle;
+    background: $surface;
+    padding: 0 2;
+}
+
+#brand {
+    width: auto;
+    content-align: left middle;
+    color: $accent-soft;
+    text-style: bold;
+}
+
+#tagline {
+    width: 1fr;
+    content-align: left middle;
+    color: $text-dim;
+}
+
+#queue-count {
+    width: auto;
+    content-align: right middle;
+    color: $text-dim;
+}
+
+/* ------------------------------------------------------------------ body */
+
+#body {
+    height: 1fr;
+}
+
+#results-pane {
+    width: 3fr;
+}
+
+#queue-pane {
+    width: 2fr;
+}
+
+/* ------------------------------------------------------------- search box */
+
+#search-box {
+    height: 3;
+    margin: 1 2 0 2;
+    border: round $border;
+    padding: 0 1;
+    background: $surface;
+}
+
+#search-box:focus-within {
+    border: round $accent;
+}
+
+#search-input {
+    width: 1fr;
+    background: transparent;
+    border: none;
+    color: $text;
+}
+
+#search-input .input--placeholder {
+    color: $text-dim;
+}
+
+#search-input:focus {
+    background: transparent;
+    border: none;
+}
+
+#filter-select {
+    width: 18;
+    margin-left: 1;
+    background: $surface-2;
+}
+
+/* --------------------------------------------------------------- results */
+
+ResultsTable {
+    height: 1fr;
+    margin: 1 2;
+    border-top: solid $border-soft;
+    background: $bg;
+}
+
+ResultsTable > .datatable--header {
+    background: $surface-2;
+    color: $text-dim;
+    text-style: bold;
+}
+
+ResultsTable > .datatable--odd-row {
+    background: $surface;
+}
+
+ResultsTable > .datatable--cursor {
+    background: $accent;
+    color: #0d1117;
+    text-style: bold;
+}
+
+ResultsTable > .datatable--even-row {
+    background: $bg;
+}
+
+/* ----------------------------------------------------------------- queue */
+
+QueueList {
+    border-top: solid $border-soft;
+    border-left: solid $border-soft;
+    border-title-color: $accent;
+    border-title-style: bold;
+    margin: 0 0 0 1;
+    background: $surface;
+}
+
+QueueList > ListItem {
+    height: 2;
+    padding: 0 1;
+    overflow: hidden hidden;
+}
+
+QueueList > ListItem.-highlight {
+    background: $surface-2;
+}
+
+QueueList > ListItem.-highlight .queue-title {
+    color: $accent-soft;
+}
+
+.queue-title {
+    height: 1;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+    text-style: bold;
+}
+
+.queue-subtitle {
+    height: 1;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+    color: $text-dim;
+}
+
+.queue-empty {
+    color: $text-dim;
+    text-style: italic;
+}
+
+/* ----------------------------------------------------------- now playing */
+
+NowPlaying {
+    height: 7;
+    background: $surface;
+    border-top: solid $border-soft;
+    padding: 0 2;
+}
+
+#np-head {
+    height: 3;
+    layout: horizontal;
+    align-vertical: middle;
+}
+
+#np-icon {
+    width: 4;
+    content-align: center middle;
+    text-style: bold;
+    color: $text-dim;
+}
+
+#now-playing.has-track #np-icon {
+    color: $accent-soft;
+}
+
+#now-playing.paused #np-icon {
+    color: $amber;
+}
+
+#np-meta {
+    width: 1fr;
+}
+
+#np-title {
+    height: 1;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+    text-style: bold;
+}
+
+#np-subtitle {
+    height: 1;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+    color: $text-dim;
+}
+
+#np-time {
+    width: auto;
+    content-align: right middle;
+    color: $text-dim;
+}
+
+#np-progress {
+    height: 1;
+    width: 1fr;
+    margin: 0 0 1 0;
+}
+
+#np-progress > Bar {
+    width: 1fr;
+}
+
+#np-foot {
+    height: 1;
+    layout: horizontal;
+}
+
+#np-status {
+    width: 1fr;
+    color: $text-dim;
+}
+
+#np-volume {
+    width: auto;
+    color: $text-dim;
+}
+
+/* ---------------------------------------------------------------- footer */
+
+Footer {
+    background: $surface-2;
+}
+
+FooterKey {
+    color: $accent-soft;
+}
+
+FooterLabel {
+    color: $text-dim;
+}

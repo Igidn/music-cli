@@ -109,3 +109,41 @@ class TestMpvPlayback:
                 player.close()
             candidate = extractor.resolve(stream.video_id)  # throttle: try a fresh URL
         raise AssertionError("mpv failed to decode audio after 3 attempts")
+
+
+class TestTuiIntegration:
+    """The TUI wired to the real client: search, play and queue end to end."""
+
+    def test_tui_searches_plays_and_queues(self, cookies):
+        import asyncio
+
+        from music_cli.client import MusicClient
+        from music_cli.tui.app import MusicTUI, QueueList, ResultsTable
+        from music_cli.tui.now_playing import NowPlaying
+
+        async def scenario():
+            audio_output = os.environ.get("MUSIC_CLI_E2E_AO", "null")
+            client = MusicClient(cookies=cookies, audio_output=audio_output)
+            app = MusicTUI(client)
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                app.query_one("#search-input").value = "never gonna give you up"
+                await pilot.pause(3.0)
+                results = app.query_one(ResultsTable)
+                assert results.row_count > 0
+                result = results._results.get(KNOWN_VIDEO)
+                assert result is not None, "known video missing from results"
+                app.play_result(result)
+                deadline = time.monotonic() + 180
+                while time.monotonic() < deadline and client.player.position < 1.0:
+                    await pilot.pause(1.0)
+                assert client.player.position >= 1.0, "TUI playback did not start"
+                assert client.player.audio_codec
+                now_playing = app.query_one(NowPlaying)
+                assert str(now_playing.query_one("#np-title").content) == client.current.title
+                await pilot.pause(8.0)
+                assert len(client.queue) > 0, "autoplay queue was not loaded"
+                assert len(app.query_one(QueueList).children) > 0
+                client.player.close()
+
+        asyncio.run(scenario())

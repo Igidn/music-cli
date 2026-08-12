@@ -382,6 +382,11 @@ class MpvPlayer:
     def eof_reached(self) -> bool:
         return self._ended.is_set()
 
+    @property
+    def playing(self) -> bool:
+        """Whether a file is loaded and mpv is not sitting idle."""
+        return not bool(self._mpv.idle_active) and bool(self._mpv.playlist)
+
     def wait_for_end(self, timeout: float | None = None) -> bool:
         return self._ended.wait(timeout)
 
