@@ -6,16 +6,20 @@ and ytmusicapi (watch playlist) respectively, both optionally authenticated
 with YouTube account cookies.
 
 googlevideo rejects plain HTTP fetches of these stream URLs (they require
-decoded signing parameters and byte-range requests), so each track is
-downloaded to a temporary file with yt-dlp before AVFoundation plays it.
+decoded signing parameters and byte-range requests), so yt-dlp streams each
+track into a growing temporary file and AVFoundation starts playing as soon
+as the container header and a few fragments have landed — no waiting for the
+full download.
 """
 
 from __future__ import annotations
 
+import glob
 import math
 import os
 import tempfile
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from http.cookiejar import MozillaCookieJar
@@ -235,7 +239,8 @@ class StreamExtractor:
 
         Re-extracts so the signing parameters (``n``, ``pot``) are freshly
         decoded: googlevideo frequently rejects direct fetches of previously
-        extracted URLs with HTTP 403.
+        extracted URLs with HTTP 403. Writes progressively to the final path
+        (``nopart``) so callers can start playback before it completes.
         """
         if not video_id:
             raise PlayerError("A video id is required to download a stream")
@@ -243,6 +248,7 @@ class StreamExtractor:
         opts: dict[str, Any] = {
             **self._options(),
             "skip_download": False,
+            "nopart": True,
             "outtmpl": outtmpl + ".%(ext)s",
         }
         with self._ydl_factory(opts) as ydl:
@@ -355,15 +361,41 @@ def _default_player() -> AVPlayer:
     return AVPlayer.alloc().init()
 
 
-def _default_fetch_stream(cookies: Cookies | None) -> Callable[[StreamInfo], str]:
-    """Build the default stream fetcher: download via yt-dlp to a temp file."""
+# Enough of the fMP4 container to start playback: moov + a few fragments
+# (roughly 30 seconds of audio at YouTube's ~128 kbps), so the track begins
+# almost immediately while the rest of the file keeps streaming in.
+STREAM_START_THRESHOLD = 512 * 1024
+STREAM_START_TIMEOUT = 25.0
+
+
+@dataclass
+class StreamFile:
+    """A locally streamed audio file that may still be downloading.
+
+    ``done`` is set when the background download finishes, successfully or
+    not; ``error`` carries the failure when the stream died mid-way.
+    """
+
+    path: str
+    done: threading.Event
+    error: PlayerError | None = None
+
+
+def _stream_fetch_stream(cookies: Cookies | None) -> Callable[[StreamInfo], StreamFile]:
+    """Build the default stream fetcher: stream via yt-dlp to a growing file.
+
+    yt-dlp writes the audio into a temp file in the background; this returns
+    a :class:`StreamFile` as soon as enough of the container has landed for
+    AVFoundation to start playing, and the download finishes while the track
+    plays.
+    """
     extractor = StreamExtractor(cookies)
 
-    def fetch(stream: StreamInfo) -> str:
+    def fetch(stream: StreamInfo) -> StreamFile:
         file = tempfile.NamedTemporaryFile(prefix="music-cli-", delete=False)
         file.close()
         try:
-            return extractor.download(stream.video_id, file.name)
+            return _stream_to_file(extractor, stream, file.name)
         except PlayerError:
             try:
                 os.unlink(file.name)
@@ -372,6 +404,45 @@ def _default_fetch_stream(cookies: Cookies | None) -> Callable[[StreamInfo], str
             raise
 
     return fetch
+
+
+def _stream_to_file(
+    extractor: StreamExtractor, stream: StreamInfo, outtmpl: str
+) -> StreamFile:
+    """Run a yt-dlp download in the background, returning the file once it is
+    playable (or when the download finishes first)."""
+    result = StreamFile(path="", done=threading.Event())
+
+    def download() -> None:
+        try:
+            result.path = extractor.download(stream.video_id, outtmpl)
+        except BaseException as error:  # noqa: BLE001 - delivered via StreamFile
+            result.error = (
+                error
+                if isinstance(error, PlayerError)
+                else PlayerError(f"Stream failed for {stream.video_id}: {error}")
+            )
+        finally:
+            result.done.set()
+
+    thread = threading.Thread(target=download, name="music-cli-download", daemon=True)
+    thread.start()
+    deadline = time.monotonic() + STREAM_START_TIMEOUT
+    while time.monotonic() < deadline:
+        candidates = glob.glob(outtmpl + ".*")
+        for candidate in candidates:
+            if os.path.getsize(candidate) >= STREAM_START_THRESHOLD:
+                result.path = candidate
+                return result
+        if not thread.is_alive():
+            if candidates:
+                result.path = candidates[0]  # small file, download already done
+                return result
+            raise result.error or PlayerError(
+                f"Stream failed for {stream.video_id}"
+            )
+        time.sleep(0.05)
+    raise PlayerError(f"Timed out waiting for stream to start for {stream.video_id}")
 
 
 class AVFoundationPlayer:
@@ -393,7 +464,7 @@ class AVFoundationPlayer:
         on_track_end: Callable[[], None] | None = None,
         cookies: Cookies | None = None,
         player_factory: Callable[[], AVPlayer] = _default_player,
-        fetch_stream: Callable[[StreamInfo], str] | None = None,
+        fetch_stream: Callable[[StreamInfo], StreamFile | str] | None = None,
     ) -> None:
         self._on_track_end = on_track_end
         self._ended = threading.Event()
@@ -401,7 +472,10 @@ class AVFoundationPlayer:
         self._observer_token: Any = None
         self._current_item: AVPlayerItem | None = None
         self._local_url: str | None = None
-        self._fetch_stream = fetch_stream or _default_fetch_stream(cookies)
+        self._stream_file: StreamFile | None = None
+        self._track_duration: float | None = None
+        self._watch_generation = 0
+        self._fetch_stream = fetch_stream or _stream_fetch_stream(cookies)
         self._player = player_factory()
         self._player.setVolume_(max(0, min(100, volume)) / 100.0)
         self._player.setMuted_(False)
@@ -424,16 +498,24 @@ class AVFoundationPlayer:
         retry loop detects that and tries a fresh URL.
         """
         self._ended.clear()
+        self._watch_generation += 1
         self._unobserve()
         self._remove_local_file()
         try:
-            path = self._fetch_stream(stream)
+            fetched = self._fetch_stream(stream)
         except PlayerError:
             self._title = ""
             self._current_item = None
             self._player.replaceCurrentItemWithPlayerItem_(None)
             return
         self._title = stream.title
+        self._track_duration = stream.duration
+        if isinstance(fetched, StreamFile):
+            self._stream_file = fetched
+            path = fetched.path
+        else:
+            self._stream_file = None
+            path = fetched
         if path.startswith("file://"):
             url = path
         else:
@@ -453,6 +535,14 @@ class AVFoundationPlayer:
         self._current_item = item
         self._player.replaceCurrentItemWithPlayerItem_(item)
         self._player.play()
+        if self._stream_file is not None:
+            generation = self._watch_generation
+            threading.Thread(
+                target=self._watch_stream,
+                args=(self._stream_file, generation),
+                name="music-cli-watchdog",
+                daemon=True,
+            ).start()
 
     def stop(self) -> None:
         self._unobserve()
@@ -483,9 +573,50 @@ class AVFoundationPlayer:
         self.seek(self.position + delta)
 
     def _on_item_ended(self, notification: Any) -> None:
+        if self._ended.is_set():
+            return
         self._ended.set()
         if self._on_track_end:
             self._on_track_end()
+
+    def _watch_stream(self, stream_file: StreamFile, generation: int) -> None:
+        """Detect the real end of a streamed track.
+
+        AVPlayer's item duration for YouTube's fragmented MP4s overstates the
+        real length (twice, in fact): the demuxer plays the audio that exists
+        and then keeps its media clock running silently, never firing the
+        end-of-track notification. This thread watches the position against
+        the known track duration (from yt-dlp) and ends the track there. A
+        stream that dies mid-download ends the track too, so the queue moves
+        on instead of playing silence.
+        """
+        while generation == self._watch_generation:
+            if self._ended.is_set():
+                return
+            if self._reached_real_end():
+                self._player.pause()
+                self._on_item_ended(None)
+                return
+            if stream_file.done.is_set():
+                break
+            time.sleep(0.2)
+        if generation != self._watch_generation or self._ended.is_set():
+            return
+        if stream_file.error is not None:
+            if self.position > 1.0:  # playback had started — end the track
+                self.stop()
+                self._on_item_ended(None)
+            return
+        while generation == self._watch_generation and not self._ended.is_set():
+            if self._reached_real_end():
+                self._player.pause()
+                self._on_item_ended(None)
+                return
+            time.sleep(0.2)
+
+    def _reached_real_end(self) -> bool:
+        duration = self.duration
+        return duration is not None and self.position >= duration - 0.25
 
     def _unobserve(self) -> None:
         if self._observer_token is not None:
@@ -526,9 +657,21 @@ class AVFoundationPlayer:
 
     @property
     def duration(self) -> float | None:
-        if self._current_item is None:
-            return None
-        return _cmtime_seconds(self._current_item.duration())
+        """Track duration, clamped to the real length known from yt-dlp.
+
+        AVPlayerItem reports the container duration, which YouTube's
+        fragmented MP4s overstate (twice); the audio data ends at the real
+        duration, so that is the value the UI and end-of-track detection
+        should use.
+        """
+        values = []
+        if self._current_item is not None:
+            item_duration = _cmtime_seconds(self._current_item.duration())
+            if item_duration is not None:
+                values.append(item_duration)
+        if self._track_duration:
+            values.append(self._track_duration)
+        return min(values) if values else None
 
     @property
     def media_title(self) -> str:
@@ -549,4 +692,5 @@ class AVFoundationPlayer:
         return self._ended.wait(timeout)
 
     def close(self) -> None:
+        self._watch_generation += 1
         self.stop()
