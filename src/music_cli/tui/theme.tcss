@@ -115,6 +115,10 @@ ResultsTable {
     background: $bg;
 }
 
+ResultsTable:focus {
+    border-top: solid $accent;
+}
+
 ResultsTable > .datatable--header {
     background: $surface-2;
     color: $text-dim;
@@ -144,6 +148,11 @@ QueueList {
     background: $surface;
 }
 
+QueueList:focus {
+    border-top: solid $accent;
+    border-left: solid $accent;
+}
+
 QueueList > ListItem {
     height: 2;
     padding: 0 1;
@@ -151,11 +160,15 @@ QueueList > ListItem {
 }
 
 QueueList > ListItem.-highlight {
-    background: $surface-2;
+    background: $accent;
 }
 
 QueueList > ListItem.-highlight .queue-title {
-    color: $accent-soft;
+    color: #0d1117;
+}
+
+QueueList > ListItem.-highlight .queue-subtitle {
+    color: #1c2432;
 }
 
 .queue-title {

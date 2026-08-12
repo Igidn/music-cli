@@ -65,12 +65,30 @@ class TopBar(Widget):
         yield Label("", id="queue-count")
 
 
-class ResultsTable(DataTable):
+class ResultsTable(DataTable, inherit_bindings=False):
     """Search results table with per-row search-result lookup."""
+
+    BINDINGS: ClassVar = [
+        Binding("enter", "select_cursor", "Select", show=False),
+        Binding("up", "cursor_up", "Cursor up", show=False),
+        Binding("down", "cursor_down", "Cursor down", show=False),
+        Binding("pageup", "page_up", "Page up", show=False),
+        Binding("pagedown", "page_down", "Page down", show=False),
+        Binding("home", "scroll_home", "Home", show=False),
+        Binding("end", "scroll_end", "End", show=False),
+        Binding("ctrl+home", "scroll_top", "Top", show=False),
+        Binding("ctrl+end", "scroll_bottom", "Bottom", show=False),
+    ]
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self._results: dict[str, SearchResult] = {}
+
+    def action_cursor_up(self) -> None:
+        if not self.row_count or self.cursor_coordinate.row == 0:
+            self.app.query_one("#search-input", Input).focus()
+        else:
+            super().action_cursor_up()
 
     def on_mount(self) -> None:
         self.add_column("", key="type", width=10)
@@ -123,6 +141,12 @@ class QueueList(ListView):
     def on_mount(self) -> None:
         self.border_title = " UP NEXT "
 
+    def action_cursor_up(self) -> None:
+        if self.index in (None, 0):
+            self.app.query_one("#filter-select", Select).focus()
+        else:
+            super().action_cursor_up()
+
     def set_tracks(self, tracks: list[PlaylistTrack]) -> None:
         self._tracks = list(tracks)
         self.clear()
@@ -166,11 +190,30 @@ class QueueList(ListView):
         )
 
 
+class FilterSelect(Select, inherit_bindings=False):
+    """Search filter dropdown; enter/space opens it, arrows navigate panes."""
+
+    BINDINGS: ClassVar = [
+        Binding("enter,space", "show_overlay", "Show menu", show=False)
+    ]
+
+
 class MusicTUI(App[None]):
     """The music-cli terminal user interface."""
 
     CSS_PATH = "theme.tcss"
     TITLE = "music-cli"
+
+    PANE_NAV: ClassVar[dict[str, dict[str, str]]] = {
+        "search-input": {"down": "results"},
+        "filter-select": {
+            "down": "results",
+            "left": "search-input",
+            "right": "queue-pane",
+        },
+        "results": {"right": "queue-pane"},
+        "queue-pane": {"left": "results"},
+    }
 
     BINDINGS: ClassVar[list[Binding]] = [
         Binding("slash", "focus_search", "Search"),
@@ -184,6 +227,10 @@ class MusicTUI(App[None]):
         Binding("m", "toggle_mute", "Mute"),
         Binding("q", "quit", "Quit", show=False),
         Binding("escape", "focus_results", show=False),
+        Binding("left", "pane_left", "Prev pane"),
+        Binding("right", "pane_right", "Next pane"),
+        Binding("up", "pane_up", "Pane up", show=False),
+        Binding("down", "pane_down", "Pane down", show=False),
     ]
 
     def __init__(self, client: MusicClient | None = None) -> None:
@@ -222,7 +269,7 @@ class MusicTUI(App[None]):
                         placeholder="Search songs, artists, albums…",
                         id="search-input",
                     )
-                    yield Select(
+                    yield FilterSelect(
                         [
                             (label, index)
                             for index, (label, _) in enumerate(SEARCH_FILTERS)
@@ -553,6 +600,26 @@ class MusicTUI(App[None]):
 
     def action_focus_results(self) -> None:
         self.query_one(ResultsTable).focus()
+
+    def action_pane_left(self) -> None:
+        self._move_pane("left")
+
+    def action_pane_right(self) -> None:
+        self._move_pane("right")
+
+    def action_pane_up(self) -> None:
+        self._move_pane("up")
+
+    def action_pane_down(self) -> None:
+        self._move_pane("down")
+
+    def _move_pane(self, direction: str) -> None:
+        focused = self.focused
+        if focused is None:
+            return
+        target = self.PANE_NAV.get(focused.id, {}).get(direction)
+        if target is not None:
+            self.query_one(f"#{target}").focus()
 
     def set_status(self, text: str) -> None:
         self.query_one(NowPlaying).set_status(text)

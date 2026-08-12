@@ -143,6 +143,75 @@ def _run(coro):
     return asyncio.run(coro)
 
 
+def test_arrow_key_pane_navigation():
+    from music_cli.tui.app import MusicTUI, QueueList, ResultsTable
+
+    async def scenario():
+        client = make_client()
+        app = MusicTUI(client)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            search = app.query_one("#search-input")
+            results = app.query_one(ResultsTable)
+            queue = app.query_one(QueueList)
+            filter_select = app.query_one("#filter-select")
+            assert app.focused is search
+
+            await pilot.press("down")
+            assert app.focused is results
+
+            await pilot.press("right")
+            assert app.focused is queue
+
+            await pilot.press("left")
+            assert app.focused is results
+
+            await pilot.press("up")
+            assert app.focused is search
+
+            search.value = "hello"
+            await pilot.press("left")
+            assert app.focused is search
+            assert search.cursor_position == 4
+            await pilot.press("right")
+            assert app.focused is search
+            assert search.cursor_position == 5
+
+            await pilot.press("down")
+            assert app.focused is results
+            await pilot.press("right")
+            assert app.focused is queue
+            await pilot.press("up")
+            assert app.focused is filter_select
+            await pilot.press("left")
+            assert app.focused is search
+            await pilot.press("down")
+            assert app.focused is results
+
+            search.value = "coldplay"
+            await pilot.pause(0.6)
+            assert results.row_count == 3
+            results.focus()
+            await pilot.press("down")
+            assert results.cursor_coordinate.row == 1
+            await pilot.press("up")
+            assert results.cursor_coordinate.row == 0
+            await pilot.press("up")
+            assert app.focused is search
+
+            queue.set_tracks([PlaylistTrack(video_id="t1", title="One", artists=["A"])])
+            queue.focus()
+            assert queue.index == 0
+            await pilot.press("up")
+            assert app.focused is filter_select
+            await pilot.press("right")
+            assert app.focused is queue
+            await pilot.press("left")
+            assert app.focused is results
+
+    _run(scenario())
+
+
 def test_tui_search_play_queue_and_next():
     from music_cli.tui.app import MusicTUI, QueueList, ResultsTable
     from music_cli.tui.now_playing import NowPlaying
