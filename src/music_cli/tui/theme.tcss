@@ -33,7 +33,7 @@ TopBar {
 }
 
 #brand {
-    width: auto;
+    width: 1fr;
     content-align: left middle;
     color: $accent-soft;
     text-style: bold;
