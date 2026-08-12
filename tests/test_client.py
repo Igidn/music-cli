@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+
 import pytest
 
 from music_cli.client import MusicClient
@@ -84,6 +86,8 @@ def client():
     c.current = None
     c._cookies = None
     c._extractor_factory = StreamExtractor
+    c._in_flight = set()
+    c._play_lock = threading.Lock()
     return c
 
 
@@ -144,3 +148,47 @@ class TestMusicClient:
         with pytest.raises(PlayerError):
             client.next()
         assert [t.video_id for t in client.queue] == ["t1"]
+
+    def test_play_result_ignores_duplicate_already_playing(self, client):
+        first = client.play_result(make_result())
+        second = client.play_result(make_result())
+        assert second is first
+        assert client.extractor.resolved == ["abc"]
+        assert len(client.player.played) == 1
+
+    def test_play_result_dedupes_concurrent_requests(self, client):
+        started = threading.Event()
+        release = threading.Event()
+
+        class SlowExtractor(FakeExtractor):
+            def resolve(self, video_id):
+                started.set()
+                release.wait(timeout=5)
+                return super().resolve(video_id)
+
+        client.extractor = SlowExtractor()
+        errors = []
+
+        def play():
+            try:
+                client.play_result(make_result())
+            except PlayerError as error:
+                errors.append(error)
+
+        thread = threading.Thread(target=play)
+        thread.start()
+        assert started.wait(5)
+        try:
+            assert client.play_result(make_result()) is None
+        finally:
+            release.set()
+        thread.join(10)
+        assert not errors
+        assert client.extractor.resolved == ["abc"]
+        assert client.current.video_id == "abc"
+
+    def test_play_result_allows_different_video_after_previous(self, client):
+        client.play_result(make_result("abc"))
+        client.play_result(make_result("xyz"))
+        assert client.extractor.resolved == ["abc", "xyz"]
+        assert len(client.player.played) == 2

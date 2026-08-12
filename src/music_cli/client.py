@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from collections.abc import Callable
 
@@ -51,6 +52,8 @@ class MusicClient:
         )
         self.queue: list[PlaylistTrack] = []
         self.current: StreamInfo | None = None
+        self._in_flight: set[str] = set()
+        self._play_lock = threading.Lock()
 
     def search(
         self,
@@ -77,7 +80,23 @@ class MusicClient:
         YouTube stream URLs occasionally reject playback (HTTP 403) even when
         freshly resolved; a fresh extraction, or a different player client,
         typically succeeds.
+
+        Duplicate requests for the same video (for example a double click on
+        the same row) are ignored: the same stream is never resolved twice at
+        once, which would hammer YouTube and risk throttling playback.
         """
+        if self.current is not None and self.current.video_id == video_id:
+            return
+        with self._play_lock:
+            if video_id in self._in_flight:
+                return
+            self._in_flight.add(video_id)
+        try:
+            self._play_attempts(video_id)
+        finally:
+            self._in_flight.discard(video_id)
+
+    def _play_attempts(self, video_id: str) -> None:
         last_error: PlayerError | None = None
         for client_name in (None, *FALLBACK_PLAYER_CLIENTS):
             attempts = PRIMARY_PLAY_ATTEMPTS if client_name is None else 1

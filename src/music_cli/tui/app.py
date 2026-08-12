@@ -114,10 +114,15 @@ class ResultsTable(DataTable):
 class QueueList(ListView):
     """Up-next queue; each item is one row of the queue."""
 
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._tracks: list[PlaylistTrack] = []
+
     def on_mount(self) -> None:
         self.border_title = " UP NEXT "
 
     def set_tracks(self, tracks: list[PlaylistTrack]) -> None:
+        self._tracks = list(tracks)
         self.clear()
         if not tracks:
             self.index = None
@@ -133,6 +138,18 @@ class QueueList(ListView):
         for track in tracks:
             self.append(self._item(track))
         self.index = 0
+
+    def track_at(self, index: int | None) -> PlaylistTrack | None:
+        """The track the user sees at ``index``, independent of queue mutations.
+
+        The queue is popped as soon as a track is picked, so the list widget
+        (rebuilt only on refresh) is the source of truth for what the user
+        actually clicked; this is what makes rapid double clicks collapse into
+        one request instead of picking whatever slid into the row.
+        """
+        if index is None or not 0 <= index < len(self._tracks):
+            return None
+        return self._tracks[index]
 
     @staticmethod
     def _item(track: PlaylistTrack) -> ListItem:
@@ -172,6 +189,10 @@ class MusicTUI(App[None]):
         self._search_timer: Timer | None = None
         self._search_worker: Worker[list[SearchResult]] | None = None
         self._queue_worker: Worker[list[PlaylistTrack]] | None = None
+        self._play_worker: Worker[StreamInfo] | None = None
+        self._play_worker_video_id: str = ""
+        self._play_queued_worker: Worker[StreamInfo] | None = None
+        self._play_queued_worker_video_id: str = ""
         self._last_video_id: str = ""
         self._pending_track: PlaylistTrack | None = None
         self._pending_index: int = 0
@@ -290,7 +311,30 @@ class MusicTUI(App[None]):
         if result is not None:
             self.play_result(result)
 
+    def _play_pending(self, video_id: str) -> bool:
+        """Whether an identical playback request is already underway.
+
+        Covers both a duplicate still being resolved and the same song already
+        on, so a double click on a row never spawns a second stream
+        resolution for the same video (which would risk YouTube throttling).
+        """
+        if self.client.current is not None and self.client.current.video_id == video_id:
+            return True
+        for worker, worker_video_id in (
+            (self._play_worker, self._play_worker_video_id),
+            (self._play_queued_worker, self._play_queued_worker_video_id),
+        ):
+            if (
+                worker is not None
+                and worker.state in (WorkerState.PENDING, WorkerState.RUNNING)
+                and worker_video_id == video_id
+            ):
+                return True
+        return False
+
     def play_result(self, result: SearchResult) -> None:
+        if self._play_pending(result.video_id):
+            return
         self._last_video_id = result.video_id
         self._cancel_queue_fetch()
         self.query_one(NowPlaying).set_track(
@@ -298,7 +342,8 @@ class MusicTUI(App[None]):
             result.subtitle,
         )
         self.set_status("Resolving stream…")
-        self.play_worker(result)
+        self._play_worker_video_id = result.video_id
+        self._play_worker = self.play_worker(result)
 
     @work(thread=True, exit_on_error=False)
     def play_worker(self, result: SearchResult) -> StreamInfo:
@@ -345,20 +390,30 @@ class MusicTUI(App[None]):
 
     @on(QueueList.Selected)
     def _on_queue_selected(self, event: QueueList.Selected) -> None:
-        index = event.index
-        queue = self.client.queue
-        if not queue or index >= len(queue):
-            return
-        self._play_queued(index)
+        self._play_queued_track(self.query_one(QueueList).track_at(event.index))
 
-    def _play_queued(self, index: int) -> None:
-        track = self.client.queue.pop(index)
+    def _play_queued_track(self, track: PlaylistTrack | None) -> None:
+        """Play ``track`` from the queue, ignoring duplicates of the current request.
+
+        The track is looked up by video id rather than by the event index so a
+        double click on one row cannot pop a *different* track that shifted
+        into the same index after the first pop.
+        """
+        if track is None or self._play_pending(track.video_id):
+            return
+        for index, queued in enumerate(self.client.queue):
+            if queued.video_id == track.video_id:
+                del self.client.queue[index]
+                break
+        else:
+            return
         self._last_video_id = track.video_id
         self._pending_track = track
         self._pending_index = index
         self.query_one(NowPlaying).set_track(track.title, " • ".join(track.artists))
         self.set_status("Resolving stream…")
-        self.play_queued_worker(track)
+        self._play_queued_worker_video_id = track.video_id
+        self._play_queued_worker = self.play_queued_worker(track)
 
     @work(thread=True, exit_on_error=False)
     def play_queued_worker(self, track: PlaylistTrack) -> StreamInfo:
@@ -390,7 +445,7 @@ class MusicTUI(App[None]):
 
     def action_next_track(self) -> None:
         if self.client.queue:
-            self._play_queued(0)
+            self._play_queued_track(self.client.queue[0])
         elif self._last_video_id:
             self.set_status("Refilling station…")
             self.refill_worker(self._last_video_id)
@@ -402,7 +457,7 @@ class MusicTUI(App[None]):
     def _on_refill_finished(self, worker: Worker[None]) -> None:
         if worker.state is WorkerState.SUCCESS:
             if self.client.queue:
-                self._play_queued(0)
+                self._play_queued_track(self.client.queue[0])
             else:
                 self._refresh_queue()
                 self.set_status("End of station")
