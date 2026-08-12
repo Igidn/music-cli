@@ -24,8 +24,6 @@ Screen {
     color: $text;
 }
 
-/* ---------------------------------------------------------------- top bar */
-
 TopBar {
     height: 3;
     layout: horizontal;
@@ -53,8 +51,6 @@ TopBar {
     color: $text-dim;
 }
 
-/* ------------------------------------------------------------------ body */
-
 #body {
     height: 1fr;
 }
@@ -66,8 +62,6 @@ TopBar {
 #queue-pane {
     width: 2fr;
 }
-
-/* ------------------------------------------------------------- search box */
 
 #search-box {
     height: 3;
@@ -103,8 +97,6 @@ TopBar {
     background: $surface-2;
 }
 
-/* --------------------------------------------------------------- results */
-
 ResultsTable {
     height: 1fr;
     margin: 1 2;
@@ -131,8 +123,6 @@ ResultsTable > .datatable--cursor {
 ResultsTable > .datatable--even-row {
     background: $bg;
 }
-
-/* ----------------------------------------------------------------- queue */
 
 QueueList {
     border-top: solid $border-soft;
@@ -175,8 +165,6 @@ QueueList > ListItem.-highlight .queue-title {
     color: $text-dim;
     text-style: italic;
 }
-
-/* ----------------------------------------------------------- now playing */
 
 NowPlaying {
     height: 7;
@@ -254,8 +242,6 @@ NowPlaying {
     width: auto;
     color: $text-dim;
 }
-
-/* ---------------------------------------------------------------- footer */
 
 Footer {
     background: $surface-2;

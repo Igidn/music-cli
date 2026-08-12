@@ -194,8 +194,6 @@ class MusicTUI(App[None]):
         yield NowPlaying(id="now-playing")
         yield Footer()
 
-    # ------------------------------------------------------------------ search
-
     @on(Input.Changed, "#search-input")
     def _on_query_changed(self, event: Input.Changed) -> None:
         if self._search_timer is not None:
@@ -262,8 +260,6 @@ class MusicTUI(App[None]):
         else:
             self.set_status("Search failed")
             self.notify(f"Search failed: {worker.error}", title="Search", severity="error")
-
-    # ------------------------------------------------------------------- play
 
     @on(ResultsTable.RowSelected)
     def _on_result_selected(self, event: ResultsTable.RowSelected) -> None:
@@ -380,8 +376,6 @@ class MusicTUI(App[None]):
             self.set_status("Station unavailable")
             self.notify(f"Could not refill the queue: {worker.error}", title="Queue", severity="warning")
 
-    # ------------------------------------------------------------ track end
-
     def _on_mpv_eof(self) -> None:
         if not self.is_running:
             return
@@ -393,8 +387,6 @@ class MusicTUI(App[None]):
     def on_track_ended(self) -> None:
         self.client.current = None
         self.action_next_track()
-
-    # ----------------------------------------------------------- transport
 
     def action_toggle_playback(self) -> None:
         if self.client.current is not None:
@@ -429,8 +421,6 @@ class MusicTUI(App[None]):
 
     def action_focus_results(self) -> None:
         self.query_one(ResultsTable).focus()
-
-    # -------------------------------------------------------------- updates
 
     def set_status(self, text: str) -> None:
         self.query_one(NowPlaying).set_status(text)
