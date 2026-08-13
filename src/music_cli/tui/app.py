@@ -32,7 +32,15 @@ from music_cli.login import LoginResult
 from music_cli.player import Cookies, PlaylistTrack, StreamInfo
 from music_cli.playlists import LibraryPlaylist
 from music_cli.search import SearchFilter, SearchResult
-from music_cli.state import LastTrack, LastTrackStore
+from music_cli.state import (
+    SETTING_AUTO_NEXT,
+    SETTING_LOOP,
+    SETTING_MUTED,
+    SETTING_VOLUME,
+    PlayedTrack,
+    PlayHistoryStore,
+    SettingsStore,
+)
 
 from .now_playing import NowPlaying
 from .onboarding import LoginFunction, LoginModal
@@ -400,12 +408,14 @@ class MusicTUI(App[None]):
         self,
         client: MusicClient | None = None,
         login_fn: LoginFunction | None = None,
-        last_track_store: LastTrackStore | None = None,
+        history_store: PlayHistoryStore | None = None,
+        settings_store: SettingsStore | None = None,
     ) -> None:
         super().__init__()
         self.client = client or MusicClient()
         self._login_fn = login_fn
-        self._last_track_store = last_track_store or LastTrackStore()
+        self._history_store = history_store or PlayHistoryStore()
+        self._settings_store = settings_store or SettingsStore()
         self.client.on_track_end = self._on_player_eof
         self._search_timer: Timer | None = None
         self._search_worker: Worker[list[SearchResult]] | None = None
@@ -437,11 +447,21 @@ class MusicTUI(App[None]):
                 "(s: sign in with browser, run 'music-cli login', "
                 "or pass --cookies)"
             )
+        self._apply_saved_settings()
         self._resume_last_track()
 
+    def _apply_saved_settings(self) -> None:
+        """Restore persisted player preferences; saved settings always win."""
+        player = self.client.player
+        player.volume = self._settings_store.get_int(SETTING_VOLUME, player.volume)
+        player.muted = self._settings_store.get_bool(SETTING_MUTED)
+        self._loop_enabled = self._settings_store.get_bool(SETTING_LOOP)
+        self.client.loop = self._loop_enabled
+        self._auto_next = self._settings_store.get_bool(SETTING_AUTO_NEXT, True)
+
     def _resume_last_track(self) -> None:
-        """Auto-play the last played track from a previous session, if any."""
-        track = self._last_track_store.load()
+        """Auto-play the most recently played track from history, if any."""
+        track = self._history_store.most_recent()
         if track is not None:
             self.play_video(track.video_id, track.title, " • ".join(track.artists))
 
@@ -449,6 +469,8 @@ class MusicTUI(App[None]):
         if self._search_timer is not None:
             self._search_timer.stop()
         self.client.close()
+        self._history_store.close()
+        self._settings_store.close()
 
     def compose(self) -> ComposeResult:
         yield TopBar()
@@ -617,7 +639,7 @@ class MusicTUI(App[None]):
     def _on_play_finished(self, worker: Worker[StreamInfo]) -> None:
         if worker.state is WorkerState.SUCCESS:
             stream = worker.result
-            self._remember_last_track(stream)
+            self._record_play(stream)
             self.query_one(NowPlaying).set_track(
                 stream.title,
                 ", ".join(stream.artists) or "Unknown artist",
@@ -756,7 +778,7 @@ class MusicTUI(App[None]):
     def _on_play_playlist_finished(self, worker: Worker[StreamInfo]) -> None:
         if worker.state is WorkerState.SUCCESS:
             stream = worker.result
-            self._remember_last_track(stream)
+            self._record_play(stream)
             self.query_one(NowPlaying).set_track(
                 stream.title,
                 ", ".join(stream.artists) or "Unknown artist",
@@ -808,7 +830,7 @@ class MusicTUI(App[None]):
     def _on_play_queued_finished(self, worker: Worker[StreamInfo]) -> None:
         if worker.state is WorkerState.SUCCESS:
             stream = worker.result
-            self._remember_last_track(stream)
+            self._record_play(stream)
             self.query_one(NowPlaying).set_track(
                 stream.title,
                 ", ".join(stream.artists) or "Unknown artist",
@@ -825,10 +847,10 @@ class MusicTUI(App[None]):
                 f"Could not play: {worker.error}", title="Playback", severity="error"
             )
 
-    def _remember_last_track(self, stream: StreamInfo) -> None:
-        """Persist the resolved track so the next session can resume it."""
-        self._last_track_store.save(
-            LastTrack(
+    def _record_play(self, stream: StreamInfo) -> None:
+        """Persist the resolved track into play history."""
+        self._history_store.record(
+            PlayedTrack(
                 video_id=stream.video_id,
                 title=stream.title,
                 artists=tuple(stream.artists),
@@ -894,11 +916,13 @@ class MusicTUI(App[None]):
     def action_toggle_auto_next(self) -> None:
         self._auto_next = not self._auto_next
         self.query_one(NowPlaying).set_modes(self._auto_next, self._loop_enabled)
+        self._settings_store.set(SETTING_AUTO_NEXT, self._auto_next)
 
     def action_toggle_loop(self) -> None:
         self._loop_enabled = not self._loop_enabled
         self.client.loop = self._loop_enabled
         self.query_one(NowPlaying).set_modes(self._auto_next, self._loop_enabled)
+        self._settings_store.set(SETTING_LOOP, self._loop_enabled)
 
     def action_toggle_playback(self) -> None:
         if self.client.current is not None:
@@ -923,10 +947,12 @@ class MusicTUI(App[None]):
     def _change_volume(self, delta: int) -> None:
         player = self.client.player
         player.volume = player.volume + delta
+        self._settings_store.set(SETTING_VOLUME, player.volume)
 
     def action_toggle_mute(self) -> None:
         player = self.client.player
         player.muted = not player.muted
+        self._settings_store.set(SETTING_MUTED, player.muted)
 
     def action_focus_search(self) -> None:
         self.query_one("#search-input", Input).focus()

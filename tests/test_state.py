@@ -1,53 +1,161 @@
-"""Tests for last-played-track persistence."""
+"""Tests for play history and settings persistence."""
 
 from __future__ import annotations
 
 import json
 
-from music_cli.state import STATE_FILENAME, LastTrack, LastTrackStore
+from music_cli.state import (
+    STATE_DB_FILENAME,
+    PlayedTrack,
+    PlayHistoryStore,
+    SettingsStore,
+)
 
 
-def test_store_defaults_to_config_dir(tmp_path):
-    from music_cli.login import config_dir
+class TestPlayHistoryStore:
+    def test_defaults_to_config_dir(self):
+        from music_cli.login import config_dir
 
-    store = LastTrackStore()
-    assert store.path == config_dir() / STATE_FILENAME
+        assert PlayHistoryStore().path == config_dir() / STATE_DB_FILENAME
+
+    def test_round_trip(self, tmp_path):
+        store = PlayHistoryStore(tmp_path / "music-cli.db")
+        assert store.most_recent() is None
+
+        store.record(
+            PlayedTrack(
+                video_id="v1", title="Song", artists=("A", "B"), duration=213.0
+            )
+        )
+        loaded = store.most_recent()
+        assert loaded.video_id == "v1"
+        assert loaded.title == "Song"
+        assert loaded.artists == ("A", "B")
+        assert loaded.duration == 213.0
+        assert loaded.played == 1
+        assert loaded.last_played is not None
+
+    def test_record_increments_play_count(self, tmp_path):
+        store = PlayHistoryStore(tmp_path / "music-cli.db")
+        store.record(PlayedTrack(video_id="v1", title="Song"))
+        store.record(PlayedTrack(video_id="v1", title="Song"))
+        store.record(PlayedTrack(video_id="v1", title="Song"))
+        assert store.most_recent().played == 3
+
+    def test_record_refreshes_title_and_duration(self, tmp_path):
+        store = PlayHistoryStore(tmp_path / "music-cli.db")
+        store.record(PlayedTrack(video_id="v1", title="Old Title", duration=100.0))
+        store.record(PlayedTrack(video_id="v1", title="New Title", duration=200.0))
+        track = store.most_recent()
+        assert track.title == "New Title"
+        assert track.duration == 200.0
+        assert track.played == 2
+
+    def test_most_recent_orders_by_last_played(self, tmp_path):
+        store = PlayHistoryStore(tmp_path / "music-cli.db")
+        store.record(PlayedTrack(video_id="v1", title="First"))
+        store.record(PlayedTrack(video_id="v2", title="Second"))
+        assert store.most_recent().video_id == "v2"
+        assert store.most_recent().played == 1
+
+    def test_top_orders_by_play_count(self, tmp_path):
+        store = PlayHistoryStore(tmp_path / "music-cli.db")
+        store.record(PlayedTrack(video_id="a", title="A"))
+        store.record(PlayedTrack(video_id="b", title="B"))
+        store.record(PlayedTrack(video_id="b", title="B"))
+        store.record(PlayedTrack(video_id="c", title="C"))
+        top = store.top(10)
+        assert [track.video_id for track in top] == ["b", "c", "a"]
+        assert top[0].played == 2
+
+    def test_top_respects_limit(self, tmp_path):
+        store = PlayHistoryStore(tmp_path / "music-cli.db")
+        for video_id in ("a", "b", "c"):
+            store.record(PlayedTrack(video_id=video_id, title=video_id))
+        assert [track.video_id for track in store.top(2)] == ["c", "b"]
+
+    def test_persists_across_instances(self, tmp_path):
+        path = tmp_path / "music-cli.db"
+        PlayHistoryStore(path).record(PlayedTrack(video_id="v1", title="Song"))
+        assert PlayHistoryStore(path).most_recent().video_id == "v1"
+
+    def test_migrates_legacy_last_track_json(self, tmp_path):
+        path = tmp_path / "music-cli.db"
+        legacy = tmp_path / "last-track.json"
+        legacy.write_text(
+            json.dumps(
+                {
+                    "video_id": "v1",
+                    "title": "Song",
+                    "artists": ["A", "B"],
+                    "duration": 213.0,
+                }
+            )
+        )
+        store = PlayHistoryStore(path)
+        track = store.most_recent()
+        assert track.video_id == "v1"
+        assert track.title == "Song"
+        assert track.artists == ("A", "B")
+        assert track.played == 1
+        assert not legacy.exists()
+
+    def test_migrates_minimal_legacy_track(self, tmp_path):
+        path = tmp_path / "music-cli.db"
+        legacy = tmp_path / "last-track.json"
+        legacy.write_text(json.dumps({"video_id": "v2", "title": ""}))
+        track = PlayHistoryStore(path).most_recent()
+        assert track.video_id == "v2"
+        assert track.title == "v2"
+        assert track.played == 1
+        assert not legacy.exists()
+
+    def test_ignores_corrupt_legacy_file(self, tmp_path):
+        path = tmp_path / "music-cli.db"
+        legacy = tmp_path / "last-track.json"
+        legacy.write_text("{not json")
+        assert PlayHistoryStore(path).most_recent() is None
+        assert not legacy.exists()
+
+    def test_recovers_from_corrupt_database(self, tmp_path):
+        path = tmp_path / "music-cli.db"
+        path.write_bytes(b"not a database")
+        store = PlayHistoryStore(path)
+        store.record(PlayedTrack(video_id="v1", title="Song"))
+        assert store.most_recent().video_id == "v1"
 
 
-def test_store_round_trip(tmp_path):
-    store = LastTrackStore(tmp_path / "last-track.json")
-    assert store.load() is None
+class TestSettingsStore:
+    def test_defaults_to_config_dir(self):
+        from music_cli.login import config_dir
 
-    store.save(
-        LastTrack(video_id="v1", title="Song", artists=("A", "B"), duration=213.0)
-    )
-    loaded = store.load()
-    assert loaded == LastTrack(
-        video_id="v1", title="Song", artists=("A", "B"), duration=213.0
-    )
+        assert SettingsStore().path == config_dir() / STATE_DB_FILENAME
 
+    def test_round_trip(self, tmp_path):
+        store = SettingsStore(tmp_path / "music-cli.db")
+        assert store.get("volume") is None
+        store.set("volume", 85)
+        store.set("muted", True)
+        store.set("loop", False)
+        assert store.get("volume") == "85"
+        assert store.get_int("volume") == 85
+        assert store.get_bool("muted") is True
+        assert store.get_bool("loop") is False
 
-def test_store_round_trip_minimal_track(tmp_path):
-    path = tmp_path / "last-track.json"
-    LastTrackStore(path).save(LastTrack(video_id="v2", title=""))
-    assert LastTrackStore(path).load() == LastTrack(video_id="v2", title="v2")
+    def test_get_defaults(self, tmp_path):
+        store = SettingsStore(tmp_path / "music-cli.db")
+        assert store.get("missing") is None
+        assert store.get("missing", "fallback") == "fallback"
+        assert store.get_int("missing", 42) == 42
+        assert store.get_bool("missing", True) is True
 
+    def test_delete(self, tmp_path):
+        store = SettingsStore(tmp_path / "music-cli.db")
+        store.set("volume", 85)
+        store.delete("volume")
+        assert store.get("volume") is None
 
-def test_store_ignores_corrupt_file(tmp_path):
-    path = tmp_path / "last-track.json"
-    path.write_text("{not json")
-    assert LastTrackStore(path).load() is None
-
-
-def test_store_rejects_missing_video_id(tmp_path):
-    path = tmp_path / "last-track.json"
-    path.write_text(json.dumps({"title": "No id"}))
-    assert LastTrackStore(path).load() is None
-
-
-def test_store_save_overwrites(tmp_path):
-    path = tmp_path / "last-track.json"
-    store = LastTrackStore(path)
-    store.save(LastTrack(video_id="v1", title="First"))
-    store.save(LastTrack(video_id="v2", title="Second"))
-    assert store.load() == LastTrack(video_id="v2", title="Second")
+    def test_persists_across_instances(self, tmp_path):
+        path = tmp_path / "music-cli.db"
+        SettingsStore(path).set("volume", 70)
+        assert SettingsStore(path).get_int("volume") == 70

@@ -23,7 +23,9 @@ from dataclasses import dataclass
 from http.cookiejar import Cookie, MozillaCookieJar
 from pathlib import Path
 
+from .paths import config_dir
 from .player import Cookies, PlayerError
+from .state import STATE_DB_FILENAME, SettingsStore
 
 SIGNIN_URL = "https://music.youtube.com/"
 
@@ -50,10 +52,10 @@ AUTH_COOKIE_NAMES = frozenset(
     }
 )
 
-CONFIG_DIR_NAME = "music-cli"
 COOKIE_FILENAME = "cookies.txt"
 BROWSER_PROFILE_DIRNAME = "browser-profile"
 SKIP_AUTH_MARKER_NAME = "no-sign-in"
+NO_SIGN_IN_KEY = "no_sign_in"
 
 StatusCallback = Callable[[str], None]
 
@@ -65,16 +67,6 @@ class LoginResult:
     cookie_path: Path
     account_name: str | None = None
     playlist_count: int | None = None
-
-
-def config_dir() -> Path:
-    """The music-cli config directory (``$MUSIC_CLI_CONFIG_DIR`` or XDG)."""
-    override = os.environ.get("MUSIC_CLI_CONFIG_DIR")
-    if override:
-        return Path(override)
-    xdg = os.environ.get("XDG_CONFIG_HOME")
-    base = Path(xdg) if xdg else Path.home() / ".config"
-    return base / CONFIG_DIR_NAME
 
 
 def default_cookie_path() -> Path:
@@ -104,22 +96,33 @@ def reset_browser_profile() -> None:
 
 
 def skip_auth_marker() -> Path:
-    """Marker file recording that the user declined sign-in onboarding."""
+    """Legacy marker file recording that the user declined sign-in onboarding.
+
+    Migrated into the settings database (``no_sign_in``) on first read;
+    kept for the one-time import.
+    """
     return config_dir() / SKIP_AUTH_MARKER_NAME
 
 
 def auth_was_skipped() -> bool:
-    return skip_auth_marker().is_file()
+    store = SettingsStore(config_dir() / STATE_DB_FILENAME)
+    skipped = store.get_bool(NO_SIGN_IN_KEY)
+    marker = skip_auth_marker()
+    if marker.is_file() and not skipped:
+        store.set(NO_SIGN_IN_KEY, True)
+        skipped = True
+    if marker.is_file() and skipped:
+        marker.unlink(missing_ok=True)
+    return skipped
 
 
 def mark_auth_skipped() -> None:
-    path = skip_auth_marker()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.touch()
+    SettingsStore(config_dir() / STATE_DB_FILENAME).set(NO_SIGN_IN_KEY, True)
+    skip_auth_marker().unlink(missing_ok=True)
 
 
 def clear_auth_skipped() -> None:
-    skip_auth_marker().unlink(missing_ok=True)
+    SettingsStore(config_dir() / STATE_DB_FILENAME).delete(NO_SIGN_IN_KEY)
 
 
 def auth_cookies_present(cookies: Iterable[Mapping[str, object]]) -> bool:

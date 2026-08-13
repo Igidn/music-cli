@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import threading
 import time
 from datetime import timedelta
@@ -119,14 +120,67 @@ class TestAudioCache:
         assert track is not None
         assert track.ext == "m4a"
 
-    def test_corrupt_index_recovers(self, tmp_path):
+    def test_corrupt_database_recovers(self, tmp_path):
         directory = tmp_path / "cache"
-        index = directory / "index.json"
-        index.parent.mkdir(parents=True, exist_ok=True)
-        index.write_text("{not json")
+        AudioCache(directory=directory).close()
+        database = directory / "cache.db"
+        database.write_bytes(b"{not a database")
         cache = AudioCache(directory=directory)
         seed(cache, "abc")
         assert cache.lookup("abc") is not None
+
+    def test_migrates_legacy_index_json(self, tmp_path):
+        directory = tmp_path / "cache"
+        tracks = directory / "tracks"
+        tracks.mkdir(parents=True)
+        (tracks / "abc.m4a").write_bytes(b"audio-bytes")
+        index = directory / "index.json"
+        index.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "tracks": {
+                        "abc": {
+                            "title": "Some Song",
+                            "artists": ["Artist"],
+                            "duration": 213.0,
+                            "ext": "m4a",
+                            "size": len(b"audio-bytes"),
+                            "added": time.time() - 100,
+                            "last_used": time.time() - 100,
+                        }
+                    },
+                }
+            )
+        )
+        cache = AudioCache(directory=directory)
+        track = cache.lookup("abc")
+        assert track is not None
+        assert track.title == "Some Song"
+        assert track.artists == ("Artist",)
+        assert track.duration == 213.0
+        assert not index.exists()
+
+    def test_migrates_legacy_index_ignoring_missing_files(self, tmp_path):
+        directory = tmp_path / "cache"
+        index = directory / "index.json"
+        index.parent.mkdir(parents=True)
+        index.write_text(
+            json.dumps(
+                {
+                    "tracks": {
+                        "ghost": {"ext": "m4a"},
+                        "kept": {"title": "Kept", "ext": "m4a"},
+                    }
+                }
+            )
+        )
+        (directory / "tracks").mkdir()
+        (directory / "tracks" / "kept.m4a").write_bytes(b"audio")
+        cache = AudioCache(directory=directory)
+        assert cache.lookup("ghost") is None
+        assert cache.lookup("kept") is not None
+        assert not index.exists()
 
     def test_clear(self, cache):
         seed(cache, "a")

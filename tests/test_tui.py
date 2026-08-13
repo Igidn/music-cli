@@ -348,6 +348,37 @@ def test_transport_actions():
     _run(scenario())
 
 
+def test_tui_persists_and_restores_player_settings():
+    from music_cli.tui.app import MusicTUI
+
+    async def scenario():
+        client = make_client()
+        app = MusicTUI(client)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app.action_volume_up()
+            app.action_volume_up()
+            app.action_toggle_mute()
+            app.action_toggle_loop()
+            app.action_toggle_auto_next()
+            await pilot.pause()
+            assert client.player.volume == 90
+            assert client.player.muted is True
+            assert client.player.loop is True
+            assert app._auto_next is False
+
+        resumed_client = make_client()
+        resumed = MusicTUI(resumed_client)
+        async with resumed.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            assert resumed_client.player.volume == 90
+            assert resumed_client.player.muted is True
+            assert resumed_client.player.loop is True
+            assert resumed._auto_next is False
+
+    _run(scenario())
+
+
 def test_tui_auto_next_toggle_stops_at_track_end():
     from music_cli.tui.app import MusicTUI
     from music_cli.tui.now_playing import NowPlaying
@@ -695,7 +726,7 @@ def test_tui_saves_last_played_track_and_resumes_it():
             await pilot.pause()
             await pilot.pause()
 
-            saved = app._last_track_store.load()
+            saved = app._history_store.most_recent()
             assert saved is not None
             assert saved.video_id == "v1"
             assert saved.title == "Stream of v1"
@@ -748,7 +779,7 @@ def test_tui_saves_track_played_from_queue():
             await pilot.pause()
             await pilot.pause()
             await pilot.pause()
-            saved = app._last_track_store.load()
+            saved = app._history_store.most_recent()
             assert saved is not None
             assert saved.video_id == "t1"
 
@@ -772,7 +803,7 @@ def test_tui_does_not_save_when_playback_fails():
             await pilot.pause()
             await pilot.pause()
             await pilot.pause()
-            assert app._last_track_store.load() is None
+            assert app._history_store.most_recent() is None
 
     _run(scenario())
 

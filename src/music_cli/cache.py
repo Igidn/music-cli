@@ -1,19 +1,22 @@
 """Persistent disk cache for downloaded audio tracks.
 
 Cached tracks live as plain files under ``tracks/{video_id}.{ext}`` with
-their metadata in an atomically written ``index.json``. A replay of a cached
-track needs no network at all: the client plays the local file straight
-away. The cache enforces size, entry-count and age budgets with LRU
-eviction, and serialises downloads of the same video across threads so each
-video is fetched at most once at a time.
+their metadata in a SQLite index (``cache.db`` in the cache directory,
+WAL mode). A replay of a cached track needs no network at all: the client
+plays the local file straight away. The cache enforces size, entry-count
+and age budgets with LRU eviction, and serialises downloads of the same
+video across threads so each video is fetched at most once at a time.
+
+A legacy ``index.json`` (from before the SQLite migration) is imported
+once on first load and then removed.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import sys
-import tempfile
 import threading
 import time
 import uuid
@@ -23,10 +26,15 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
-CACHE_VERSION = 1
+from .db import ensure_schema, open_db, reset_database
+
+CACHE_VERSION = 2
 DEFAULT_MAX_SIZE = 2 * 1024**3
 DEFAULT_MAX_ENTRIES = 500
 DEFAULT_TTL = timedelta(days=30)
+
+CACHE_DB_FILENAME = "cache.db"
+LEGACY_INDEX_FILENAME = "index.json"
 
 
 def default_cache_dir() -> Path:
@@ -82,8 +90,10 @@ class _InFlight:
 class AudioCache:
     """An LRU disk cache of downloaded audio tracks.
 
-    Thread-safe. Writes are atomic (temp file + ``os.replace``), so a crash
-    never leaves a half-written track or index behind.
+    Thread-safe. Audio files are moved into place atomically
+    (``os.replace``) and the SQLite index runs in WAL mode, so a crash never
+    leaves a half-written track or index behind. A corrupt index is rebuilt
+    from scratch (orphan audio files are re-adopted).
     """
 
     def __init__(
@@ -101,7 +111,9 @@ class AudioCache:
         self.max_entries = max_entries
         self.ttl = ttl
         self._tracks_dir = self.directory / "tracks"
-        self._index_path = self.directory / "index.json"
+        self._db_path = self.directory / CACHE_DB_FILENAME
+        self._legacy_index_path = self.directory / LEGACY_INDEX_FILENAME
+        self._conn: sqlite3.Connection | None = None
         self._entries: dict[str, dict[str, Any]] = {}
         self._inflight: dict[str, _InFlight] = {}
         self._lock = threading.RLock()
@@ -278,44 +290,28 @@ class AudioCache:
             self._persist()
 
     def close(self) -> None:
-        """Flush any pending index changes to disk."""
+        """Flush any pending index changes to disk and close the database."""
         with self._lock:
             self._persist()
+            if self._conn is not None:
+                self._conn.close()
+                self._conn = None
 
     def _load(self) -> None:
         self.directory.mkdir(parents=True, exist_ok=True)
         self._tracks_dir.mkdir(parents=True, exist_ok=True)
-        try:
-            raw = json.loads(self._index_path.read_text())
-            entries = raw.get("tracks") if isinstance(raw, dict) else None
-        except OSError, ValueError:
-            entries = None
-        if isinstance(entries, dict):
-            for video_id, entry in entries.items():
-                if (
-                    not isinstance(entry, dict)
-                    or not isinstance(entry.get("ext"), str)
-                    or not entry["ext"]
-                ):
-                    self._dirty = True
-                    continue
-                path = self._tracks_dir / f"{video_id}.{entry['ext']}"
-                if not path.is_file():
-                    self._dirty = True
-                    continue
-                self._entries[video_id] = {
-                    "title": entry.get("title") or video_id,
-                    "artists": [
-                        artist
-                        for artist in entry.get("artists") or ()
-                        if isinstance(artist, str)
-                    ],
-                    "duration": entry.get("duration"),
-                    "ext": entry["ext"],
-                    "size": entry.get("size") or path.stat().st_size,
-                    "added": entry.get("added", time.time()),
-                    "last_used": entry.get("last_used", time.time()),
-                }
+        conn = self._open_database()
+        self._conn = conn
+        self._migrate_legacy_index()
+        for row in conn.execute("SELECT * FROM tracks"):
+            entry = self._entry_from_row(row)
+            if entry is None:
+                continue
+            path = self._tracks_dir / f"{row['video_id']}.{entry['ext']}"
+            if not path.is_file():
+                self._dirty = True
+                continue
+            self._entries[row["video_id"]] = entry
         for path in self._tracks_dir.iterdir():
             if not path.is_file() or path.name.startswith("."):
                 continue
@@ -333,6 +329,75 @@ class AudioCache:
             }
             self._dirty = True
         self.evict()
+
+    def _open_database(self) -> sqlite3.Connection:
+        """Open the index database, rebuilding it when it is corrupt."""
+        try:
+            conn = open_db(self._db_path)
+            ensure_schema(conn)
+            conn.execute("SELECT COUNT(*) FROM tracks").fetchone()
+            return conn
+        except sqlite3.DatabaseError:
+            reset_database(self._db_path)
+            conn = open_db(self._db_path)
+            ensure_schema(conn)
+            return conn
+
+    def _migrate_legacy_index(self) -> None:
+        """Import a pre-SQLite ``index.json`` once, then remove it."""
+        path = self._legacy_index_path
+        if not path.is_file():
+            return
+        try:
+            raw = json.loads(path.read_text())
+            entries = raw.get("tracks") if isinstance(raw, dict) else None
+        except (OSError, ValueError):
+            entries = None
+        if isinstance(entries, dict):
+            for video_id, entry in entries.items():
+                if (
+                    not isinstance(entry, dict)
+                    or not isinstance(entry.get("ext"), str)
+                    or not entry["ext"]
+                ):
+                    continue
+                cached = self._tracks_dir / f"{video_id}.{entry['ext']}"
+                if not cached.is_file():
+                    continue
+                self._entries[video_id] = {
+                    "title": entry.get("title") or video_id,
+                    "artists": [
+                        artist
+                        for artist in entry.get("artists") or ()
+                        if isinstance(artist, str)
+                    ],
+                    "duration": entry.get("duration"),
+                    "ext": entry["ext"],
+                    "size": entry.get("size") or cached.stat().st_size,
+                    "added": entry.get("added", time.time()),
+                    "last_used": entry.get("last_used", time.time()),
+                }
+                self._dirty = True
+        path.unlink(missing_ok=True)
+
+    @staticmethod
+    def _entry_from_row(row: sqlite3.Row) -> dict[str, Any] | None:
+        ext = row["ext"]
+        if not isinstance(ext, str) or not ext:
+            return None
+        try:
+            artists = json.loads(row["artists"] or "[]")
+        except ValueError:
+            artists = []
+        return {
+            "title": row["title"] or row["video_id"],
+            "artists": [a for a in artists if isinstance(a, str)],
+            "duration": row["duration"],
+            "ext": ext,
+            "size": row["size"] or 0,
+            "added": row["added"],
+            "last_used": row["last_used"],
+        }
 
     def _evict_ttl(self) -> None:
         if self.ttl is None:
@@ -379,20 +444,38 @@ class AudioCache:
                 pass
 
     def _persist(self) -> None:
-        if not self._dirty:
+        if not self._dirty or self._conn is None:
             return
         self._dirty = False
-        self.directory.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(prefix="index.", suffix=".tmp", dir=self.directory)
+        rows = [
+            (
+                video_id,
+                entry["title"],
+                json.dumps(list(entry.get("artists") or ())),
+                entry.get("duration"),
+                entry["ext"],
+                entry.get("size") or 0,
+                entry.get("added", time.time()),
+                entry.get("last_used", time.time()),
+            )
+            for video_id, entry in self._entries.items()
+        ]
         try:
-            with os.fdopen(fd, "w") as handle:
-                json.dump({"version": CACHE_VERSION, "tracks": self._entries}, handle)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(tmp, self._index_path)
-        except BaseException:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-            raise
+            with self._conn:
+                self._conn.execute("DELETE FROM tracks")
+                self._conn.executemany(
+                    "INSERT INTO tracks VALUES (?, ?, ?, ?, ?, ?, ?, ?)", rows
+                )
+        except sqlite3.DatabaseError:
+            # A write failure means the database is gone or corrupt; fall
+            # back to keeping the in-memory index so playback still works.
+            reset_database(self._db_path)
+            conn = open_db(self._db_path)
+            ensure_schema(conn)
+            self._conn.close()
+            self._conn = conn
+            with self._conn:
+                self._conn.execute("DELETE FROM tracks")
+                self._conn.executemany(
+                    "INSERT INTO tracks VALUES (?, ?, ?, ?, ?, ?, ?, ?)", rows
+                )

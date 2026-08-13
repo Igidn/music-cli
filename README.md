@@ -40,7 +40,8 @@ music-cli --clear-cache   # delete the audio download cache
 ```
 
 The last track you played is remembered and resumes automatically the next
-time you start the TUI.
+time you start the TUI. Player preferences (volume, muted, loop) are
+persisted too — once you've changed them, they win over `--volume`.
 
 ### Keys
 
