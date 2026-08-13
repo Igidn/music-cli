@@ -17,7 +17,7 @@ from music_cli.playlists import LibraryPlaylist
 class AddToPlaylistScreen(ModalScreen[set[str] | None]):
     """Pick which playlists a track should be added to."""
 
-    BINDINGS: ClassVar = [Binding("escape", "dismiss_none", show=False)]
+    BINDINGS: ClassVar = [Binding("escape", "save", show=False)]
 
     def __init__(self, playlists: list[LibraryPlaylist], track_title: str) -> None:
         super().__init__()
@@ -25,10 +25,9 @@ class AddToPlaylistScreen(ModalScreen[set[str] | None]):
         self._track_title = track_title
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="add-playlist-modal"):
-            yield Label(
-                f"Add “{self._track_title}” to playlists", id="add-playlist-modal-title"
-            )
+        with Vertical(id="add-playlist-modal") as dialog:
+            dialog.border_title = "Add to playlist"
+            yield Label(self._track_title, id="add-playlist-modal-title")
             if self._playlists:
                 yield SelectionList(
                     *(
@@ -37,26 +36,16 @@ class AddToPlaylistScreen(ModalScreen[set[str] | None]):
                     ),
                     id="add-playlist-modal-select",
                 )
+                yield Label("space: toggle · esc: done", id="add-playlist-modal-hint")
             else:
                 yield Label(
                     "No playlists — sign in or create one first",
                     id="add-playlist-modal-empty",
                 )
-            with Horizontal(id="add-playlist-modal-buttons"):
-                yield Button("Add", variant="primary", id="add-playlist-modal-add")
-                yield Button("Cancel", id="add-playlist-modal-cancel")
 
-    def action_dismiss_none(self) -> None:
-        self.dismiss(None)
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "add-playlist-modal-add":
-            select = self.query_one_optional(
-                "#add-playlist-modal-select", SelectionList
-            )
-            self.dismiss(set(select.selected) if select is not None else set())
-        else:
-            self.dismiss(None)
+    def action_save(self) -> None:
+        select = self.query_one_optional("#add-playlist-modal-select", SelectionList)
+        self.dismiss(set(select.selected) if select is not None else set())
 
 
 class PlaylistNameScreen(ModalScreen[str | None]):

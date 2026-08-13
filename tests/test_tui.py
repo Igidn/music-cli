@@ -915,7 +915,7 @@ def test_waveform_widget_tracks_playback_state():
 
 
 def test_add_to_playlist_from_results():
-    from textual.widgets import Button, SelectionList
+    from textual.widgets import SelectionList
 
     from music_cli.tui.app import MusicTUI, ResultsTable
     from music_cli.tui.modals import AddToPlaylistScreen
@@ -935,7 +935,7 @@ def test_add_to_playlist_from_results():
             await pilot.pause()
             assert isinstance(app.screen, AddToPlaylistScreen)
             app.screen.query_one(SelectionList).toggle("p1")
-            app.screen.query_one("#add-playlist-modal-add", Button).press()
+            await pilot.press("escape")
             for _ in range(4):
                 await pilot.pause()
             assert client.library.add_calls == [("p1", ["v0"])]
@@ -945,7 +945,7 @@ def test_add_to_playlist_from_results():
 
 
 def test_add_to_playlist_from_queue():
-    from textual.widgets import Button, SelectionList
+    from textual.widgets import SelectionList
 
     from music_cli.tui.app import MusicTUI, QueueList
     from music_cli.tui.modals import AddToPlaylistScreen
@@ -963,7 +963,7 @@ def test_add_to_playlist_from_queue():
             await pilot.pause()
             assert isinstance(app.screen, AddToPlaylistScreen)
             app.screen.query_one(SelectionList).toggle("p2")
-            app.screen.query_one("#add-playlist-modal-add", Button).press()
+            await pilot.press("escape")
             for _ in range(4):
                 await pilot.pause()
             assert client.library.add_calls == [("p2", ["t1"])]
