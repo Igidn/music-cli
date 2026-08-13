@@ -48,6 +48,7 @@ class FakePlayer:
         self.position = 0.0
         self.duration = None
         self.playing = False
+        self.paused = True
         self.eof_reached = False
 
     def play(self, stream):
@@ -55,6 +56,7 @@ class FakePlayer:
         self.position = 0.5
         self.duration = 200.0
         self.playing = True
+        self.paused = False
 
 
 class FakeWatch:
@@ -120,6 +122,21 @@ class FlakyPlayer(FakePlayer):
             self.duration = None
             return
         super().play(stream)
+
+
+class LoadedButPausedPlayer(FakePlayer):
+    """FakePlayer whose item loads (duration known) but never starts playing.
+
+    Replicates the auto-next race: the end-of-item pause dropped the play
+    request, so the new item is loaded while the rate stays at zero.
+    """
+
+    def play(self, stream):
+        self.played.append(stream)
+        self.position = 0.0
+        self.duration = 200.0
+        self.playing = True
+        self.paused = True
 
 
 class TestMusicClient:
@@ -242,6 +259,19 @@ class TestCacheIntegration:
         assert client.extractor.resolved == ["abc"]
         assert stream.video_id == "abc"
         assert client.current.video_id == "abc"
+
+    def test_playback_started_false_when_loaded_but_paused(self, client):
+        """A loaded item with the player still paused is not playback.
+
+        After a track ends the end-of-item pause can drop the next play
+        request; the item reports a duration but the rate is zero. That must
+        not count as started, or the queue advances silently.
+        """
+        client.player = LoadedButPausedPlayer()
+        client.player.play(
+            StreamInfo(video_id="abc", title="T", stream_url="https://u")
+        )
+        assert client._playback_started(timeout=0.5) is False
 
     def test_prefetch_populates_cache(self, client):
         class DownloadingExtractor(FakeExtractor):
