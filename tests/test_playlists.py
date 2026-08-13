@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import re
 
+import pytest
 import requests
 
-from music_cli.player import Cookies
+from music_cli.player import Cookies, PlayerError
 from music_cli.playlists import (
     Library,
     LibraryPlaylist,
@@ -23,6 +24,10 @@ class FakeApi:
         self._tracks = tracks
         self.playlist_calls = []
         self.track_calls = []
+        self.create_calls = []
+        self.edit_calls = []
+        self.add_calls = []
+        self.remove_calls = []
 
     def get_library_playlists(self, limit=None):
         self.playlist_calls.append(limit)
@@ -31,6 +36,28 @@ class FakeApi:
     def get_playlist(self, playlistId, limit=None, related=False, suggestions_limit=0):
         self.track_calls.append(playlistId)
         return {"tracks": self._tracks}
+
+    def create_playlist(
+        self,
+        title,
+        description,
+        privacy_status="PRIVATE",
+        video_ids=None,
+        source_playlist=None,
+    ):
+        self.create_calls.append((title, description, privacy_status))
+        return "PLNEW"
+
+    def edit_playlist(self, playlistId, title=None, **kwargs):
+        self.edit_calls.append((playlistId, title))
+
+    def add_playlist_items(
+        self, playlistId, videoIds=None, source_playlist=None, duplicates=False
+    ):
+        self.add_calls.append((playlistId, videoIds))
+
+    def remove_playlist_items(self, playlistId, videos):
+        self.remove_calls.append((playlistId, videos))
 
 
 def raw_playlist(playlist_id="PL1", title="My Mix", count="25"):
@@ -102,6 +129,68 @@ def test_library_authenticated_reflects_cookies():
     assert Library(
         api=FakeApi([], []), cookies=Cookies.from_file("c.txt")
     ).authenticated
+
+
+def test_library_create_playlist_defaults_private():
+    api = FakeApi([], [])
+    library = Library(api=api)
+    assert library.create_playlist("New Mix") == "PLNEW"
+    assert api.create_calls == [("New Mix", "", "PRIVATE")]
+
+
+def test_library_create_playlist_handles_dict_response():
+    class DictApi(FakeApi):
+        def create_playlist(
+            self,
+            title,
+            description,
+            privacy_status="PRIVATE",
+            video_ids=None,
+            source_playlist=None,
+        ):
+            return {"playlistId": "PLDICT", "status": "ok"}
+
+    assert Library(api=DictApi([], [])).create_playlist("X") == "PLDICT"
+
+
+def test_library_rename_playlist():
+    api = FakeApi([], [])
+    Library(api=api).rename_playlist("PL1", "Renamed")
+    assert api.edit_calls == [("PL1", "Renamed")]
+
+
+def test_library_add_tracks():
+    api = FakeApi([], [])
+    Library(api=api).add_tracks("PL1", ["t1", "t2"])
+    assert api.add_calls == [("PL1", ["t1", "t2"])]
+
+
+def test_library_remove_track_removes_every_occurrence():
+    api = FakeApi(
+        [],
+        [
+            {"videoId": "t1", "setVideoId": "s1", "title": "One"},
+            {"videoId": "t2", "setVideoId": "s2", "title": "Two"},
+            {"videoId": "t1", "setVideoId": "s3", "title": "One again"},
+        ],
+    )
+    Library(api=api).remove_track("PL1", "t1")
+    assert api.remove_calls == [
+        (
+            "PL1",
+            [
+                {"videoId": "t1", "setVideoId": "s1"},
+                {"videoId": "t1", "setVideoId": "s3"},
+            ],
+        )
+    ]
+
+
+def test_library_remove_track_missing_raises():
+    api = FakeApi([], [{"videoId": "t1", "setVideoId": "s1"}])
+    with pytest.raises(PlayerError):
+        Library(api=api).remove_track("PL1", "nope")
+    assert api.remove_calls == []
 
 
 def browser_session():

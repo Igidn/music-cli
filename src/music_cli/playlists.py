@@ -1,5 +1,3 @@
-
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -138,3 +136,34 @@ class Library:
         data = self._client().get_playlist(playlistId=playlist_id)
         tracks = [parse_watch_track(item) for item in data.get("tracks", [])]
         return [track for track in tracks if track.video_id]
+
+    def create_playlist(self, title: str) -> str:
+        """Create a new private playlist and return its id."""
+        result = self._client().create_playlist(title, "", privacy_status="PRIVATE")
+        return (
+            result if isinstance(result, str) else str(result.get("playlistId") or "")
+        )
+
+    def rename_playlist(self, playlist_id: str, title: str) -> None:
+        """Rename ``playlist_id``; other properties are left untouched."""
+        self._client().edit_playlist(playlist_id, title=title)
+
+    def add_tracks(self, playlist_id: str, video_ids: list[str]) -> None:
+        """Append ``video_ids`` to ``playlist_id``."""
+        self._client().add_playlist_items(playlist_id, video_ids)
+
+    def remove_track(self, playlist_id: str, video_id: str) -> None:
+        """Remove every occurrence of ``video_id`` from ``playlist_id``.
+
+        The API needs each occurrence's ``setVideoId``, so the playlist is
+        fetched first and only matching items are removed.
+        """
+        data = self._client().get_playlist(playlistId=playlist_id)
+        videos = [
+            {"videoId": item.get("videoId"), "setVideoId": item.get("setVideoId")}
+            for item in data.get("tracks", [])
+            if item.get("videoId") == video_id
+        ]
+        if not videos:
+            raise PlayerError(f"Track {video_id} is not in this playlist")
+        self._client().remove_playlist_items(playlist_id, videos)

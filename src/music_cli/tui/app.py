@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable, ClassVar, Literal
+from typing import Any, ClassVar, Literal
 
 from rich.cells import cell_len, set_cell_size
 from rich.text import Text
@@ -42,6 +43,7 @@ from music_cli.state import (
     SettingsStore,
 )
 
+from .modals import AddToPlaylistScreen, ConfirmScreen, PlaylistNameScreen
 from .now_playing import NowPlaying
 
 SEARCH_FILTERS: list[tuple[str, SearchFilter | None]] = [
@@ -67,6 +69,21 @@ TYPE_COLORS = {
 
 class TrackEnded(Message):
     """Posted on the app thread when the player reports end-of-file."""
+
+
+class AddToPlaylistRequested(Message):
+    """A song is selected in the focused pane and the user pressed `s`.
+
+    Posted by whichever pane holds the selected song (search results,
+    up-next queue or the library tree) so the app can open the same
+    playlist picker for all three.
+    """
+
+    def __init__(self, video_id: str, title: str, artists: tuple[str, ...]) -> None:
+        self.video_id = video_id
+        self.title = title
+        self.artists = artists
+        super().__init__()
 
 
 @dataclass
@@ -104,6 +121,10 @@ class LibraryTree(Tree[dict[str, Any] | None], inherit_bindings=False):
         Binding("pagedown", "page_down", "Page down", show=False),
         Binding("home", "scroll_home", "Home", show=False),
         Binding("end", "scroll_end", "End", show=False),
+        Binding("s", "add_to_playlist", "Add to playlist"),
+        Binding("d", "remove_from_playlist", "Remove from playlist"),
+        Binding("c", "create_playlist", "Create playlist"),
+        Binding("r", "rename_playlist", "Rename playlist"),
     ]
 
     class PlaylistExpandRequested(Message):
@@ -132,6 +153,25 @@ class LibraryTree(Tree[dict[str, Any] | None], inherit_bindings=False):
             self.track = track
             super().__init__()
 
+    class TrackRemoveRequested(Message):
+        """The user pressed `d` with a track leaf selected."""
+
+        def __init__(self, playlist_id: str, track: PlaylistTrack) -> None:
+            self.playlist_id = playlist_id
+            self.track = track
+            super().__init__()
+
+    class CreatePlaylistRequested(Message):
+        """The user pressed `c` while the library tree is focused."""
+
+    class RenamePlaylistRequested(Message):
+        """The user pressed `r` with a playlist node selected."""
+
+        def __init__(self, playlist_id: str, title: str) -> None:
+            self.playlist_id = playlist_id
+            self.title = title
+            super().__init__()
+
     def on_mount(self) -> None:
         self.border_title = " PLAYLISTS "
         self.show_root = False
@@ -154,11 +194,13 @@ class LibraryTree(Tree[dict[str, Any] | None], inherit_bindings=False):
                 },
                 allow_expand=True,
             )
+        self.refresh_bindings()
 
     def set_unavailable(self, message: str) -> None:
         """Replace the tree contents with a non-interactive notice."""
         self.root.remove_children()
         self.root.add_leaf(message)
+        self.refresh_bindings()
 
     def show_tracks(self, playlist_id: str, tracks: list[PlaylistTrack]) -> None:
         """Fill ``playlist_id``'s node with its tracks and expand it."""
@@ -184,6 +226,7 @@ class LibraryTree(Tree[dict[str, Any] | None], inherit_bindings=False):
                 },
             )
         node.expand()
+        self.refresh_bindings()
 
     def fail_playlist(self, playlist_id: str) -> None:
         node = self._find_playlist(playlist_id)
@@ -193,6 +236,7 @@ class LibraryTree(Tree[dict[str, Any] | None], inherit_bindings=False):
         node.remove_children()
         node.add_leaf("Couldn't load this playlist")
         node.collapse()
+        self.refresh_bindings()
 
     def action_activate(self) -> None:
         """Expand/play the cursor node: branch toggles, leaf track plays."""
@@ -209,6 +253,58 @@ class LibraryTree(Tree[dict[str, Any] | None], inherit_bindings=False):
             self.post_message(self.PlaylistExpandRequested(data["playlist_id"], node))
         else:
             node.toggle()
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        """Only show playlist-management keybinds for the relevant cursor node."""
+        kind = self._cursor_kind()
+        if action == "create_playlist":
+            # Also visible on the empty-library leaf, so a fresh account
+            # can create its first playlist.
+            return self.app.client.library.authenticated and kind != "track"
+        if action in ("add_to_playlist", "remove_from_playlist"):
+            return self.app.client.library.authenticated and kind == "track"
+        if action == "rename_playlist":
+            return self.app.client.library.authenticated and kind == "playlist"
+        return super().check_action(action, parameters)
+
+    def action_add_to_playlist(self) -> None:
+        data = self._cursor_data()
+        if data is not None and data.get("kind") == "track":
+            track = data["track"]
+            self.post_message(
+                AddToPlaylistRequested(
+                    track.video_id, track.title, tuple(track.artists)
+                )
+            )
+
+    def action_remove_from_playlist(self) -> None:
+        data = self._cursor_data()
+        if data is not None and data.get("kind") == "track":
+            self.post_message(
+                self.TrackRemoveRequested(data["playlist_id"], data["track"])
+            )
+
+    def action_create_playlist(self) -> None:
+        self.post_message(self.CreatePlaylistRequested())
+
+    def action_rename_playlist(self) -> None:
+        data = self._cursor_data()
+        if data is not None and data.get("kind") == "playlist":
+            self.post_message(
+                self.RenamePlaylistRequested(data["playlist_id"], data["title"])
+            )
+
+    def on_tree_node_highlighted(self, event: Tree.NodeHighlighted) -> None:
+        self.refresh_bindings()
+
+    def _cursor_data(self) -> dict[str, Any] | None:
+        node = self.cursor_node
+        data = node.data if node is not None else None
+        return data if isinstance(data, dict) else None
+
+    def _cursor_kind(self) -> str | None:
+        data = self._cursor_data()
+        return data.get("kind") if data is not None else None
 
     def _find_playlist(self, playlist_id: str) -> TreeNode | None:
         for node in self.root.children:
@@ -250,6 +346,7 @@ class ResultsTable(DataTable, inherit_bindings=False):
         Binding("end", "scroll_end", "End", show=False),
         Binding("ctrl+home", "scroll_top", "Top", show=False),
         Binding("ctrl+end", "scroll_bottom", "Bottom", show=False),
+        Binding("s", "add_to_playlist", "Add to playlist"),
     ]
 
     def __init__(self, *args, **kwargs) -> None:
@@ -289,6 +386,27 @@ class ResultsTable(DataTable, inherit_bindings=False):
                 key=key,
             )
             self._results[key] = result
+        self.refresh_bindings()
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        if action == "add_to_playlist":
+            return (
+                self.app.client.library.authenticated
+                and self.selected_result() is not None
+            )
+        return super().check_action(action, parameters)
+
+    def action_add_to_playlist(self) -> None:
+        result = self.selected_result()
+        if result is not None:
+            self.post_message(
+                AddToPlaylistRequested(
+                    result.video_id, result.title, tuple(result.artists)
+                )
+            )
+
+    def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        self.refresh_bindings()
 
     def _fit(self, value: str, column_key: str) -> str:
         """Truncate a cell value to its column width, appending '...' when cut off."""
@@ -299,6 +417,8 @@ class ResultsTable(DataTable, inherit_bindings=False):
         return set_cell_size(value, max_width - 3) + "... "
 
     def selected_result(self) -> SearchResult | None:
+        if self.row_count == 0:
+            return None
         coordinate = self.coordinate_to_cell_key(self.cursor_coordinate)
         return self._results.get(str(coordinate.row_key.value))
 
@@ -306,12 +426,34 @@ class ResultsTable(DataTable, inherit_bindings=False):
 class QueueList(ListView):
     """Up-next queue; each item is one row of the queue."""
 
+    BINDINGS: ClassVar = [Binding("s", "add_to_playlist", "Add to playlist")]
+
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self._tracks: list[PlaylistTrack] = []
 
     def on_mount(self) -> None:
         self.border_title = " UP NEXT "
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        if action == "add_to_playlist":
+            return (
+                self.app.client.library.authenticated
+                and self.track_at(self.index) is not None
+            )
+        return super().check_action(action, parameters)
+
+    def action_add_to_playlist(self) -> None:
+        track = self.track_at(self.index)
+        if track is not None:
+            self.post_message(
+                AddToPlaylistRequested(
+                    track.video_id, track.title, tuple(track.artists)
+                )
+            )
+
+    def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
+        self.refresh_bindings()
 
     def action_cursor_up(self) -> None:
         if self.index in (None, 0):
@@ -336,6 +478,7 @@ class QueueList(ListView):
         for track in tracks:
             self.append(self._item(track))
         self.index = 0
+        self.refresh_bindings()
 
     def track_at(self, index: int | None) -> PlaylistTrack | None:
         """The track the user sees at ``index``, independent of queue mutations.
@@ -451,6 +594,7 @@ class MusicTUI(App[None]):
         self._play_request: _PlayRequest | None = None
         self._library_worker: Worker[list[LibraryPlaylist]] | None = None
         self._playlist_workers: dict[str, Worker[list[PlaylistTrack]]] = {}
+        self._library_playlists: list[LibraryPlaylist] = []
         self._last_video_id: str = ""
         self._auto_next = True
         self._loop_enabled = False
@@ -575,6 +719,7 @@ class MusicTUI(App[None]):
             "refill_worker": self._on_refill_finished,
             "library_worker": self._on_library_fetched,
             "playlist_tracks_worker": self._on_playlist_tracks_fetched,
+            "playlist_mutation_worker": self._on_playlist_mutation_finished,
         }
         handler = handlers.get(worker.name)
         if handler is not None:
@@ -618,7 +763,9 @@ class MusicTUI(App[None]):
 
     def play_result(self, result: SearchResult) -> None:
         self._start_play(
-            _PlayRequest(result.video_id, lambda: self.client.play_result(result), "result"),
+            _PlayRequest(
+                result.video_id, lambda: self.client.play_result(result), "result"
+            ),
             result.title,
             result.subtitle,
         )
@@ -626,7 +773,9 @@ class MusicTUI(App[None]):
     def play_video(self, video_id: str, title: str, subtitle: str = "") -> None:
         """Play a bare video id (used to resume the last played track)."""
         self._start_play(
-            _PlayRequest(video_id, lambda: self.client.play_video(video_id, title), "result"),
+            _PlayRequest(
+                video_id, lambda: self.client.play_video(video_id, title), "result"
+            ),
             title,
             subtitle,
         )
@@ -713,7 +862,8 @@ class MusicTUI(App[None]):
         if worker is not self._library_worker:
             return
         if worker.state is WorkerState.SUCCESS:
-            self.query_one(LibraryTree).set_playlists(worker.result or [])
+            self._library_playlists = worker.result or []
+            self.query_one(LibraryTree).set_playlists(self._library_playlists)
         else:
             self.query_one(LibraryTree).set_unavailable(
                 "Couldn't load library playlists\n"
@@ -764,13 +914,123 @@ class MusicTUI(App[None]):
         self._start_play(
             _PlayRequest(
                 track.video_id,
-                lambda: self.client.play_from_playlist(message.playlist_id, message.index),
+                lambda: self.client.play_from_playlist(
+                    message.playlist_id, message.index
+                ),
                 "playlist",
                 on_fail=lambda: self._restore_queue(0, track),
             ),
             track.title,
             " • ".join(track.artists),
         )
+
+    @on(AddToPlaylistRequested)
+    def _on_add_to_playlist_requested(self, message: AddToPlaylistRequested) -> None:
+        self.push_screen(
+            AddToPlaylistScreen(self._library_playlists, message.title),
+            lambda selected: self._add_to_playlists(message.video_id, selected),
+        )
+
+    def _add_to_playlists(self, video_id: str, selected: set[str] | None) -> None:
+        if not selected:
+            return
+        self.playlist_mutation_worker(lambda: self._do_add(video_id, set(selected)))
+
+    def _do_add(self, video_id: str, playlist_ids: set[str]) -> str:
+        for playlist_id in playlist_ids:
+            self.client.library.add_tracks(playlist_id, [video_id])
+        count = len(playlist_ids)
+        return f"Added to {count} playlist{'s' if count > 1 else ''}"
+
+    @on(LibraryTree.TrackRemoveRequested)
+    def _on_track_remove_requested(
+        self, message: LibraryTree.TrackRemoveRequested
+    ) -> None:
+        track = message.track
+        self.push_screen(
+            ConfirmScreen(f"Remove “{track.title}” from this playlist?"),
+            lambda confirmed: self._remove_track(
+                message.playlist_id, track.video_id, track.title, confirmed
+            ),
+        )
+
+    def _remove_track(
+        self, playlist_id: str, video_id: str, title: str, confirmed: bool | None
+    ) -> None:
+        if not confirmed:
+            return
+        self.playlist_mutation_worker(
+            lambda: self._do_remove(playlist_id, video_id, title)
+        )
+
+    def _do_remove(self, playlist_id: str, video_id: str, title: str) -> str:
+        self.client.library.remove_track(playlist_id, video_id)
+        return f"Removed “{title}” from playlist"
+
+    @on(LibraryTree.CreatePlaylistRequested)
+    def _on_create_playlist_requested(
+        self, message: LibraryTree.CreatePlaylistRequested
+    ) -> None:
+        self.push_screen(PlaylistNameScreen("Create playlist"), self._create_playlist)
+
+    def _create_playlist(self, name: str | None) -> None:
+        if not name:
+            return
+        self.playlist_mutation_worker(lambda: self._do_create(name))
+
+    def _do_create(self, name: str) -> str:
+        self.client.library.create_playlist(name)
+        return f"Created playlist “{name}”"
+
+    @on(LibraryTree.RenamePlaylistRequested)
+    def _on_rename_playlist_requested(
+        self, message: LibraryTree.RenamePlaylistRequested
+    ) -> None:
+        self.push_screen(
+            PlaylistNameScreen("Rename playlist", initial=message.title),
+            lambda name: self._rename_playlist(
+                message.playlist_id, message.title, name
+            ),
+        )
+
+    def _rename_playlist(
+        self, playlist_id: str, old_title: str, name: str | None
+    ) -> None:
+        if not name or name == old_title:
+            return
+        self.playlist_mutation_worker(lambda: self._do_rename(playlist_id, name))
+
+    def _do_rename(self, playlist_id: str, name: str) -> str:
+        self.client.library.rename_playlist(playlist_id, name)
+        return f"Renamed playlist to “{name}”"
+
+    @work(thread=True, exit_on_error=False)
+    def playlist_mutation_worker(self, mutate: Callable[[], str]) -> str:
+        """Run one playlist mutation off the UI thread and return a status line."""
+        return mutate()
+
+    def _on_playlist_mutation_finished(self, worker: Worker[str]) -> None:
+        if worker.state is WorkerState.SUCCESS:
+            self._refresh_library()
+            status = worker.result or "Done"
+            self.set_status(status)
+            self.notify(status, title="Playlists")
+        else:
+            self.notify(
+                f"Playlist update failed: {worker.error}",
+                title="Playlists",
+                severity="error",
+            )
+
+    def _refresh_library(self) -> None:
+        """Reload library playlists after a mutation.
+
+        ponytail: full tree rebuild collapses open playlists; patch the
+        affected node in place if that ever annoys anyone.
+        """
+        if self._library_worker is not None and self._library_worker.is_running:
+            self._library_worker.cancel()
+        self._library_worker = self.library_worker()
 
     @on(QueueList.Selected)
     def _on_queue_selected(self, event: QueueList.Selected) -> None:

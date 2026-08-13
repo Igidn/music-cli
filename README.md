@@ -49,7 +49,6 @@ persisted too — once you've changed them, they win over `--volume`.
 | --- | --- |
 | `/` | search |
 | `enter` | play / open playlist |
-| `p` | playlists pane |
 | `space` | play / pause |
 | `n` | next |
 | `a` | toggle auto-next |
@@ -58,3 +57,8 @@ persisted too — once you've changed them, they win over `--volume`.
 | `+` / `-` | volume |
 | `m` | mute |
 | `q` | quit |
+
+With a song selected (search results, up next or a playlist's tracks) `s`
+opens a picker to add it to playlists. In the playlists panel, `c` creates a
+playlist, `r` renames the selected playlist and `d` removes the selected song
+from its playlist. These keys appear in the footer only when they apply.

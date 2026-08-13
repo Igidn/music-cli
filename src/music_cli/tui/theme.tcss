@@ -230,6 +230,48 @@ NowPlaying {
     padding: 0 2;
 }
 
+/* Playlist management modal screens */
+#add-playlist-modal,
+#name-modal,
+#confirm-modal {
+    width: 62;
+    max-width: 85%;
+    max-height: 85%;
+    background: $surface;
+    border: solid $accent;
+    padding: 1 2;
+}
+
+#add-playlist-modal-title,
+#name-modal-title,
+#confirm-modal-message {
+    color: $accent-soft;
+    text-style: bold;
+    margin-bottom: 1;
+}
+
+#add-playlist-modal-empty {
+    color: $text-dim;
+    margin-bottom: 1;
+}
+
+#add-playlist-modal-select {
+    height: auto;
+    max-height: 18;
+    margin-bottom: 1;
+}
+
+#name-modal-input {
+    margin-bottom: 1;
+}
+
+#add-playlist-modal-buttons,
+#name-modal-buttons,
+#confirm-modal-buttons {
+    height: 3;
+    align-horizontal: right;
+}
+
 #np-head {
     height: 3;
     layout: horizontal;

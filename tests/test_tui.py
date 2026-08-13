@@ -69,6 +69,10 @@ class FakeLibrary:
         self.authenticated = authenticated
         self.playlist_calls = []
         self.track_calls = []
+        self.create_calls = []
+        self.rename_calls = []
+        self.add_calls = []
+        self.remove_calls = []
         self._tracks = {
             "p1": [
                 PlaylistTrack(video_id="p1t1", title="Mix One", artists=["A"]),
@@ -87,6 +91,19 @@ class FakeLibrary:
     def tracks(self, playlist_id):
         self.track_calls.append(playlist_id)
         return self._tracks.get(playlist_id, [])
+
+    def create_playlist(self, title):
+        self.create_calls.append(title)
+        return "p3"
+
+    def rename_playlist(self, playlist_id, title):
+        self.rename_calls.append((playlist_id, title))
+
+    def add_tracks(self, playlist_id, video_ids):
+        self.add_calls.append((playlist_id, video_ids))
+
+    def remove_track(self, playlist_id, video_id):
+        self.remove_calls.append((playlist_id, video_id))
 
 
 class FakePlayer:
@@ -817,7 +834,9 @@ def test_tui_saves_track_played_from_queue():
             await pilot.pause()
             queue = app.query_one(QueueList)
             queue.set_tracks(client.queue)
-            app._on_queue_selected(QueueList.Selected(queue, queue.children[0], index=0))
+            app._on_queue_selected(
+                QueueList.Selected(queue, queue.children[0], index=0)
+            )
             await pilot.pause()
             await pilot.pause()
             await pilot.pause()
@@ -891,5 +910,218 @@ def test_waveform_widget_tracks_playback_state():
             np.clear_track()
             assert not waveform._active
             assert "▁" in waveform.render().plain
+
+    _run(scenario())
+
+
+def test_add_to_playlist_from_results():
+    from textual.widgets import Button, SelectionList
+
+    from music_cli.tui.app import MusicTUI, ResultsTable
+    from music_cli.tui.modals import AddToPlaylistScreen
+
+    async def scenario():
+        client = make_client()
+        app = MusicTUI(client)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            search = app.query_one("#search-input")
+            search.value = "coldplay"
+            await pilot.pause(0.6)
+            results = app.query_one(ResultsTable)
+            results.focus()
+            await pilot.pause()
+            await pilot.press("s")
+            await pilot.pause()
+            assert isinstance(app.screen, AddToPlaylistScreen)
+            app.screen.query_one(SelectionList).toggle("p1")
+            app.screen.query_one("#add-playlist-modal-add", Button).press()
+            for _ in range(4):
+                await pilot.pause()
+            assert client.library.add_calls == [("p1", ["v0"])]
+            assert len(client.library.playlist_calls) == 2
+
+    _run(scenario())
+
+
+def test_add_to_playlist_from_queue():
+    from textual.widgets import Button, SelectionList
+
+    from music_cli.tui.app import MusicTUI, QueueList
+    from music_cli.tui.modals import AddToPlaylistScreen
+
+    async def scenario():
+        client = make_client()
+        app = MusicTUI(client)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            queue = app.query_one(QueueList)
+            queue.set_tracks([PlaylistTrack(video_id="t1", title="One", artists=["A"])])
+            queue.focus()
+            await pilot.pause()
+            await pilot.press("s")
+            await pilot.pause()
+            assert isinstance(app.screen, AddToPlaylistScreen)
+            app.screen.query_one(SelectionList).toggle("p2")
+            app.screen.query_one("#add-playlist-modal-add", Button).press()
+            for _ in range(4):
+                await pilot.pause()
+            assert client.library.add_calls == [("p2", ["t1"])]
+
+    _run(scenario())
+
+
+def test_remove_track_from_playlist_tree():
+    from textual.widgets import Button
+
+    from music_cli.tui.app import LibraryTree, MusicTUI
+    from music_cli.tui.modals import ConfirmScreen
+
+    async def scenario():
+        client = make_client()
+        app = MusicTUI(client)
+        async with app.run_test(size=(120, 40)) as pilot:
+            for _ in range(10):
+                await pilot.pause()
+            tree = app.query_one(LibraryTree)
+            tree.focus()
+            await pilot.press("down")
+            await pilot.press("enter")
+            for _ in range(10):
+                await pilot.pause()
+            await pilot.press("down")
+            await pilot.press("d")
+            await pilot.pause()
+            assert isinstance(app.screen, ConfirmScreen)
+            app.screen.query_one("#confirm-modal-yes", Button).press()
+            for _ in range(4):
+                await pilot.pause()
+            assert client.library.remove_calls == [("p1", "p1t1")]
+
+    _run(scenario())
+
+
+def test_create_playlist_from_tree():
+    from textual.widgets import Button, Input
+
+    from music_cli.tui.app import LibraryTree, MusicTUI
+    from music_cli.tui.modals import PlaylistNameScreen
+
+    async def scenario():
+        client = make_client()
+        app = MusicTUI(client)
+        async with app.run_test(size=(120, 40)) as pilot:
+            for _ in range(10):
+                await pilot.pause()
+            tree = app.query_one(LibraryTree)
+            tree.focus()
+            await pilot.press("down")
+            await pilot.press("c")
+            await pilot.pause()
+            assert isinstance(app.screen, PlaylistNameScreen)
+            app.screen.query_one(Input).value = "My New Mix"
+            app.screen.query_one("#name-modal-save", Button).press()
+            for _ in range(4):
+                await pilot.pause()
+            assert client.library.create_calls == ["My New Mix"]
+
+    _run(scenario())
+
+
+def test_rename_playlist_from_tree():
+    from textual.widgets import Button, Input
+
+    from music_cli.tui.app import LibraryTree, MusicTUI
+    from music_cli.tui.modals import PlaylistNameScreen
+
+    async def scenario():
+        client = make_client()
+        app = MusicTUI(client)
+        async with app.run_test(size=(120, 40)) as pilot:
+            for _ in range(10):
+                await pilot.pause()
+            tree = app.query_one(LibraryTree)
+            tree.focus()
+            await pilot.press("down")
+            await pilot.press("r")
+            await pilot.pause()
+            assert isinstance(app.screen, PlaylistNameScreen)
+            name_input = app.screen.query_one(Input)
+            assert name_input.value == "My Mix"
+            name_input.value = "Renamed Mix"
+            app.screen.query_one("#name-modal-save", Button).press()
+            for _ in range(4):
+                await pilot.pause()
+            assert client.library.rename_calls == [("p1", "Renamed Mix")]
+
+    _run(scenario())
+
+
+def test_playlist_keybinds_show_only_with_selection():
+    from music_cli.tui.app import LibraryTree, MusicTUI, ResultsTable
+
+    async def scenario():
+        client = make_client()
+        app = MusicTUI(client)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            results = app.query_one(ResultsTable)
+            results.focus()
+            await pilot.pause()
+            assert "s" not in app.screen.active_bindings  # focused but no rows
+
+            search = app.query_one("#search-input")
+            search.value = "coldplay"
+            await pilot.pause(0.6)
+            results.focus()
+            await pilot.pause()
+            assert "s" in app.screen.active_bindings
+
+            tree = app.query_one(LibraryTree)
+            for _ in range(10):
+                await pilot.pause()
+            tree.focus()
+            await pilot.press("down")
+            await pilot.pause()
+            bindings = app.screen.active_bindings
+            assert "c" in bindings and "r" in bindings
+            assert "s" not in bindings and "d" not in bindings
+
+            await pilot.press("enter")
+            for _ in range(10):
+                await pilot.pause()
+            await pilot.press("down")
+            await pilot.pause()
+            bindings = app.screen.active_bindings
+            assert "s" in bindings and "d" in bindings
+            assert "r" not in bindings and "c" not in bindings
+
+    _run(scenario())
+
+
+def test_playlist_keybinds_hidden_when_unauthenticated():
+    from music_cli.tui.app import LibraryTree, MusicTUI, ResultsTable
+
+    async def scenario():
+        client = make_client()
+        client.library = FakeLibrary(authenticated=False)
+        app = MusicTUI(client)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            search = app.query_one("#search-input")
+            search.value = "coldplay"
+            await pilot.pause(0.6)
+            results = app.query_one(ResultsTable)
+            results.focus()
+            await pilot.pause()
+            assert "s" not in app.screen.active_bindings
+
+            tree = app.query_one(LibraryTree)
+            tree.focus()
+            await pilot.press("down")
+            await pilot.pause()
+            bindings = app.screen.active_bindings
+            assert "c" not in bindings and "r" not in bindings
+            assert "s" not in bindings and "d" not in bindings
 
     _run(scenario())
