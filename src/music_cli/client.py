@@ -67,6 +67,14 @@ class MusicClient:
     def on_track_end(self, callback: Callable[[], None] | None) -> None:
         self.player.on_track_end = callback
 
+    @property
+    def loop(self) -> bool:
+        return self.player.loop
+
+    @loop.setter
+    def loop(self, value: bool) -> None:
+        self.player.loop = value
+
     def search(
         self,
         query: str,

@@ -71,6 +71,7 @@ class FakePlayer:
         self._volume = 80
         self.playback_time = 0.0
         self._duration = 213.0
+        self.loop = False
 
     @property
     def volume(self):
@@ -209,6 +210,16 @@ def test_arrow_key_pane_navigation():
             await pilot.press("left")
             assert app.focused is results
 
+            playlist = app.query_one("#playlist-pane")
+            await pilot.press("left")
+            assert app.focused is playlist
+            await pilot.press("right")
+            assert app.focused is search
+            results.focus()
+            await pilot.pause()
+            await pilot.press("p")
+            assert app.focused is playlist
+
     _run(scenario())
 
 
@@ -345,6 +356,54 @@ def test_tui_auto_next_toggle_stops_at_track_end():
     _run(scenario())
 
 
+def test_tui_loop_toggle():
+    from music_cli.tui.app import MusicTUI
+
+    async def scenario():
+        client = make_client()
+        app = MusicTUI(client)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            assert app._loop_enabled is False
+
+            app.action_toggle_loop()
+            assert app._loop_enabled is True
+            assert client.player.loop is True
+
+            app.action_toggle_loop()
+            assert app._loop_enabled is False
+            assert client.player.loop is False
+
+    _run(scenario())
+
+
+def test_tui_mode_indicators():
+    from music_cli.tui.app import MusicTUI
+    from music_cli.tui.now_playing import NowPlaying
+
+    async def scenario():
+        client = make_client()
+        app = MusicTUI(client)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause(0.6)
+            np = app.query_one(NowPlaying)
+            loop = np.query_one("#np-loop")
+            auto = np.query_one("#np-auto")
+            assert loop.has_class("off") and not loop.has_class("on")
+            assert auto.has_class("on") and not auto.has_class("off")
+
+            app.action_toggle_loop()
+            app.action_toggle_auto_next()
+            assert loop.has_class("on")
+            assert auto.has_class("off")
+
+            await pilot.pause(0.6)
+            assert loop.has_class("on")
+            assert auto.has_class("off")
+
+    _run(scenario())
+
+
 def test_tui_wires_player_eof_and_auto_advances():
     from music_cli.tui.app import MusicTUI
     from music_cli.tui.now_playing import NowPlaying
@@ -457,5 +516,105 @@ def test_tui_queue_click_after_refresh_keeps_track_identity():
             assert client.extractor.resolves == 1
             assert client.player.played[0].video_id == "t2"
             assert [t.video_id for t in client.queue] == ["t1"]
+
+    _run(scenario())
+
+
+def test_playlist_pane_placeholder():
+    from music_cli.tui.app import MusicTUI, PlaylistPane
+
+    async def scenario():
+        client = make_client()
+        app = MusicTUI(client)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            pane = app.query_one(PlaylistPane)
+            assert pane.id == "playlist-pane"
+            assert pane.can_focus
+            placeholder = pane.query_one(".playlist-placeholder")
+            assert "playlists" in str(placeholder.content).lower()
+
+    _run(scenario())
+
+
+def test_narrow_layout_hides_side_panes():
+    from music_cli.tui.app import MusicTUI, PlaylistPane, ResultsTable
+
+    async def scenario():
+        client = make_client()
+        app = MusicTUI(client)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            playlist = app.query_one(PlaylistPane)
+            queue = app.query_one("#queue-pane")
+            assert not app.screen.has_class("-narrow")
+            assert queue.display and playlist.display
+
+            await pilot.resize_terminal(80, 40)
+            await pilot.pause()
+            assert app.screen.has_class("-narrow")
+            assert not queue.display
+            assert not playlist.display
+
+            # Pane navigation skips panes hidden in narrow mode.
+            results = app.query_one(ResultsTable)
+            results.focus()
+            await pilot.pause()
+            await pilot.press("left")
+            assert app.focused is results
+            await pilot.press("right")
+            assert app.focused is results
+            await pilot.press("p")
+            assert app.focused is results
+
+            await pilot.resize_terminal(120, 40)
+            await pilot.pause()
+            assert not app.screen.has_class("-narrow")
+            assert queue.display and playlist.display
+
+    _run(scenario())
+
+
+def test_waveform_widget_tracks_playback_state():
+    from music_cli.tui.app import MusicTUI
+    from music_cli.tui.now_playing import NowPlaying
+    from music_cli.tui.waveform import Waveform
+
+    async def scenario():
+        client = make_client()
+        app = MusicTUI(client)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            np = app.query_one(NowPlaying)
+            waveform = app.query_one(Waveform)
+
+            idle = waveform.render()
+            assert "▁" in idle.plain
+            assert len(idle.plain.splitlines()) == waveform.size.height
+
+            np.set_track("Title", "Artist", 213.0)
+            assert waveform._active
+            await pilot.pause(0.3)
+            animated = waveform.render()
+            assert len(animated.plain.splitlines()) == 3
+            assert any(block in animated.plain for block in "▂▃▄▅▆▇█")
+
+            # Pausing freezes the animation; resuming advances it again.
+            client.current = FakeExtractor().resolve("v1")
+            app.action_toggle_playback()
+            await pilot.pause(0.7)
+            assert waveform._paused
+            frozen_time = waveform._time
+            await pilot.pause(0.3)
+            assert waveform._time == frozen_time
+
+            app.action_toggle_playback()
+            await pilot.pause(0.7)
+            assert not waveform._paused
+            assert waveform._time > frozen_time
+
+            np.clear_track()
+            assert not waveform._active
+            assert "▁" in waveform.render().plain
 
     _run(scenario())

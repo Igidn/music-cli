@@ -440,6 +440,7 @@ class AVFoundationPlayer:
         self,
         *,
         volume: int = 80,
+        loop: bool = False,
         on_track_end: Callable[[], None] | None = None,
         cookies: Cookies | None = None,
         player_factory: Callable[[], AVPlayer] = _default_player,
@@ -447,6 +448,7 @@ class AVFoundationPlayer:
         cache: AudioCache | None = None,
     ) -> None:
         self.on_track_end = on_track_end
+        self._loop = loop
         self._ended = threading.Event()
         self._title = ""
         self._observer_token: Any = None
@@ -532,6 +534,12 @@ class AVFoundationPlayer:
         self.seek(self.position + delta)
 
     def _on_item_ended(self, notification: Any) -> None:
+        if self._loop:
+            self._player.seekToTime_toleranceBefore_toleranceAfter_(
+                kCMTimeZero, kCMTimeZero, kCMTimeZero
+            )
+            self._player.play()
+            return
         self._ended.set()
         if self.on_track_end:
             self.on_track_end()
@@ -564,6 +572,14 @@ class AVFoundationPlayer:
     @muted.setter
     def muted(self, value: bool) -> None:
         self._player.setMuted_(bool(value))
+
+    @property
+    def loop(self) -> bool:
+        return self._loop
+
+    @loop.setter
+    def loop(self, value: bool) -> None:
+        self._loop = bool(value)
 
     @property
     def paused(self) -> bool:

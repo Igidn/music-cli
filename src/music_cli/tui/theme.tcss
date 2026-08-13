@@ -24,6 +24,13 @@ Screen {
     color: $text;
 }
 
+/* On narrow terminals the side panes collapse and search + now-playing take
+   the full width. */
+Screen.-narrow #queue-pane,
+Screen.-narrow #playlist-pane {
+    display: none;
+}
+
 TopBar {
     height: 3;
     layout: horizontal;
@@ -56,27 +63,48 @@ TopBar {
 }
 
 #results-pane {
-    width: 3fr;
+    width: 1fr;
 }
 
 #queue-pane {
-    width: 2fr;
+    width: 32;
+}
+
+#playlist-pane {
+    width: 30;
+    border-top: solid $border-soft;
+    border-right: solid $border-soft;
+    border-title-color: $accent;
+    border-title-style: bold;
+    margin: 0 1 0 0;
+    background: $surface;
+}
+
+#playlist-pane:focus {
+    border-top: solid $accent;
+    border-right: solid $accent;
+}
+
+.playlist-placeholder {
+    padding: 1 1;
+    color: $text-dim;
+    text-style: italic;
 }
 
 #search-box {
-    height: 3;
+    height: 1;
     margin: 1 2 0 2;
-    border: round $border;
     padding: 0 1;
     background: $surface;
 }
 
 #search-box:focus-within {
-    border: round $accent;
+    background: $surface-2;
 }
 
 #search-input {
     width: 1fr;
+    height: 1;
     background: transparent;
     border: none;
     color: $text;
@@ -92,7 +120,8 @@ TopBar {
 }
 
 #filter-select {
-    width: 18;
+    width: 14;
+    height: 1;
     margin-left: 1;
     background: $surface-2;
 }
@@ -180,7 +209,7 @@ QueueList > ListItem.-highlight .queue-subtitle {
 }
 
 NowPlaying {
-    height: 7;
+    height: 10;
     background: $surface;
     border-top: solid $border-soft;
     padding: 0 2;
@@ -254,6 +283,19 @@ NowPlaying {
 #np-volume {
     width: auto;
     color: $text-dim;
+}
+
+#np-loop,
+#np-auto {
+    width: auto;
+    margin-right: 1;
+    color: $text-dim;
+    text-style: bold;
+}
+
+#np-loop.on,
+#np-auto.on {
+    color: $accent-soft;
 }
 
 Footer {

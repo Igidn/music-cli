@@ -428,6 +428,42 @@ class TestAVFoundationPlayer:
         assert event.is_set()
         assert player.wait_for_end(0.1) is True
 
+    def test_loop_replays_instead_of_ending(self):
+        event = threading.Event()
+        fake = FakeAVPlayer()
+        player = AVFoundationPlayer(
+            loop=True,
+            on_track_end=event.set,
+            player_factory=lambda: fake,
+            fetch_stream=_local,
+        )
+        player.play(StreamInfo(video_id="v", title="T", stream_url="https://u"))
+        fake._time = CMTimeMakeWithSeconds(95.0, 600)
+        player._on_item_ended(None)
+        assert CMTimeGetSeconds(fake._time) == 0.0
+        assert fake.rate() == 1.0
+        assert not player.eof_reached
+        assert not event.is_set()
+
+    def test_loop_off_notifies_on_end(self):
+        fake = FakeAVPlayer()
+        player = AVFoundationPlayer(
+            loop=True,
+            on_track_end=lambda: None,
+            player_factory=lambda: fake,
+            fetch_stream=_local,
+        )
+        player.play(StreamInfo(video_id="v", title="T", stream_url="https://u"))
+        player.loop = False
+        player._on_item_ended(None)
+        assert player.eof_reached
+
+    def test_loop_property_defaults_off(self):
+        player = AVFoundationPlayer(player_factory=lambda: FakeAVPlayer())
+        assert player.loop is False
+        player.loop = True
+        assert player.loop is True
+
     def test_close_stops_and_unloads(self):
         fake = FakeAVPlayer()
         player = AVFoundationPlayer(player_factory=lambda: fake, fetch_stream=_local)

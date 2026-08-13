@@ -11,15 +11,19 @@ Run with:  uv run pytest -m e2e tests/test_e2e.py -v
 
 from __future__ import annotations
 
+import concurrent.futures
 import os
 import subprocess
 import time
 
 import pytest
 
+from music_cli.cache import AudioCache
+from music_cli.client import MusicClient
 from music_cli.player import (
     AVFoundationPlayer,
     Cookies,
+    PlaylistTrack,
     StreamExtractor,
     WatchPlaylist,
 )
@@ -142,6 +146,128 @@ class TestAVFoundationPlayback:
                 player.close()
             stream = extractor.resolve(stream.video_id)
         raise AssertionError("AVFoundation never reached end of track")
+
+
+class TestCacheEndToEnd:
+    """The disk cache with real network: download, replay and no-network playback."""
+
+    @pytest.fixture
+    def cache_dir(self, tmp_path):
+        return tmp_path / "cache"
+
+    def test_prefetch_downloads_real_track_into_cache(self, cookies, cache_dir):
+        client = MusicClient(
+            cookies=cookies,
+            cache=AudioCache(directory=cache_dir),
+        )
+        try:
+            downloaded = False
+            for _attempt in range(3):
+                if client.prefetch(KNOWN_VIDEO):
+                    downloaded = True
+                    break
+            assert downloaded, "prefetch did not cache the track"
+            cached = client.cache.lookup(KNOWN_VIDEO)
+            assert cached is not None
+            assert cached.title, "metadata missing from cache entry"
+            path = client.cache.path_for(KNOWN_VIDEO)
+            assert path is not None and path.is_file()
+            assert cached.size > 100_000, "cached file looks empty"
+            assert path.stat().st_size == cached.size
+            header = path.read_bytes()[:12]
+            assert header[4:8] == b"ftyp" or header[:4] == b"\x1aE\xdf\xa3", (
+                f"cached file is not a valid audio container: {header.hex()}"
+            )
+        finally:
+            client.close()
+
+    def test_playback_starts_from_cache_after_download(self, cookies, cache_dir):
+        client = MusicClient(
+            cookies=cookies,
+            cache=AudioCache(directory=cache_dir),
+        )
+        try:
+            assert client.prefetch(KNOWN_VIDEO)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(
+                    client.play_track,
+                    PlaylistTrack(video_id=KNOWN_VIDEO, title="cached"),
+                )
+                deadline = time.monotonic() + 60
+                while (
+                    time.monotonic() < deadline
+                    and client.player.position < 1.0
+                    and not future.done()
+                ):
+                    client.player.pump()
+                    time.sleep(0.1)
+                future.result(timeout=15)
+                while time.monotonic() < deadline and client.player.position < 1.0:
+                    client.player.pump()
+                    time.sleep(0.1)
+                assert client.player.position >= 1.0, "cached track did not play"
+            assert client.current is not None
+            assert client.current.video_id == KNOWN_VIDEO
+            assert client.cache.lookup(KNOWN_VIDEO) is not None
+        finally:
+            client.close()
+
+    def test_restart_replays_from_cache_with_no_network(self, cookies, cache_dir):
+        first = MusicClient(
+            cookies=cookies,
+            cache=AudioCache(directory=cache_dir),
+        )
+        try:
+            assert first.prefetch(KNOWN_VIDEO)
+        finally:
+            first.close()
+
+        class NetworkBlocked:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def resolve(self, video_id):
+                raise AssertionError(f"network used to resolve {video_id}")
+
+            def download(self, video_id, target):
+                raise AssertionError(f"network used to download {video_id}")
+
+        second = MusicClient(
+            cookies=cookies,
+            extractor_factory=NetworkBlocked,
+            cache=AudioCache(directory=cache_dir),
+        )
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(
+                    second.play_track,
+                    PlaylistTrack(video_id=KNOWN_VIDEO, title="cached"),
+                )
+                deadline = time.monotonic() + 60
+                while (
+                    time.monotonic() < deadline
+                    and second.player.position < 1.0
+                    and not future.done()
+                ):
+                    second.player.pump()
+                    time.sleep(0.1)
+                future.result(timeout=15)
+                while (
+                    time.monotonic() < deadline
+                    and second.player.position < 1.0
+                ):
+                    second.player.pump()
+                    time.sleep(0.1)
+                assert second.player.position >= 1.0, (
+                    "cached replay did not play without network"
+                )
+            assert second.current is not None
+            assert second.current.video_id == KNOWN_VIDEO
+            assert second.current.stream_url == "", (
+                "replay resolved a stream URL instead of using the cache"
+            )
+        finally:
+            second.close()
 
 
 class TestTuiIntegration:

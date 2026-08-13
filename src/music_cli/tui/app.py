@@ -22,6 +22,7 @@ from textual.widgets import (
     ListItem,
     ListView,
     Select,
+    Static,
 )
 from textual.worker import Worker, WorkerState
 
@@ -62,6 +63,25 @@ class TopBar(Widget):
     def compose(self) -> ComposeResult:
         yield Label("♪ music-cli", id="brand")
         yield Label("", id="queue-count")
+
+
+class PlaylistPane(Widget):
+    """Library playlists sidebar.
+
+    Placeholder until the playlist system is wired up; the pane is kept out
+    of the way so navigation, layout and styling already account for it.
+    """
+
+    can_focus = True
+
+    def on_mount(self) -> None:
+        self.border_title = " PLAYLISTS "
+
+    def compose(self) -> ComposeResult:
+        yield Static(
+            "Your library playlists\nwill live here soon.",
+            classes="playlist-placeholder",
+        )
 
 
 class ResultsTable(DataTable, inherit_bindings=False):
@@ -203,24 +223,32 @@ class MusicTUI(App[None]):
     CSS_PATH = "theme.tcss"
     TITLE = "music-cli"
 
+    # Below this width the side panes (playlists, up next) are hidden so the
+    # search results and now-playing bar keep the full terminal.
+    NARROW_WIDTH = 100
+    HORIZONTAL_BREAKPOINTS: ClassVar = [(0, "-narrow"), (NARROW_WIDTH, "-wide")]
+
     PANE_NAV: ClassVar[dict[str, dict[str, str]]] = {
-        "search-input": {"down": "results"},
+        "search-input": {"down": "results", "left": "playlist-pane"},
         "filter-select": {
             "down": "results",
             "left": "search-input",
             "right": "queue-pane",
         },
-        "results": {"right": "queue-pane"},
+        "results": {"left": "playlist-pane", "right": "queue-pane"},
         "queue-pane": {"left": "results"},
+        "playlist-pane": {"right": "search-input"},
     }
 
     BINDINGS: ClassVar[list[Binding]] = [
         Binding("slash", "focus_search", "Search"),
+        Binding("p", "focus_playlists", "Playlists"),
         Binding("space", "toggle_playback", "Play/Pause"),
         Binding("ctrl+right", "seek_forward", "Seek +5s"),
         Binding("ctrl+left", "seek_back", "Seek -5s"),
         Binding("n", "next_track", "Next"),
         Binding("a", "toggle_auto_next", "Auto next"),
+        Binding("l", "toggle_loop", "Loop"),
         Binding("plus", "volume_up", "Vol +", show=False),
         Binding("minus", "volume_down", "Vol -"),
         Binding("m", "toggle_mute", "Mute"),
@@ -247,6 +275,7 @@ class MusicTUI(App[None]):
         self._pending_track: PlaylistTrack | None = None
         self._pending_index: int = 0
         self._auto_next = True
+        self._loop_enabled = False
 
     def on_mount(self) -> None:
         self.set_interval(0.5, self._tick)
@@ -261,6 +290,7 @@ class MusicTUI(App[None]):
     def compose(self) -> ComposeResult:
         yield TopBar()
         with Horizontal(id="body"):
+            yield PlaylistPane(id="playlist-pane")
             with Vertical(id="results-pane"):
                 with Horizontal(id="search-box"):
                     yield Input(
@@ -557,6 +587,12 @@ class MusicTUI(App[None]):
 
     def action_toggle_auto_next(self) -> None:
         self._auto_next = not self._auto_next
+        self.query_one(NowPlaying).set_modes(self._auto_next, self._loop_enabled)
+
+    def action_toggle_loop(self) -> None:
+        self._loop_enabled = not self._loop_enabled
+        self.client.loop = self._loop_enabled
+        self.query_one(NowPlaying).set_modes(self._auto_next, self._loop_enabled)
 
     def action_toggle_playback(self) -> None:
         if self.client.current is not None:
@@ -589,6 +625,11 @@ class MusicTUI(App[None]):
     def action_focus_search(self) -> None:
         self.query_one("#search-input", Input).focus()
 
+    def action_focus_playlists(self) -> None:
+        pane = self.query_one("#playlist-pane")
+        if pane.display:
+            pane.focus()
+
     def action_focus_results(self) -> None:
         self.query_one(ResultsTable).focus()
 
@@ -610,7 +651,9 @@ class MusicTUI(App[None]):
             return
         target = self.PANE_NAV.get(focused.id, {}).get(direction)
         if target is not None:
-            self.query_one(f"#{target}").focus()
+            widget = self.query_one(f"#{target}")
+            if widget.display:
+                widget.focus()
 
     def set_status(self, text: str) -> None:
         self.query_one(NowPlaying).set_status(text)
@@ -623,3 +666,4 @@ class MusicTUI(App[None]):
             player.paused if self.client.current is not None else False
         )
         now_playing.set_volume(player.volume, player.muted)
+        now_playing.set_modes(self._auto_next, self._loop_enabled)
