@@ -1,9 +1,11 @@
 """YouTube Music library playlists, account-aware like the watch playlist.
 
 Uses ytmusicapi's ``get_library_playlists`` / ``get_playlist`` endpoints.
-Library endpoints only respond to an authenticated account: an OAuth token
-(``music-cli oauth``) is the supported path, with browser cookies as a
-fallback for setups where the API still accepts them.
+Browser cookies from ``music-cli login`` are the primary credential: the
+cookie header (with ``__Secure-3PAPISID``) plus an origin lets ytmusicapi
+treat the client as browser-authenticated and compute the per-request
+SAPISIDHASH itself. An OAuth token (``music-cli oauth``) remains available
+for users who prefer it, and is required for library *write* endpoints.
 """
 
 from __future__ import annotations
@@ -88,8 +90,8 @@ def parse_library_playlist(raw: dict[str, Any]) -> LibraryPlaylist:
 class Library:
     """The account's library playlists and their tracks.
 
-    Authenticates with an OAuth token file when configured, falling back to
-    browser cookies (which YouTube's API only accepts for some endpoints).
+    Authenticates with browser cookies by default (captured by
+    ``music-cli login``), or an OAuth token file when configured.
     """
 
     def __init__(
@@ -108,10 +110,7 @@ class Library:
     @property
     def authenticated(self) -> bool:
         """Whether account credentials are configured for library access."""
-        return bool(
-            self._oauth_file
-            or (self._cookies and self._cookies.enabled)
-        )
+        return bool(self._oauth_file or (self._cookies and self._cookies.enabled))
 
     def _client(self) -> YTMusic:
         if self._api is not None:

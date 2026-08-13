@@ -288,13 +288,15 @@ class AudioCache:
         try:
             raw = json.loads(self._index_path.read_text())
             entries = raw.get("tracks") if isinstance(raw, dict) else None
-        except (OSError, ValueError):
+        except OSError, ValueError:
             entries = None
         if isinstance(entries, dict):
             for video_id, entry in entries.items():
-                if not isinstance(entry, dict) or not isinstance(
-                    entry.get("ext"), str
-                ) or not entry["ext"]:
+                if (
+                    not isinstance(entry, dict)
+                    or not isinstance(entry.get("ext"), str)
+                    or not entry["ext"]
+                ):
                     self._dirty = True
                     continue
                 path = self._tracks_dir / f"{video_id}.{entry['ext']}"
@@ -342,13 +344,19 @@ class AudioCache:
             self._drop(video_id, entry)
 
     def _evict_budget(self) -> None:
-        if len(self._entries) <= self.max_entries and self._total_size() <= self.max_size:
+        if (
+            len(self._entries) <= self.max_entries
+            and self._total_size() <= self.max_size
+        ):
             return
         for video_id, entry in sorted(
             self._entries.items(), key=lambda item: item[1]["last_used"]
         ):
             self._drop(video_id, entry)
-            if len(self._entries) <= self.max_entries and self._total_size() <= self.max_size:
+            if (
+                len(self._entries) <= self.max_entries
+                and self._total_size() <= self.max_size
+            ):
                 break
 
     def _total_size(self) -> int:
@@ -378,9 +386,7 @@ class AudioCache:
         fd, tmp = tempfile.mkstemp(prefix="index.", suffix=".tmp", dir=self.directory)
         try:
             with os.fdopen(fd, "w") as handle:
-                json.dump(
-                    {"version": CACHE_VERSION, "tracks": self._entries}, handle
-                )
+                json.dump({"version": CACHE_VERSION, "tracks": self._entries}, handle)
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(tmp, self._index_path)

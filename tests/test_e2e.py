@@ -252,10 +252,7 @@ class TestCacheEndToEnd:
                     second.player.pump()
                     time.sleep(0.1)
                 future.result(timeout=15)
-                while (
-                    time.monotonic() < deadline
-                    and second.player.position < 1.0
-                ):
+                while time.monotonic() < deadline and second.player.position < 1.0:
                     second.player.pump()
                     time.sleep(0.1)
                 assert second.player.position >= 1.0, (

@@ -5,9 +5,11 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from pathlib import Path
 
 from .cache import AudioCache
 from .client import MusicClient
+from .login import auth_was_skipped, default_cookie_path
 from .player import Cookies, PlayerError
 
 
@@ -19,9 +21,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--cookies",
         metavar="FILE",
-        default=os.environ.get("MUSIC_CLI_COOKIE_FILE"),
+        default=os.environ.get("MUSIC_CLI_COOKIE_FILE")
+        or _existing_default_cookie_file(),
         help="Netscape-format cookie file for account-aware playback "
-        "(default: $MUSIC_CLI_COOKIE_FILE)",
+        "(default: $MUSIC_CLI_COOKIE_FILE, or the file created by "
+        "'music-cli login')",
     )
     parser.add_argument(
         "--oauth",
@@ -71,7 +75,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="where to store the token "
         "(default: $MUSIC_CLI_OAUTH_FILE or ./oauth.json)",
     )
+    login_parser = subparsers.add_parser(
+        "login",
+        help="sign in with your YouTube Music account using your browser",
+    )
+    login_parser.add_argument(
+        "--file",
+        metavar="FILE",
+        default=None,
+        help="where to save the cookies (default: $MUSIC_CLI_COOKIE_FILE "
+        "or ~/.config/music-cli/cookies.txt)",
+    )
     return parser
+
+
+def _existing_default_cookie_file() -> str | None:
+    path = default_cookie_path()
+    return str(path) if path.is_file() else None
 
 
 def build_client(args: argparse.Namespace) -> MusicClient:
@@ -97,10 +117,28 @@ def main() -> None:
         run_oauth_setup(args.client_id, args.client_secret, args.file)
         print(f"music-cli: OAuth token saved to {args.file}")
         return
+    if args.command == "login":
+        run_login(args.file)
+        return
     if args.clear_cache:
         AudioCache().clear()
         print("music-cli: audio cache cleared")
         return
+    if (
+        not args.cookies
+        and not args.oauth
+        and not auth_was_skipped()
+        and sys.stdin.isatty()
+    ):
+        from .tui.onboarding import run_onboarding
+
+        try:
+            cookie_path = run_onboarding()
+        except PlayerError as error:
+            print(f"music-cli: {error}", file=sys.stderr)
+            sys.exit(1)
+        if cookie_path is not None:
+            args.cookies = str(cookie_path)
     try:
         client = build_client(args)
     except PlayerError as error:
@@ -109,6 +147,24 @@ def main() -> None:
     from .tui.app import MusicTUI
 
     MusicTUI(client).run()
+
+
+def run_login(filepath: str | None) -> None:
+    """CLI entry for 'music-cli login': browser sign-in with progress prints."""
+    from .login import browser_login
+
+    output = Path(filepath) if filepath else default_cookie_path()
+    try:
+        result = browser_login(output, status=lambda text: print(f"music-cli: {text}"))
+    except KeyboardInterrupt:
+        print("music-cli: sign-in cancelled", file=sys.stderr)
+        sys.exit(1)
+    except PlayerError as error:
+        print(f"music-cli: {error}", file=sys.stderr)
+        sys.exit(1)
+    count = result.playlist_count
+    library = f" — {count} playlists found" if count is not None else ""
+    print(f"music-cli: signed in — cookies saved to {result.cookie_path}{library}")
 
 
 if __name__ == "__main__":

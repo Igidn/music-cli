@@ -8,6 +8,7 @@ authors = [
 ]
 requires-python = ">=3.14"
 dependencies = [
+    "playwright>=1.50",
     "pyobjc-framework-avfoundation>=12.2.2",
     "requests>=2.32",
     "textual>=8.2.8",

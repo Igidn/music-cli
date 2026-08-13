@@ -28,11 +28,13 @@ from textual.widgets._tree import TreeNode
 from textual.worker import Worker, WorkerState
 
 from music_cli.client import MusicClient
-from music_cli.player import PlaylistTrack, StreamInfo
+from music_cli.login import LoginResult
+from music_cli.player import Cookies, PlaylistTrack, StreamInfo
 from music_cli.playlists import LibraryPlaylist
 from music_cli.search import SearchFilter, SearchResult
 
 from .now_playing import NowPlaying
+from .onboarding import LoginFunction, LoginModal
 
 SEARCH_FILTERS: list[tuple[str, SearchFilter | None]] = [
     ("All results", None),
@@ -375,6 +377,7 @@ class MusicTUI(App[None]):
     BINDINGS: ClassVar[list[Binding]] = [
         Binding("slash", "focus_search", "Search"),
         Binding("p", "focus_playlists", "Playlists"),
+        Binding("s", "sign_in", "Sign in", show=False),
         Binding("space", "toggle_playback", "Play/Pause"),
         Binding("ctrl+right", "seek_forward", "Seek +5s"),
         Binding("ctrl+left", "seek_back", "Seek -5s"),
@@ -392,9 +395,14 @@ class MusicTUI(App[None]):
         Binding("down", "pane_down", "Pane down", show=False),
     ]
 
-    def __init__(self, client: MusicClient | None = None) -> None:
+    def __init__(
+        self,
+        client: MusicClient | None = None,
+        login_fn: LoginFunction | None = None,
+    ) -> None:
         super().__init__()
         self.client = client or MusicClient()
+        self._login_fn = login_fn
         self.client.on_track_end = self._on_player_eof
         self._search_timer: Timer | None = None
         self._search_worker: Worker[list[SearchResult]] | None = None
@@ -423,7 +431,8 @@ class MusicTUI(App[None]):
         else:
             self.query_one(LibraryTree).set_unavailable(
                 "Sign in to browse your playlists\n"
-                "(run 'music-cli oauth' or pass --cookies)"
+                "(s: sign in with browser, run 'music-cli login', "
+                "or pass --cookies)"
             )
 
     def on_unmount(self) -> None:
@@ -639,13 +648,31 @@ class MusicTUI(App[None]):
             self.query_one(LibraryTree).set_playlists(worker.result or [])
         else:
             self.query_one(LibraryTree).set_unavailable(
-                "Couldn't load library playlists"
+                "Couldn't load library playlists\n"
+                "(s: sign in with browser, or run 'music-cli login' "
+                "if your sign-in expired)"
             )
             self.notify(
                 f"Could not load library playlists: {worker.error}",
                 title="Playlists",
                 severity="warning",
             )
+
+    def action_sign_in(self) -> None:
+        """Open the browser sign-in modal and refresh auth on success."""
+        if any(isinstance(screen, LoginModal) for screen in self.screen_stack):
+            return
+        self.push_screen(LoginModal(self._login_fn), self._on_login_done)
+
+    def _on_login_done(self, result: LoginResult | None) -> None:
+        if result is None:
+            return
+        self.client.refresh_auth(Cookies.from_file(str(result.cookie_path)))
+        tree = self.query_one(LibraryTree)
+        tree.root.remove_children()
+        tree.root.add_leaf("Loading library…")
+        self._library_worker = self.library_worker()
+        self.notify("Signed in — refreshing your library", title="Sign-in")
 
     @on(LibraryTree.PlaylistExpandRequested)
     def _on_playlist_expand_requested(

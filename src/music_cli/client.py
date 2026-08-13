@@ -45,6 +45,7 @@ class MusicClient:
         cache: AudioCache | None = None,
     ) -> None:
         self._cookies = cookies
+        self._oauth_file = oauth_file
         self._extractor_factory = extractor_factory
         self.cache = cache or AudioCache()
         self.search_api = YTmusicSearch()
@@ -248,6 +249,18 @@ class MusicClient:
             self.queue.insert(0, track)
             raise
         return track
+
+    def refresh_auth(self, cookies: Cookies) -> None:
+        """Swap freshly captured cookies into the auth-aware components.
+
+        Used by the in-TUI re-sign-in flow. The player keeps the previous
+        cookies until the next restart: recreating it mid-session would
+        interrupt any track currently playing.
+        """
+        self._cookies = cookies
+        self.extractor = self._extractor_factory(cookies)
+        self.watch = WatchPlaylist(cookies=cookies)
+        self.library = Library(cookies=cookies, oauth_file=self._oauth_file)
 
     def close(self) -> None:
         self.player.close()
