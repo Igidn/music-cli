@@ -41,6 +41,9 @@ music-cli login           # browser sign-in
 music-cli --clear-cache   # delete the audio download cache
 ```
 
+The last track you played is remembered and resumes automatically the next
+time you start the TUI.
+
 ### Keys
 
 | Key | Action |

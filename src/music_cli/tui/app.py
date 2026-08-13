@@ -32,6 +32,7 @@ from music_cli.login import LoginResult
 from music_cli.player import Cookies, PlaylistTrack, StreamInfo
 from music_cli.playlists import LibraryPlaylist
 from music_cli.search import SearchFilter, SearchResult
+from music_cli.state import LastTrack, LastTrackStore
 
 from .now_playing import NowPlaying
 from .onboarding import LoginFunction, LoginModal
@@ -399,10 +400,12 @@ class MusicTUI(App[None]):
         self,
         client: MusicClient | None = None,
         login_fn: LoginFunction | None = None,
+        last_track_store: LastTrackStore | None = None,
     ) -> None:
         super().__init__()
         self.client = client or MusicClient()
         self._login_fn = login_fn
+        self._last_track_store = last_track_store or LastTrackStore()
         self.client.on_track_end = self._on_player_eof
         self._search_timer: Timer | None = None
         self._search_worker: Worker[list[SearchResult]] | None = None
@@ -434,6 +437,13 @@ class MusicTUI(App[None]):
                 "(s: sign in with browser, run 'music-cli login', "
                 "or pass --cookies)"
             )
+        self._resume_last_track()
+
+    def _resume_last_track(self) -> None:
+        """Auto-play the last played track from a previous session, if any."""
+        track = self._last_track_store.load()
+        if track is not None:
+            self.play_video(track.video_id, track.title, " • ".join(track.artists))
 
     def on_unmount(self) -> None:
         if self._search_timer is not None:
@@ -519,6 +529,7 @@ class MusicTUI(App[None]):
         handlers = {
             "run_search": self._on_search_finished,
             "play_worker": self._on_play_finished,
+            "play_video_worker": self._on_play_finished,
             "fetch_queue_worker": self._on_queue_fetched,
             "play_queued_worker": self._on_play_queued_finished,
             "refill_worker": self._on_refill_finished,
@@ -588,9 +599,25 @@ class MusicTUI(App[None]):
     def play_worker(self, result: SearchResult) -> StreamInfo:
         return self.client.play_result(result)
 
+    def play_video(self, video_id: str, title: str, subtitle: str = "") -> None:
+        """Play a bare video id (used to resume the last played track)."""
+        if self._play_pending(video_id):
+            return
+        self._last_video_id = video_id
+        self._cancel_queue_fetch()
+        self.query_one(NowPlaying).set_track(title, subtitle)
+        self.set_status("Resolving stream…")
+        self._play_worker_video_id = video_id
+        self._play_worker = self.play_video_worker(video_id, title)
+
+    @work(thread=True, exit_on_error=False)
+    def play_video_worker(self, video_id: str, title: str) -> StreamInfo:
+        return self.client.play_video(video_id, title)
+
     def _on_play_finished(self, worker: Worker[StreamInfo]) -> None:
         if worker.state is WorkerState.SUCCESS:
             stream = worker.result
+            self._remember_last_track(stream)
             self.query_one(NowPlaying).set_track(
                 stream.title,
                 ", ".join(stream.artists) or "Unknown artist",
@@ -729,6 +756,7 @@ class MusicTUI(App[None]):
     def _on_play_playlist_finished(self, worker: Worker[StreamInfo]) -> None:
         if worker.state is WorkerState.SUCCESS:
             stream = worker.result
+            self._remember_last_track(stream)
             self.query_one(NowPlaying).set_track(
                 stream.title,
                 ", ".join(stream.artists) or "Unknown artist",
@@ -780,6 +808,7 @@ class MusicTUI(App[None]):
     def _on_play_queued_finished(self, worker: Worker[StreamInfo]) -> None:
         if worker.state is WorkerState.SUCCESS:
             stream = worker.result
+            self._remember_last_track(stream)
             self.query_one(NowPlaying).set_track(
                 stream.title,
                 ", ".join(stream.artists) or "Unknown artist",
@@ -795,6 +824,17 @@ class MusicTUI(App[None]):
             self.notify(
                 f"Could not play: {worker.error}", title="Playback", severity="error"
             )
+
+    def _remember_last_track(self, stream: StreamInfo) -> None:
+        """Persist the resolved track so the next session can resume it."""
+        self._last_track_store.save(
+            LastTrack(
+                video_id=stream.video_id,
+                title=stream.title,
+                artists=tuple(stream.artists),
+                duration=stream.duration,
+            )
+        )
 
     def _refresh_queue(self) -> None:
         self.query_one(QueueList).set_tracks(self.client.queue)

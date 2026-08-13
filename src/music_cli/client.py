@@ -98,6 +98,14 @@ class MusicClient:
         self._play(track.video_id, track.title)
         return self.current  # type: ignore[return-value]
 
+    def play_video(self, video_id: str, title: str = "") -> StreamInfo:
+        """Resolve and start playing a video by id, with no search context.
+
+        Used to resume the last played track on startup.
+        """
+        self._play(video_id, title)
+        return self.current  # type: ignore[return-value]
+
     def _play(self, video_id: str, title: str) -> None:
         """Resolve and start playing, retrying with fresh URLs and fallback clients.
 

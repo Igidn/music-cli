@@ -681,6 +681,102 @@ def test_narrow_layout_hides_side_panes():
     _run(scenario())
 
 
+def test_tui_saves_last_played_track_and_resumes_it():
+    from music_cli.tui.app import MusicTUI
+    from music_cli.tui.now_playing import NowPlaying
+
+    async def scenario():
+        client = make_client()
+        app = MusicTUI(client)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app.play_result(make_result(0, "v1"))
+            await pilot.pause()
+            await pilot.pause()
+            await pilot.pause()
+
+            saved = app._last_track_store.load()
+            assert saved is not None
+            assert saved.video_id == "v1"
+            assert saved.title == "Stream of v1"
+            assert saved.artists == ("Streamed Artist",)
+
+        resumed_client = make_client()
+        resumed = MusicTUI(resumed_client)
+        async with resumed.run_test(size=(120, 40)) as pilot:
+            for _ in range(10):
+                await pilot.pause()
+            assert resumed_client.player.played[-1].video_id == "v1"
+            np = resumed.query_one(NowPlaying)
+            assert str(np.query_one("#np-title").content) == "Stream of v1"
+
+    _run(scenario())
+
+
+def test_tui_without_saved_track_stays_idle_on_mount():
+    from music_cli.tui.app import MusicTUI
+    from music_cli.tui.now_playing import NowPlaying
+
+    async def scenario():
+        client = make_client()
+        app = MusicTUI(client)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            assert not client.player.played
+            assert app.query_one(NowPlaying).query_one("#np-title").content == (
+                "Nothing playing"
+            )
+
+    _run(scenario())
+
+
+def test_tui_saves_track_played_from_queue():
+    from music_cli.tui.app import MusicTUI, QueueList
+
+    async def scenario():
+        client = make_client()
+        client.queue = [
+            PlaylistTrack(video_id="t1", title="One", artists=["A"]),
+        ]
+        app = MusicTUI(client)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            queue = app.query_one(QueueList)
+            queue.set_tracks(client.queue)
+            app._on_queue_selected(QueueList.Selected(queue, queue.children[0], index=0))
+            await pilot.pause()
+            await pilot.pause()
+            await pilot.pause()
+            saved = app._last_track_store.load()
+            assert saved is not None
+            assert saved.video_id == "t1"
+
+    _run(scenario())
+
+
+def test_tui_does_not_save_when_playback_fails():
+    from music_cli.tui.app import MusicTUI
+
+    class FailingExtractor:
+        def resolve(self, video_id):
+            raise RuntimeError("boom")
+
+    async def scenario():
+        client = make_client()
+        client.extractor = FailingExtractor()
+        app = MusicTUI(client)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app.play_result(make_result(0, "v1"))
+            await pilot.pause()
+            await pilot.pause()
+            await pilot.pause()
+            assert app._last_track_store.load() is None
+
+    _run(scenario())
+
+
 def test_waveform_widget_tracks_playback_state():
     from music_cli.tui.app import MusicTUI
     from music_cli.tui.now_playing import NowPlaying
