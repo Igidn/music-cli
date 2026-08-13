@@ -178,26 +178,18 @@ class AudioCache:
         the active download and reuse its result instead of downloading
         again. Returns None when the download failed.
         """
-        cached = self.path_for(video_id)
-        if cached is not None:
-            return cached
-        if not self.claim_download(video_id):
+        while True:
             cached = self.path_for(video_id)
             if cached is not None:
                 return cached
-            if not self.claim_download(video_id):
-                return self.path_for(video_id)
-        ok = False
-        target: Path | None = None
+            if self.claim_download(video_id):
+                break
+        target = self.tmp_path(video_id)
         try:
-            target = self.tmp_path(video_id)
             result = downloader(target)
-            path = self.commit(video_id, result.meta, src=result.path)
-            ok = True
-            return path if path.is_file() else None
+            return self.commit(video_id, result.meta, src=result.path)
         finally:
-            if not ok and target is not None:
-                self._remove_leftovers(target)
+            self._remove_leftovers(target)
             self.finish_download(video_id)
 
     def claim_download(self, video_id: str) -> bool:
