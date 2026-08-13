@@ -209,7 +209,7 @@ QueueList > ListItem.-highlight .queue-subtitle {
 }
 
 NowPlaying {
-    height: 10;
+    height: 11;
     background: $surface;
     border-top: solid $border-soft;
     padding: 0 2;
@@ -282,6 +282,7 @@ NowPlaying {
 
 #np-volume {
     width: auto;
+    margin-right: 1;
     color: $text-dim;
 }
 

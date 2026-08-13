@@ -43,6 +43,9 @@ class NowPlaying(Widget):
                     "Type to search, or press / to focus the search box",
                     id="np-subtitle",
                 )
+            yield Static("Loop", id="np-loop", classes="off")
+            yield Static("Auto", id="np-auto", classes="off")
+            yield Static("", id="np-volume")
             yield Static("--:-- / --:--", id="np-time")
         yield Waveform(id="np-waveform")
         yield ProgressBar(
@@ -54,9 +57,6 @@ class NowPlaying(Widget):
         )
         with Horizontal(id="np-foot"):
             yield Static("Ready", id="np-status")
-            yield Static("Loop", id="np-loop", classes="off")
-            yield Static("Auto", id="np-auto", classes="off")
-            yield Static("", id="np-volume")
 
     def set_track(
         self, title: str, subtitle: str, duration: float | None = None
