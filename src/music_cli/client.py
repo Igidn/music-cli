@@ -38,20 +38,18 @@ class MusicClient:
         self,
         *,
         cookies: Cookies | None = None,
-        oauth_file: str | None = None,
         volume: int = 80,
         on_track_end: Callable[[], None] | None = None,
         extractor_factory: Callable[..., StreamExtractor] = StreamExtractor,
         cache: AudioCache | None = None,
     ) -> None:
         self._cookies = cookies
-        self._oauth_file = oauth_file
         self._extractor_factory = extractor_factory
         self.cache = cache or AudioCache()
         self.search_api = YTmusicSearch()
         self.extractor = extractor_factory(cookies)
         self.watch = WatchPlaylist(cookies=cookies)
-        self.library = Library(cookies=cookies, oauth_file=oauth_file)
+        self.library = Library(cookies=cookies)
         self.player = AVFoundationPlayer(
             volume=volume,
             on_track_end=on_track_end,
@@ -268,7 +266,7 @@ class MusicClient:
         self._cookies = cookies
         self.extractor = self._extractor_factory(cookies)
         self.watch = WatchPlaylist(cookies=cookies)
-        self.library = Library(cookies=cookies, oauth_file=self._oauth_file)
+        self.library = Library(cookies=cookies)
 
     def close(self) -> None:
         self.player.close()

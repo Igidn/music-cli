@@ -96,7 +96,7 @@ class WelcomeScreen(Screen):
                     id="welcome-text",
                 )
                 yield Label(
-                    "No Google OAuth setup needed — a browser opens and you "
+                    "No extra setup needed — a browser opens and you "
                     "sign in with your own account.",
                     id="welcome-sub",
                 )

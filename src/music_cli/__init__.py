@@ -28,13 +28,6 @@ def build_parser() -> argparse.ArgumentParser:
         "'music-cli login')",
     )
     parser.add_argument(
-        "--oauth",
-        metavar="FILE",
-        default=os.environ.get("MUSIC_CLI_OAUTH_FILE"),
-        help="OAuth token file for library playlists, created with "
-        "'music-cli oauth' (default: $MUSIC_CLI_OAUTH_FILE)",
-    )
-    parser.add_argument(
         "--volume",
         type=int,
         default=80,
@@ -54,27 +47,6 @@ def build_parser() -> argparse.ArgumentParser:
         "(default: 2048, or $MUSIC_CLI_CACHE_SIZE_MB)",
     )
     subparsers = parser.add_subparsers(dest="command")
-    oauth_parser = subparsers.add_parser(
-        "oauth",
-        help="authorize music-cli with your YouTube Music account (OAuth)",
-    )
-    oauth_parser.add_argument(
-        "--client-id",
-        required=True,
-        help="Google OAuth client id (create one at console.cloud.google.com)",
-    )
-    oauth_parser.add_argument(
-        "--client-secret",
-        required=True,
-        help="Google OAuth client secret",
-    )
-    oauth_parser.add_argument(
-        "--file",
-        metavar="FILE",
-        default=os.environ.get("MUSIC_CLI_OAUTH_FILE") or "oauth.json",
-        help="where to store the token "
-        "(default: $MUSIC_CLI_OAUTH_FILE or ./oauth.json)",
-    )
     login_parser = subparsers.add_parser(
         "login",
         help="sign in with your YouTube Music account using your browser",
@@ -105,18 +77,12 @@ def build_client(args: argparse.Namespace) -> MusicClient:
         size_mb = int(os.environ.get("MUSIC_CLI_CACHE_SIZE_MB") or "2048")
     cache = AudioCache(max_size=size_mb * 1024 * 1024)
     return MusicClient(
-        cookies=cookies, oauth_file=args.oauth, volume=args.volume, cache=cache
+        cookies=cookies, volume=args.volume, cache=cache
     )
 
 
 def main() -> None:
     args = build_parser().parse_args()
-    if args.command == "oauth":
-        from .playlists import run_oauth_setup
-
-        run_oauth_setup(args.client_id, args.client_secret, args.file)
-        print(f"music-cli: OAuth token saved to {args.file}")
-        return
     if args.command == "login":
         run_login(args.file)
         return
@@ -126,7 +92,6 @@ def main() -> None:
         return
     if (
         not args.cookies
-        and not args.oauth
         and not auth_was_skipped()
         and sys.stdin.isatty()
     ):

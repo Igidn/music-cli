@@ -2,15 +2,12 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 import requests
 from yt_dlp.cookies import extract_cookies_from_browser
-from ytmusicapi import OAuthCredentials, YTMusic
-from ytmusicapi import setup_oauth as ytm_setup_oauth
+from ytmusicapi import YTMusic
 
 from .player import USER_AGENT, Cookies, PlayerError, PlaylistTrack, parse_watch_track
 
@@ -95,8 +92,7 @@ def parse_library_playlist(raw: dict[str, Any]) -> LibraryPlaylist:
 class Library:
     """The account's library playlists and their tracks.
 
-    Authenticates with browser cookies by default (captured by
-    ``music-cli login``), or an OAuth token file when configured.
+    Authenticates with browser cookies captured by ``music-cli login``.
     """
 
     def __init__(
@@ -104,48 +100,24 @@ class Library:
         api: YTMusic | None = None,
         cookies: Cookies | None = None,
         *,
-        oauth_file: str | None = None,
         limit: int = 25,
     ) -> None:
         self._api = api
         self._cookies = cookies
-        self._oauth_file = oauth_file
         self._limit = limit
 
     @property
     def authenticated(self) -> bool:
         """Whether account credentials are configured for library access."""
-        return bool(self._oauth_file or (self._cookies and self._cookies.enabled))
+        return bool(self._cookies and self._cookies.enabled)
 
     def _client(self) -> YTMusic:
         if self._api is not None:
             return self._api
-        if self._oauth_file:
-            return YTMusic(
-                auth=self._oauth_file,
-                oauth_credentials=self._oauth_credentials(),
-            )
         if self._cookies and self._cookies.enabled:
             session = _account_session(self._cookies)
             return YTMusic(auth=_browser_auth(session), requests_session=session)
         return YTMusic()
-
-    def _oauth_credentials(self) -> OAuthCredentials:
-        """Load the OAuth client credentials stored alongside the token."""
-        if not self._oauth_file:
-            raise PlayerError("No OAuth file configured")
-        path = Path(self._oauth_file)
-        if not path.is_file():
-            raise PlayerError(f"OAuth file not found: {self._oauth_file}")
-        data = json.loads(path.read_text(encoding="utf-8"))
-        client_id = data.get("client_id")
-        client_secret = data.get("client_secret")
-        if not client_id or not client_secret:
-            raise PlayerError(
-                f"{self._oauth_file} is missing client_id/client_secret; "
-                "re-run 'music-cli oauth' to regenerate it"
-            )
-        return OAuthCredentials(client_id, client_secret)
 
     def playlists(self, limit: int | None = None) -> list[LibraryPlaylist]:
         """The library playlists, in the account's own order."""
@@ -166,18 +138,3 @@ class Library:
         data = self._client().get_playlist(playlistId=playlist_id)
         tracks = [parse_watch_track(item) for item in data.get("tracks", [])]
         return [track for track in tracks if track.video_id]
-
-
-def run_oauth_setup(client_id: str, client_secret: str, filepath: str) -> None:
-    """Authorize the app with a YouTube Music account and persist the token.
-
-    Runs ytmusicapi's interactive device flow, then stores the OAuth client
-    credentials alongside the token so the library can refresh it later
-    without further user input.
-    """
-    ytm_setup_oauth(client_id, client_secret, filepath=filepath, open_browser=True)
-    path = Path(filepath)
-    data = json.loads(path.read_text(encoding="utf-8"))
-    data["client_id"] = client_id
-    data["client_secret"] = client_secret
-    path.write_text(json.dumps(data, indent=2), encoding="utf-8")

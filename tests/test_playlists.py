@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import json
 import re
 
-import pytest
 import requests
 
-from music_cli.player import Cookies, PlayerError
+from music_cli.player import Cookies
 from music_cli.playlists import (
     Library,
     LibraryPlaylist,
@@ -134,45 +132,3 @@ def test_browser_auth_signs_with_secure_papisid_fallback():
     auth = _browser_auth(session)
     assert "__Secure-3PAPISID=secure-value" in auth["cookie"]
     assert SAPISIDHASH.fullmatch(auth["authorization"])
-
-
-def oauth_json(tmp_path, **overrides):
-    data = {
-        "access_token": "token",
-        "refresh_token": "refresh",
-        "scope": "https://www.googleapis.com/auth/youtube",
-        "token_type": "Bearer",
-        "expires_at": 0,
-        "expires_in": 3600,
-        "client_id": "client-id",
-        "client_secret": "client-secret",
-    }
-    data.update(overrides)
-    path = tmp_path / "oauth.json"
-    path.write_text(json.dumps(data), encoding="utf-8")
-    return str(path)
-
-
-def test_library_authenticated_reflects_oauth_file(tmp_path):
-    assert Library(api=FakeApi([], []), oauth_file=oauth_json(tmp_path)).authenticated
-
-
-def test_library_oauth_credentials_loads_from_token_file(tmp_path):
-    library = Library(oauth_file=oauth_json(tmp_path))
-    credentials = library._oauth_credentials()
-    assert credentials.client_id == "client-id"
-    assert credentials.client_secret == "client-secret"  # noqa: S105
-
-
-def test_library_oauth_credentials_missing_file_raises(tmp_path):
-    library = Library(oauth_file=str(tmp_path / "nope.json"))
-    with pytest.raises(PlayerError, match="not found"):
-        library._oauth_credentials()
-
-
-def test_library_oauth_credentials_missing_ids_raises(tmp_path):
-    library = Library(
-        oauth_file=oauth_json(tmp_path, client_id=None, client_secret=None)
-    )
-    with pytest.raises(PlayerError, match="missing client_id"):
-        library._oauth_credentials()

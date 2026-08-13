@@ -30,8 +30,6 @@ The browser is downloaded once on the first sign-in (~150 MB).
 
 - `--cookies FILE` / `$MUSIC_CLI_COOKIE_FILE` — use a cookie file you
   exported yourself (Netscape format).
-- `music-cli oauth --client-id … --client-secret …` — OAuth with your own
-  Google Cloud credentials; needed only if you prefer tokens over cookies.
 
 ## Usage
 
