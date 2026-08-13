@@ -85,10 +85,25 @@ TopBar {
     border-right: solid $accent;
 }
 
-.playlist-placeholder {
-    padding: 1 1;
-    color: $text-dim;
-    text-style: italic;
+LibraryTree {
+    height: 1fr;
+    padding: 0 1;
+    background: $surface;
+}
+
+LibraryTree > .tree--guides,
+LibraryTree > .tree--guides-hover {
+    color: $border;
+}
+
+LibraryTree > .tree--highlight {
+    background: $surface-2;
+}
+
+LibraryTree:focus > .tree--cursor {
+    background: $accent;
+    color: #0d1117;
+    text-style: bold;
 }
 
 #search-box {

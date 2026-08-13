@@ -17,6 +17,7 @@ from .player import (
     StreamInfo,
     WatchPlaylist,
 )
+from .playlists import Library
 from .search import SearchFilter, SearchResult, YTmusicSearch
 
 PLAY_START_TIMEOUT = 6.0
@@ -37,6 +38,7 @@ class MusicClient:
         self,
         *,
         cookies: Cookies | None = None,
+        oauth_file: str | None = None,
         volume: int = 80,
         on_track_end: Callable[[], None] | None = None,
         extractor_factory: Callable[..., StreamExtractor] = StreamExtractor,
@@ -48,6 +50,7 @@ class MusicClient:
         self.search_api = YTmusicSearch()
         self.extractor = extractor_factory(cookies)
         self.watch = WatchPlaylist(cookies=cookies)
+        self.library = Library(cookies=cookies, oauth_file=oauth_file)
         self.player = AVFoundationPlayer(
             volume=volume,
             on_track_end=on_track_end,
@@ -210,6 +213,21 @@ class MusicClient:
         if not self.queue:
             self.queue = tracks
         return self.queue
+
+    def play_from_playlist(self, playlist_id: str, start_index: int = 0) -> StreamInfo:
+        """Play ``playlist_id`` from ``start_index``, queueing the remainder.
+
+        The up-next queue becomes the rest of the playlist, so auto-next
+        continues the playlist in order.
+        """
+        tracks = self.library.tracks(playlist_id)
+        if not tracks:
+            raise PlayerError("Playlist is empty")
+        if not 0 <= start_index < len(tracks):
+            start_index = 0
+        self.queue = tracks[start_index + 1 :]
+        self.play_track(tracks[start_index])
+        return self.current  # type: ignore[return-value]
 
     def next(self) -> PlaylistTrack | None:
         """Play the next queued track, or return ``None`` if the queue is empty."""

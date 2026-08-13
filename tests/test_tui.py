@@ -11,6 +11,7 @@ import threading
 
 from music_cli.client import MusicClient
 from music_cli.player import PlaylistTrack, StreamInfo
+from music_cli.playlists import LibraryPlaylist
 from music_cli.search import SearchResult
 
 
@@ -61,6 +62,31 @@ class FakeWatch:
             ),
             PlaylistTrack(video_id="t2", title="Later", artists=["C"]),
         ]
+
+
+class FakeLibrary:
+    def __init__(self, authenticated=True):
+        self.authenticated = authenticated
+        self.playlist_calls = []
+        self.track_calls = []
+        self._tracks = {
+            "p1": [
+                PlaylistTrack(video_id="p1t1", title="Mix One", artists=["A"]),
+                PlaylistTrack(video_id="p1t2", title="Mix Two", artists=["B"]),
+            ],
+            "p2": [PlaylistTrack(video_id="p2t1", title="Chill One", artists=["C"])],
+        }
+
+    def playlists(self, limit=None):
+        self.playlist_calls.append(limit)
+        return [
+            LibraryPlaylist(playlist_id="p1", title="My Mix", track_count="2"),
+            LibraryPlaylist(playlist_id="p2", title="Chill", track_count="1"),
+        ]
+
+    def tracks(self, playlist_id):
+        self.track_calls.append(playlist_id)
+        return self._tracks.get(playlist_id, [])
 
 
 class FakePlayer:
@@ -131,6 +157,7 @@ def make_client() -> MusicClient:
     client.search_api = FakeSearch()
     client.extractor = FakeExtractor()
     client.watch = FakeWatch()
+    client.library = FakeLibrary()
     client.queue = []
     client.current = None
     client.cache = None
@@ -214,7 +241,7 @@ def test_arrow_key_pane_navigation():
             await pilot.press("left")
             assert app.focused is playlist
             await pilot.press("right")
-            assert app.focused is search
+            assert app.focused is results
             results.focus()
             await pilot.pause()
             await pilot.press("p")
@@ -520,32 +547,111 @@ def test_tui_queue_click_after_refresh_keeps_track_identity():
     _run(scenario())
 
 
-def test_playlist_pane_placeholder():
-    from music_cli.tui.app import MusicTUI, PlaylistPane
+def test_library_tree_renders_playlists():
+    from music_cli.tui.app import LibraryTree, MusicTUI
 
     async def scenario():
         client = make_client()
         app = MusicTUI(client)
         async with app.run_test(size=(120, 40)) as pilot:
+            for _ in range(10):
+                await pilot.pause()
+            tree = app.query_one(LibraryTree)
+            assert tree.id == "playlist-pane"
+            assert tree.can_focus
+            playlists = list(tree.root.children)
+            assert [node.data["kind"] for node in playlists] == ["playlist", "playlist"]
+            assert "My Mix" in str(playlists[0].label.plain)
+
+    _run(scenario())
+
+
+def test_library_tree_sign_in_notice_when_unauthenticated():
+    from music_cli.tui.app import LibraryTree, MusicTUI
+
+    async def scenario():
+        client = make_client()
+        client.library = FakeLibrary(authenticated=False)
+        app = MusicTUI(client)
+        async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            pane = app.query_one(PlaylistPane)
-            assert pane.id == "playlist-pane"
-            assert pane.can_focus
-            placeholder = pane.query_one(".playlist-placeholder")
-            assert "playlists" in str(placeholder.content).lower()
+            tree = app.query_one(LibraryTree)
+            assert "Sign in" in str(tree.root.children[0].label.plain)
+
+    _run(scenario())
+
+
+def test_library_tree_expand_loads_tracks():
+    from music_cli.tui.app import LibraryTree, MusicTUI
+
+    async def scenario():
+        client = make_client()
+        app = MusicTUI(client)
+        async with app.run_test(size=(120, 40)) as pilot:
+            for _ in range(10):
+                await pilot.pause()
+            tree = app.query_one(LibraryTree)
+            tree.focus()
+            await pilot.press("down")
+            node = tree.cursor_node
+            assert node.data["playlist_id"] == "p1"
+            assert not node.is_expanded
+
+            await pilot.press("enter")
+            for _ in range(10):
+                await pilot.pause()
+            assert client.library.track_calls == ["p1"]
+            assert node.is_expanded
+            children = list(node.children)
+            assert [child.data["kind"] for child in children] == ["track", "track"]
+            assert children[0].data["track"].video_id == "p1t1"
+
+            # Activating a loaded playlist collapses it again.
+            await pilot.press("enter")
+            assert not node.is_expanded
+
+    _run(scenario())
+
+
+def test_library_tree_activates_track_plays_and_queues_playlist():
+    from music_cli.tui.app import LibraryTree, MusicTUI
+    from music_cli.tui.now_playing import NowPlaying
+
+    async def scenario():
+        client = make_client()
+        client.extractor = CountingExtractor()
+        app = MusicTUI(client)
+        async with app.run_test(size=(120, 40)) as pilot:
+            for _ in range(10):
+                await pilot.pause()
+            tree = app.query_one(LibraryTree)
+            tree.focus()
+            await pilot.press("down")
+            await pilot.press("enter")
+            for _ in range(10):
+                await pilot.pause()
+            await pilot.press("down")
+            await pilot.press("enter")
+            for _ in range(10):
+                await pilot.pause()
+
+            assert client.player.played[-1].video_id == "p1t1"
+            assert [track.video_id for track in client.queue] == ["p1t2"]
+            np = app.query_one(NowPlaying)
+            assert str(np.query_one("#np-title").content) == "Stream of p1t1"
 
     _run(scenario())
 
 
 def test_narrow_layout_hides_side_panes():
-    from music_cli.tui.app import MusicTUI, PlaylistPane, ResultsTable
+    from music_cli.tui.app import LibraryTree, MusicTUI, ResultsTable
 
     async def scenario():
         client = make_client()
         app = MusicTUI(client)
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            playlist = app.query_one(PlaylistPane)
+            playlist = app.query_one(LibraryTree)
             queue = app.query_one("#queue-pane")
             assert not app.screen.has_class("-narrow")
             assert queue.display and playlist.display

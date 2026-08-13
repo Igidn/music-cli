@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from rich.cells import cell_len, set_cell_size
 from rich.text import Text
@@ -22,12 +22,14 @@ from textual.widgets import (
     ListItem,
     ListView,
     Select,
-    Static,
+    Tree,
 )
+from textual.widgets._tree import TreeNode
 from textual.worker import Worker, WorkerState
 
 from music_cli.client import MusicClient
 from music_cli.player import PlaylistTrack, StreamInfo
+from music_cli.playlists import LibraryPlaylist
 from music_cli.search import SearchFilter, SearchResult
 
 from .now_playing import NowPlaying
@@ -65,22 +67,152 @@ class TopBar(Widget):
         yield Label("", id="queue-count")
 
 
-class PlaylistPane(Widget):
-    """Library playlists sidebar.
+class LibraryTree(Tree[dict[str, Any] | None], inherit_bindings=False):
+    """Library playlists sidebar, rendered as a tree.
 
-    Placeholder until the playlist system is wired up; the pane is kept out
-    of the way so navigation, layout and styling already account for it.
+    Playlists are branch nodes; activating one lazily fetches its tracks and
+    renders them as leaf nodes. Activating a track plays it and queues the
+    rest of the playlist. Left/right are left to the app for pane navigation.
     """
 
-    can_focus = True
+    BINDINGS: ClassVar = [
+        Binding("enter", "activate", "Open", show=False),
+        Binding("up", "cursor_up", "Cursor up", show=False),
+        Binding("down", "cursor_down", "Cursor down", show=False),
+        Binding("pageup", "page_up", "Page up", show=False),
+        Binding("pagedown", "page_down", "Page down", show=False),
+        Binding("home", "scroll_home", "Home", show=False),
+        Binding("end", "scroll_end", "End", show=False),
+    ]
+
+    class PlaylistExpandRequested(Message):
+        """A playlist node was activated before its tracks were loaded."""
+
+        def __init__(self, playlist_id: str, node: TreeNode) -> None:
+            self.playlist_id = playlist_id
+            self.node = node
+            super().__init__()
+
+        @property
+        def control(self) -> LibraryTree:
+            return self.node.tree
+
+    class TrackActivated(Message):
+        """A track leaf was activated and should be played."""
+
+        def __init__(
+            self,
+            playlist_id: str,
+            index: int,
+            track: PlaylistTrack,
+        ) -> None:
+            self.playlist_id = playlist_id
+            self.index = index
+            self.track = track
+            super().__init__()
 
     def on_mount(self) -> None:
         self.border_title = " PLAYLISTS "
+        self.show_root = False
+        self.root.add_leaf("Loading library…")
 
-    def compose(self) -> ComposeResult:
-        yield Static(
-            "Your library playlists\nwill live here soon.",
-            classes="playlist-placeholder",
+    def set_playlists(self, playlists: list[LibraryPlaylist]) -> None:
+        self.root.remove_children()
+        if not playlists:
+            self.root.add_leaf("No playlists in your library")
+            return
+        for playlist in playlists:
+            self.root.add(
+                self._playlist_label(playlist.title, playlist.track_count),
+                data={
+                    "kind": "playlist",
+                    "playlist_id": playlist.playlist_id,
+                    "title": playlist.title,
+                    "track_count": playlist.track_count,
+                    "loaded": False,
+                },
+                allow_expand=True,
+            )
+
+    def set_unavailable(self, message: str) -> None:
+        """Replace the tree contents with a non-interactive notice."""
+        self.root.remove_children()
+        self.root.add_leaf(message)
+
+    def show_tracks(self, playlist_id: str, tracks: list[PlaylistTrack]) -> None:
+        """Fill ``playlist_id``'s node with its tracks and expand it."""
+        node = self._find_playlist(playlist_id)
+        if node is None:
+            return
+        node.data["loaded"] = True
+        node.data["loading"] = False
+        node.remove_children()
+        node.label = self._playlist_label(node.data["title"], node.data["track_count"])
+        if not tracks:
+            node.allow_expand = False
+            node.add_leaf("Empty playlist")
+            return
+        for index, track in enumerate(tracks):
+            node.add_leaf(
+                self._track_label(track),
+                data={
+                    "kind": "track",
+                    "playlist_id": playlist_id,
+                    "index": index,
+                    "track": track,
+                },
+            )
+        node.expand()
+
+    def fail_playlist(self, playlist_id: str) -> None:
+        node = self._find_playlist(playlist_id)
+        if node is None:
+            return
+        node.data["loading"] = False
+        node.remove_children()
+        node.add_leaf("Couldn't load this playlist")
+        node.collapse()
+
+    def action_activate(self) -> None:
+        """Expand/play the cursor node: branch toggles, leaf track plays."""
+        node = self.cursor_node
+        data = node.data if node is not None else None
+        if not isinstance(data, dict):
+            return
+        if data["kind"] == "track":
+            self.post_message(
+                self.TrackActivated(data["playlist_id"], data["index"], data["track"])
+            )
+        elif not data["loaded"] and not data.get("loading"):
+            data["loading"] = True
+            self.post_message(self.PlaylistExpandRequested(data["playlist_id"], node))
+        else:
+            node.toggle()
+
+    def _find_playlist(self, playlist_id: str) -> TreeNode | None:
+        for node in self.root.children:
+            data = node.data
+            if (
+                isinstance(data, dict)
+                and data.get("kind") == "playlist"
+                and data.get("playlist_id") == playlist_id
+            ):
+                return node
+        return None
+
+    @staticmethod
+    def _playlist_label(title: str, track_count: str) -> Text:
+        label = Text.assemble(Text(f"♪ {title}", style="bold"))
+        if track_count:
+            label.append_text(Text(f"  {track_count}", style="grey58"))
+        return label
+
+    @staticmethod
+    def _track_label(track: PlaylistTrack) -> Text:
+        artists = " • ".join(track.artists) or "Unknown artist"
+        return Text.assemble(
+            Text(f"♪ {track.title}"),
+            Text(f"  {artists}", style="grey58"),
         )
 
 
@@ -237,7 +369,7 @@ class MusicTUI(App[None]):
         },
         "results": {"left": "playlist-pane", "right": "queue-pane"},
         "queue-pane": {"left": "results"},
-        "playlist-pane": {"right": "search-input"},
+        "playlist-pane": {"right": "results"},
     }
 
     BINDINGS: ClassVar[list[Binding]] = [
@@ -271,6 +403,11 @@ class MusicTUI(App[None]):
         self._play_worker_video_id: str = ""
         self._play_queued_worker: Worker[StreamInfo] | None = None
         self._play_queued_worker_video_id: str = ""
+        self._play_playlist_worker: Worker[StreamInfo] | None = None
+        self._play_playlist_worker_video_id: str = ""
+        self._pending_playlist_track: PlaylistTrack | None = None
+        self._library_worker: Worker[list[LibraryPlaylist]] | None = None
+        self._playlist_workers: dict[str, Worker[list[PlaylistTrack]]] = {}
         self._last_video_id: str = ""
         self._pending_track: PlaylistTrack | None = None
         self._pending_index: int = 0
@@ -281,6 +418,13 @@ class MusicTUI(App[None]):
         self.set_interval(0.5, self._tick)
         self.query_one("#search-input", Input).focus()
         self.run_worker(self.pump_platform(), exclusive=False)
+        if self.client.library.authenticated:
+            self._library_worker = self.library_worker()
+        else:
+            self.query_one(LibraryTree).set_unavailable(
+                "Sign in to browse your playlists\n"
+                "(run 'music-cli oauth' or pass --cookies)"
+            )
 
     def on_unmount(self) -> None:
         if self._search_timer is not None:
@@ -290,7 +434,7 @@ class MusicTUI(App[None]):
     def compose(self) -> ComposeResult:
         yield TopBar()
         with Horizontal(id="body"):
-            yield PlaylistPane(id="playlist-pane")
+            yield LibraryTree("Library", id="playlist-pane")
             with Vertical(id="results-pane"):
                 with Horizontal(id="search-box"):
                     yield Input(
@@ -369,6 +513,9 @@ class MusicTUI(App[None]):
             "fetch_queue_worker": self._on_queue_fetched,
             "play_queued_worker": self._on_play_queued_finished,
             "refill_worker": self._on_refill_finished,
+            "library_worker": self._on_library_fetched,
+            "playlist_tracks_worker": self._on_playlist_tracks_fetched,
+            "play_playlist_worker": self._on_play_playlist_finished,
         }
         handler = handlers.get(worker.name)
         if handler is not None:
@@ -405,6 +552,7 @@ class MusicTUI(App[None]):
         for worker, worker_video_id in (
             (self._play_worker, self._play_worker_video_id),
             (self._play_queued_worker, self._play_queued_worker_video_id),
+            (self._play_playlist_worker, self._play_playlist_worker_video_id),
         ):
             if (
                 worker is not None
@@ -479,6 +627,96 @@ class MusicTUI(App[None]):
     @work(thread=True, exit_on_error=False)
     def prefetch_worker(self, video_id: str) -> None:
         self.client.prefetch(video_id)
+
+    @work(thread=True, exit_on_error=False)
+    def library_worker(self) -> list[LibraryPlaylist]:
+        return self.client.library.playlists()
+
+    def _on_library_fetched(self, worker: Worker[list[LibraryPlaylist]]) -> None:
+        if worker is not self._library_worker:
+            return
+        if worker.state is WorkerState.SUCCESS:
+            self.query_one(LibraryTree).set_playlists(worker.result or [])
+        else:
+            self.query_one(LibraryTree).set_unavailable(
+                "Couldn't load library playlists"
+            )
+            self.notify(
+                f"Could not load library playlists: {worker.error}",
+                title="Playlists",
+                severity="warning",
+            )
+
+    @on(LibraryTree.PlaylistExpandRequested)
+    def _on_playlist_expand_requested(
+        self, message: LibraryTree.PlaylistExpandRequested
+    ) -> None:
+        """Expand a playlist node and lazily fetch its tracks."""
+        message.node.remove_children()
+        message.node.add_leaf("Loading…")
+        message.node.expand()
+        self._playlist_workers[message.playlist_id] = self.playlist_tracks_worker(
+            message.playlist_id
+        )
+
+    @work(thread=True, exit_on_error=False)
+    def playlist_tracks_worker(self, playlist_id: str) -> list[PlaylistTrack]:
+        return self.client.library.tracks(playlist_id)
+
+    def _on_playlist_tracks_fetched(self, worker: Worker[list[PlaylistTrack]]) -> None:
+        for playlist_id, pending in self._playlist_workers.items():
+            if pending is worker:
+                del self._playlist_workers[playlist_id]
+                break
+        else:
+            return
+        if worker.state is WorkerState.SUCCESS:
+            self.query_one(LibraryTree).show_tracks(playlist_id, worker.result or [])
+        else:
+            self.query_one(LibraryTree).fail_playlist(playlist_id)
+            self.notify(
+                f"Could not load playlist: {worker.error}",
+                title="Playlists",
+                severity="warning",
+            )
+
+    @on(LibraryTree.TrackActivated)
+    def _on_playlist_track_activated(self, message: LibraryTree.TrackActivated) -> None:
+        track = message.track
+        if self._play_pending(track.video_id):
+            return
+        self._pending_playlist_track = track
+        self._last_video_id = track.video_id
+        self.query_one(NowPlaying).set_track(track.title, " • ".join(track.artists))
+        self.set_status("Resolving stream…")
+        self._play_playlist_worker_video_id = track.video_id
+        self._play_playlist_worker = self.play_playlist_worker(
+            message.playlist_id, message.index
+        )
+
+    @work(thread=True, exit_on_error=False)
+    def play_playlist_worker(self, playlist_id: str, index: int) -> StreamInfo:
+        return self.client.play_from_playlist(playlist_id, index)
+
+    def _on_play_playlist_finished(self, worker: Worker[StreamInfo]) -> None:
+        if worker.state is WorkerState.SUCCESS:
+            stream = worker.result
+            self.query_one(NowPlaying).set_track(
+                stream.title,
+                ", ".join(stream.artists) or "Unknown artist",
+                stream.duration,
+            )
+            self._refresh_queue()
+            self._prefetch_next()
+            self.set_status("Playing from playlist")
+        else:
+            if self._pending_playlist_track is not None:
+                self.client.queue.insert(0, self._pending_playlist_track)
+            self._refresh_queue()
+            self.set_status("Playback failed")
+            self.notify(
+                f"Could not play: {worker.error}", title="Playback", severity="error"
+            )
 
     @on(QueueList.Selected)
     def _on_queue_selected(self, event: QueueList.Selected) -> None:
