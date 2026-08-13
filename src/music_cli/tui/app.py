@@ -672,7 +672,8 @@ class MusicTUI(App[None]):
         tree.root.remove_children()
         tree.root.add_leaf("Loading library…")
         self._library_worker = self.library_worker()
-        self.notify("Signed in — refreshing your library", title="Sign-in")
+        name = f" as {result.account_name}" if result.account_name else ""
+        self.notify(f"Signed in{name} — refreshing your library", title="Sign-in")
 
     @on(LibraryTree.PlaylistExpandRequested)
     def _on_playlist_expand_requested(

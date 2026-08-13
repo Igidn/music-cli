@@ -15,7 +15,9 @@ from music_cli.player import Cookies
 def fake_login(output_path, status=None, *, playlist_count=2):
     if status:
         status("signing in…")
-    return LoginResult(Path(output_path), playlist_count)
+    return LoginResult(
+        Path(output_path), account_name="Test User", playlist_count=playlist_count
+    )
 
 
 def _run(coro):
@@ -66,7 +68,9 @@ def test_onboarding_login_failure_allows_retry(tmp_path, monkeypatch):
         attempts.append(1)
         if len(attempts) == 1:
             raise login.PlayerError("no browser")
-        return LoginResult(Path(output_path), 1)
+        return LoginResult(
+            Path(output_path), account_name="Test User", playlist_count=1
+        )
 
     async def scenario():
         app = OnboardingApp(login_fn=flaky_login)

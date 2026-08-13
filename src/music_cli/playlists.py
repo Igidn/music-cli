@@ -1,12 +1,4 @@
-"""YouTube Music library playlists, account-aware like the watch playlist.
 
-Uses ytmusicapi's ``get_library_playlists`` / ``get_playlist`` endpoints.
-Browser cookies from ``music-cli login`` are the primary credential: the
-cookie header (with ``__Secure-3PAPISID``) plus an origin lets ytmusicapi
-treat the client as browser-authenticated and compute the per-request
-SAPISIDHASH itself. An OAuth token (``music-cli oauth``) remains available
-for users who prefer it, and is required for library *write* endpoints.
-"""
 
 from __future__ import annotations
 
@@ -28,17 +20,30 @@ ORIGIN = "https://music.youtube.com"
 def _browser_auth(session: requests.Session) -> dict[str, str]:
     """ytmusicapi browser-auth headers built from the account cookie session.
 
-    Library endpoints require the signed-in account: the cookie header (with
-    ``__Secure-3PAPISID``) plus an origin lets ytmusicapi treat the client as
-    browser-authenticated and compute the per-request SAPISIDHASH itself.
+    Library endpoints require the signed-in account: the cookie header plus
+    an origin lets ytmusicapi treat the client as browser-authenticated.
+    Only YouTube-scoped cookies are sent — that is exactly what a browser
+    sends to music.youtube.com, and it keeps the SAPISID extraction
+    unambiguous. The authorization header carries a real SAPISIDHASH (the
+    web app computes the same value): YouTube ignores a placeholder here
+    and answers every authenticated endpoint as anonymous.
     """
+    from ytmusicapi.helpers import get_authorization
+
+    youtube_cookies = []
+    sapisid = None
+    for cookie in session.cookies:
+        if str(cookie.domain).endswith(".youtube.com"):
+            youtube_cookies.append(cookie)
+            if cookie.name in ("SAPISID", "__Secure-3PAPISID") and sapisid is None:
+                sapisid = cookie.value
     cookie_header = "; ".join(
-        f"{cookie.name}={cookie.value}" for cookie in session.cookies
+        f"{cookie.name}={cookie.value}" for cookie in youtube_cookies
     )
     return {
         "cookie": cookie_header,
         "origin": ORIGIN,
-        "authorization": "SAPISIDHASH 0_0",
+        "authorization": get_authorization(f"{sapisid} {ORIGIN}"),
         "x-goog-authuser": "0",
         "x-origin": ORIGIN,
     }

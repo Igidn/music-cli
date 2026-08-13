@@ -162,9 +162,15 @@ def run_login(filepath: str | None) -> None:
     except PlayerError as error:
         print(f"music-cli: {error}", file=sys.stderr)
         sys.exit(1)
+    name = result.account_name
     count = result.playlist_count
-    library = f" — {count} playlists found" if count is not None else ""
-    print(f"music-cli: signed in — cookies saved to {result.cookie_path}{library}")
+    details = []
+    if name:
+        details.append(f"as {name}")
+    if count:
+        details.append(f"{count} playlists found")
+    suffix = f" ({', '.join(details)})" if details else ""
+    print(f"music-cli: signed in — cookies saved to {result.cookie_path}{suffix}")
 
 
 if __name__ == "__main__":

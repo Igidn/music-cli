@@ -3,11 +3,20 @@
 from __future__ import annotations
 
 import json
+import re
 
 import pytest
+import requests
 
 from music_cli.player import Cookies, PlayerError
-from music_cli.playlists import Library, LibraryPlaylist, parse_library_playlist
+from music_cli.playlists import (
+    Library,
+    LibraryPlaylist,
+    _browser_auth,
+    parse_library_playlist,
+)
+
+SAPISIDHASH = re.compile(r"SAPISIDHASH \d+_[0-9a-f]{40}")
 
 
 class FakeApi:
@@ -95,6 +104,36 @@ def test_library_authenticated_reflects_cookies():
     assert Library(
         api=FakeApi([], []), cookies=Cookies.from_file("c.txt")
     ).authenticated
+
+
+def browser_session():
+    session = requests.Session()
+    session.cookies.set("SAPISID", "yt-value", domain=".youtube.com")
+    session.cookies.set("SID", "yt-sid", domain=".youtube.com")
+    session.cookies.set("__Secure-3PSID", "3psid", domain=".youtube.com")
+    session.cookies.set("SAPISID", "google-value", domain=".google.com")
+    session.cookies.set("SID", "google-sid", domain=".google.com")
+    return session
+
+
+def test_browser_auth_scopes_cookies_and_signs_sapisid():
+    auth = _browser_auth(browser_session())
+    assert auth["origin"] == "https://music.youtube.com"
+    assert auth["x-origin"] == "https://music.youtube.com"
+    assert auth["x-goog-authuser"] == "0"
+    assert "SAPISID=yt-value" in auth["cookie"]
+    assert "google-value" not in auth["cookie"]
+    assert "google-sid" not in auth["cookie"]
+    assert SAPISIDHASH.fullmatch(auth["authorization"])
+    assert auth["authorization"] != "SAPISIDHASH 0_0"
+
+
+def test_browser_auth_signs_with_secure_papisid_fallback():
+    session = requests.Session()
+    session.cookies.set("__Secure-3PAPISID", "secure-value", domain=".youtube.com")
+    auth = _browser_auth(session)
+    assert "__Secure-3PAPISID=secure-value" in auth["cookie"]
+    assert SAPISIDHASH.fullmatch(auth["authorization"])
 
 
 def oauth_json(tmp_path, **overrides):

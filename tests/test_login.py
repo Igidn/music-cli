@@ -45,11 +45,19 @@ ANONYMOUS_COOKIES = [
     },
 ]
 
+GOOGLE_ONLY_COOKIES = [
+    {"name": "SAPISID", "value": "abc", "domain": ".google.com", "path": "/"},
+    {"name": "SID", "value": "sid", "domain": ".google.com", "path": "/"},
+]
+
 
 def test_auth_cookies_present():
     assert auth_cookies_present(SIGNED_IN_COOKIES)
     assert not auth_cookies_present(ANONYMOUS_COOKIES)
     assert not auth_cookies_present([])
+    # Google sets SAPISID on .google.com mid-login; only the .youtube.com
+    # copies authenticate music.youtube.com.
+    assert not auth_cookies_present(GOOGLE_ONLY_COOKIES)
 
 
 def test_to_netscape_cookie_session_and_expiry():
@@ -87,7 +95,12 @@ def test_save_cookie_file_round_trip(tmp_path):
     save_cookie_file(
         [
             *SIGNED_IN_COOKIES,
-            {"name": "IRRELEVANT", "value": "x", "domain": ".example.com", "path": "/"},
+            {
+                "name": "IRRELEVANT",
+                "value": "x",
+                "domain": ".example.com",
+                "path": "/",
+            },
         ],
         path,
     )
@@ -119,9 +132,6 @@ def test_skip_auth_marker(tmp_path, monkeypatch):
 
 
 class FakePage:
-    def __init__(self) -> None:
-        self.url = ""
-
     def goto(self, url: str) -> None:
         self.url = url
 
@@ -137,9 +147,6 @@ class FakeContext:
 
     def cookies(self):
         return self._cookies()
-
-    def new_page(self):
-        return FakePage()
 
     def close(self) -> None:
         self.closed = True
@@ -175,8 +182,15 @@ class FakeSyncPlaywright:
         pass
 
 
-def test_browser_login_saves_and_verifies(tmp_path, monkeypatch):
+def _setup(tmp_path, monkeypatch, cookies_fn):
     monkeypatch.setenv("MUSIC_CLI_CONFIG_DIR", str(tmp_path))
+    context = FakeContext(cookies_fn)
+    fake = FakeSyncPlaywright(FakeChromium(context))
+    monkeypatch.setattr(login, "_import_playwright", lambda: fake)
+    return context
+
+
+def test_browser_login_saves_and_verifies(tmp_path, monkeypatch):
     polls = []
 
     def cookies_fn():
@@ -185,10 +199,8 @@ def test_browser_login_saves_and_verifies(tmp_path, monkeypatch):
             return ANONYMOUS_COOKIES
         return SIGNED_IN_COOKIES
 
-    context = FakeContext(cookies_fn)
-    fake = FakeSyncPlaywright(FakeChromium(context))
-    monkeypatch.setattr(login, "_import_playwright", lambda: fake)
-    monkeypatch.setattr(login, "_verify_library", lambda path: 3)
+    _setup(tmp_path, monkeypatch, cookies_fn)
+    monkeypatch.setattr(login, "_verify_library", lambda path: ("Igidn", 3))
 
     output = tmp_path / "out" / "cookies.txt"
     statuses = []
@@ -196,37 +208,193 @@ def test_browser_login_saves_and_verifies(tmp_path, monkeypatch):
 
     assert isinstance(result, LoginResult)
     assert result.cookie_path == output
+    assert result.account_name == "Igidn"
     assert result.playlist_count == 3
-    assert len(polls) == 3
-    assert context.closed
     assert output.is_file()
     assert statuses
+    assert not any("didn't take effect" in text for text in statuses)
 
 
-def test_browser_login_fails_library_verification(tmp_path, monkeypatch):
-    monkeypatch.setenv("MUSIC_CLI_CONFIG_DIR", str(tmp_path))
-    context = FakeContext(lambda: SIGNED_IN_COOKIES)
-    fake = FakeSyncPlaywright(FakeChromium(context))
-    monkeypatch.setattr(login, "_import_playwright", lambda: fake)
+def test_browser_login_waits_out_stale_session(tmp_path, monkeypatch):
+    """Stale cookies fail verification once, then a real sign-in passes."""
+    stale = [
+        dict(cookie, value=cookie["value"] + "-stale") for cookie in SIGNED_IN_COOKIES
+    ]
+    polls = []
+    verify_calls = []
 
-    def fail_verification(path):
-        raise PlayerError("library rejected")
+    def cookies_fn():
+        polls.append(1)
+        if len(polls) <= 2:
+            return stale
+        return SIGNED_IN_COOKIES
 
-    monkeypatch.setattr(login, "_verify_library", fail_verification)
+    _setup(tmp_path, monkeypatch, cookies_fn)
+
+    def flaky_verify(path):
+        verify_calls.append(1)
+        if len(verify_calls) == 1:
+            raise PlayerError("library rejected")
+        return "Igidn", 3
+
+    monkeypatch.setattr(login, "_verify_library", flaky_verify)
+
     output = tmp_path / "cookies.txt"
-    with pytest.raises(PlayerError, match="library"):
-        browser_login(output, poll_seconds=0)
-    assert context.closed
+    statuses = []
+    result = browser_login(output, status=statuses.append, poll_seconds=0)
+
+    assert result.cookie_path == output
+    assert any("didn't take effect" in text for text in statuses)
+    assert len(verify_calls) == 2
+    assert output.is_file()
+
+
+def test_browser_login_wipes_previous_profile(tmp_path, monkeypatch):
+    """A stale profile is deleted so the sign-in starts from a clean slate."""
+    profile = tmp_path / "browser-profile"
+    profile.mkdir(parents=True)
+    (profile / "Cookies").write_text("stale session")
+    stale_marker = profile / "Local State"
+    stale_marker.write_text("{}")
+
+    def cookies_fn():
+        return SIGNED_IN_COOKIES
+
+    _setup(tmp_path, monkeypatch, cookies_fn)
+    monkeypatch.setattr(login, "_verify_library", lambda path: ("Igidn", 3))
+
+    output = tmp_path / "cookies.txt"
+    browser_login(output, poll_seconds=0)
+
+    assert not profile.exists()
+    assert output.is_file()
 
 
 def test_browser_login_browser_closed_mid_wait(tmp_path, monkeypatch):
-    monkeypatch.setenv("MUSIC_CLI_CONFIG_DIR", str(tmp_path))
-
     def closed():
         raise RuntimeError("Target page, context or browser has been closed")
 
-    context = FakeContext(closed)
-    fake = FakeSyncPlaywright(FakeChromium(context))
-    monkeypatch.setattr(login, "_import_playwright", lambda: fake)
+    _setup(tmp_path, monkeypatch, closed)
     with pytest.raises(PlayerError, match="closed"):
         browser_login(tmp_path / "cookies.txt", poll_seconds=0)
+
+
+def test_no_message_without_auth_cookies(tmp_path, monkeypatch):
+    """A fresh profile (no auth cookies) waits quietly for a sign-in."""
+    _setup(tmp_path, monkeypatch, lambda: ANONYMOUS_COOKIES)
+    sleeps = []
+
+    def interrupted(*args):
+        sleeps.append(1)
+        if len(sleeps) > 3:
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(login.time, "sleep", interrupted)
+    statuses = []
+    with pytest.raises(KeyboardInterrupt):
+        login._wait_for_verified_auth(
+            FakeContext(lambda: ANONYMOUS_COOKIES), statuses.append, 2.0
+        )
+    assert statuses == []
+
+
+def test_auth_signature_ignores_non_auth_cookies():
+    signature = login._auth_signature(
+        [
+            *SIGNED_IN_COOKIES,
+            {"name": "PREF", "value": "zz", "domain": ".youtube.com"},
+        ]
+    )
+    assert signature == login._auth_signature(SIGNED_IN_COOKIES)
+    assert signature != login._auth_signature(
+        [dict(cookie, value="other") for cookie in SIGNED_IN_COOKIES]
+    )
+
+
+class _AccountMenuResponse:
+    def __init__(self, payload) -> None:
+        self._payload = payload
+
+    def raise_for_status(self) -> None:
+        pass
+
+    def json(self):
+        return self._payload
+
+
+class _AccountMenuSession:
+    def __init__(self, payload) -> None:
+        self._payload = payload
+        self.headers = None
+
+    def post(self, *args, **kwargs):
+        self.headers = kwargs.get("headers")
+        return _AccountMenuResponse(self._payload)
+
+
+def _account_menu_payload(account_name):
+    return {
+        "actions": [
+            {
+                "openPopupAction": {
+                    "popup": {
+                        "multiPageMenuRenderer": {
+                            "header": {
+                                "activeAccountHeaderRenderer": {
+                                    "accountName": account_name,
+                                }
+                            },
+                            "sections": [
+                                {"multiPageMenuSectionRenderer": {"items": []}}
+                            ],
+                        }
+                    }
+                }
+            }
+        ]
+    }
+
+
+def _verify_setup(tmp_path, monkeypatch, payload):
+    from music_cli import playlists as playlists_module
+
+    monkeypatch.setenv("MUSIC_CLI_CONFIG_DIR", str(tmp_path))
+    cookie_path = tmp_path / "cookies.txt"
+    save_cookie_file(SIGNED_IN_COOKIES, cookie_path)
+    session = _AccountMenuSession(payload)
+
+    class _FakeApi:
+        def __init__(self, cookies=None) -> None:
+            self.cookies = cookies
+
+        def playlists(self, limit=25):
+            return ["p1", "p2", "p3"]
+
+    monkeypatch.setattr(playlists_module, "_account_session", lambda cookies: session)
+    monkeypatch.setattr(playlists_module, "_browser_auth", lambda s: {"auth": "signed"})
+    monkeypatch.setattr(playlists_module, "Library", _FakeApi)
+    return cookie_path, session
+
+
+def test_verify_library_parses_account_name_from_runs(tmp_path, monkeypatch):
+    payload = _account_menu_payload({"runs": [{"text": "agwjbgsgjk"}]})
+    cookie_path, session = _verify_setup(tmp_path, monkeypatch, payload)
+
+    name, count = login._verify_library(cookie_path)
+
+    assert name == "agwjbgsgjk"
+    assert count == 3
+    assert session.headers == {"auth": "signed"}
+
+
+def test_verify_library_accepts_plain_account_name(tmp_path, monkeypatch):
+    cookie_path, _ = _verify_setup(
+        tmp_path, monkeypatch, _account_menu_payload("Plain Name")
+    )
+    assert login._verify_library(cookie_path) == ("Plain Name", 3)
+
+
+def test_verify_library_rejects_anonymous_menu(tmp_path, monkeypatch):
+    cookie_path, _ = _verify_setup(tmp_path, monkeypatch, {"actions": []})
+    with pytest.raises(PlayerError, match="library rejected"):
+        login._verify_library(cookie_path)

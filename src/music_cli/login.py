@@ -27,6 +27,17 @@ from .player import Cookies, PlayerError
 
 SIGNIN_URL = "https://music.youtube.com/"
 
+# account_menu POST body; the response holds the signed-in account's name.
+ACCOUNT_MENU_URL = (
+    "https://music.youtube.com/youtubei/v1/account/account_menu"
+    "?alt=json&key=AIzaSyC9XL3ZjWddXyaVXKRd-4DWCPQXxFi9zVk"
+)
+ACCOUNT_MENU_BODY = {
+    "context": {
+        "client": {"clientName": "WEB_REMIX", "clientVersion": "1.20240627.01.00"}
+    }
+}
+
 AUTH_COOKIE_NAMES = frozenset(
     {
         "SAPISID",
@@ -52,7 +63,8 @@ class LoginResult:
     """The outcome of a successful browser sign-in."""
 
     cookie_path: Path
-    playlist_count: int | None
+    account_name: str | None = None
+    playlist_count: int | None = None
 
 
 def config_dir() -> Path:
@@ -74,8 +86,21 @@ def default_cookie_path() -> Path:
 
 
 def browser_profile_dir() -> Path:
-    """The persistent browser profile, so re-signing in stays logged in."""
+    """The scratch browser profile used while signing in.
+
+    A fresh profile on every login: YouTube invalidates sessions that were
+    created or re-used through a stale profile (an old session's cookies can
+    linger and read as signed-in while the server has already revoked them,
+    which the account-menu verification then correctly rejects).
+    """
     return config_dir() / BROWSER_PROFILE_DIRNAME
+
+
+def reset_browser_profile() -> None:
+    """Delete the scratch browser profile so the next login starts clean."""
+    import shutil
+
+    shutil.rmtree(browser_profile_dir(), ignore_errors=True)
 
 
 def skip_auth_marker() -> Path:
@@ -98,9 +123,18 @@ def clear_auth_skipped() -> None:
 
 
 def auth_cookies_present(cookies: Iterable[Mapping[str, object]]) -> bool:
-    """Whether ``cookies`` carry a signed-in YouTube account."""
-    names = {cookie.get("name") for cookie in cookies}
-    return bool(names & AUTH_COOKIE_NAMES)
+    """Whether ``cookies`` carry a signed-in YouTube account.
+
+    Only YouTube-scoped cookies count: Google's login pages set ``SAPISID``
+    and friends on ``.google.com`` mid-login, but music.youtube.com only
+    authenticates with the copies YouTube itself sets on ``.youtube.com``
+    once the redirect back completes.
+    """
+    for cookie in cookies:
+        domain = str(cookie.get("domain") or "")
+        if domain.endswith(".youtube.com") and cookie.get("name") in AUTH_COOKIE_NAMES:
+            return True
+    return False
 
 
 def to_netscape_cookie(raw: Mapping[str, object]) -> Cookie:
@@ -159,9 +193,12 @@ def browser_login(
 ) -> LoginResult:
     """Sign in with a browser and persist the account cookies.
 
-    Opens a headed Chromium on music.youtube.com and waits until the account
-    cookies appear, then saves them to ``output_path`` and verifies the
-    library is reachable with them.
+    Opens a headed Chromium on music.youtube.com in a *fresh* profile (any
+    previous profile is wiped first, so a stale or revoked session can never
+    masquerade as signed-in) and keeps it open until the account cookies in
+    the browser *verify* against YouTube's account menu API (the same parser
+    used at the end). The browser stays open while the user signs in,
+    re-verifying whenever the cookies change.
 
     Raises ``PlayerError`` when Playwright or the browser are missing, the
     browser was closed before signing in, or the captured cookies fail the
@@ -172,7 +209,8 @@ def browser_login(
     playwright = _import_playwright()
     with playwright() as api:
         _ensure_browser_binary(api, report)
-        report("Opening browser…")
+        report("Starting a fresh browser session…")
+        reset_browser_profile()
         context = api.chromium.launch_persistent_context(
             user_data_dir=str(browser_profile_dir()),
             headless=False,
@@ -188,46 +226,151 @@ def browser_login(
             page = context.pages[0] if context.pages else context.new_page()
             page.goto(SIGNIN_URL)
             report("Sign in to YouTube Music in the opened browser…")
-            cookies = _wait_for_auth(context, poll_seconds)
+            cookies, account_name, count = _wait_for_verified_auth(
+                context, report, poll_seconds
+            )
         finally:
             context.close()
     save_cookie_file(cookies, target)
-    report("Signed in — checking your library…")
-    count = _verify_library(target)
     clear_auth_skipped()
     report(f"Sign-in saved to {target}")
-    return LoginResult(cookie_path=target, playlist_count=count)
+    return LoginResult(
+        cookie_path=target, account_name=account_name, playlist_count=count
+    )
 
 
-def _wait_for_auth(context, poll_seconds: float) -> list[dict[str, object]]:
-    """Poll the browser context until a signed-in account is detected."""
-    while True:
-        try:
-            cookies = context.cookies()
-        except Exception as error:
-            raise PlayerError("Browser was closed before signing in") from error
-        if auth_cookies_present(cookies):
-            return cookies
-        time.sleep(poll_seconds)
+def _wait_for_verified_auth(
+    context, report: StatusCallback, poll_seconds: float
+) -> tuple[list[dict[str, object]], str, int]:
+    """Wait until the browser's cookies verify, then return them.
 
-
-def _verify_library(cookie_path: Path) -> int | None:
-    """Confirm the captured cookies unlock the library, returning its size.
-
-    A browser profile can carry stale cookies that still look signed-in but
-    no longer authenticate; the library call catches that before the app
-    tells the user everything worked.
+    The account-menu check is the single source of truth: cookie presence
+    proves nothing, so every distinct auth-cookie snapshot is verified
+    against the API before the browser closes. Verification also runs on
+    open, so an already signed-in profile completes instantly. Failed
+    verification keeps the browser open and the poll quiet until the
+    cookies change again (i.e. the user finishes signing in).
     """
-    from .playlists import Library
+    checked: set[tuple[tuple[str, str], ...]] = set()
+    with _temp_dir() as temp:
+        while True:
+            try:
+                cookies = context.cookies()
+            except Exception as error:
+                raise PlayerError("Browser was closed before signing in") from error
+            signature = _auth_signature(cookies)
+            if signature and signature not in checked:
+                checked.add(signature)
+                result = _verify_live(cookies, temp)
+                if result is not None:
+                    return cookies, result[0], result[1]
+                report(
+                    "Sign-in didn't take effect yet — finish signing in the browser…"
+                )
+            time.sleep(poll_seconds)
+
+
+def _auth_signature(
+    cookies: Iterable[Mapping[str, object]],
+) -> tuple[tuple[str, str], ...]:
+    """The YouTube-scoped auth cookie names+values, as a comparable key."""
+    return tuple(
+        sorted(
+            (str(cookie["name"]), str(cookie["value"]))
+            for cookie in cookies
+            if str(cookie.get("domain") or "").endswith(".youtube.com")
+            and cookie.get("name") in AUTH_COOKIE_NAMES
+        )
+    )
+
+
+def _verify_live(
+    cookies: Iterable[Mapping[str, object]], temp: Path
+) -> tuple[str, int] | None:
+    """Verify the live browser cookies, returning (account, playlists).
+
+    Returns None when the cookies don't authenticate yet (an expired or
+    mid-login session), keeping the browser open.
+    """
+    from contextlib import suppress
+
+    candidate = temp / "candidate.txt"
+    save_cookie_file(cookies, candidate)
+    with suppress(PlayerError, OSError):
+        return _verify_library(candidate)
+    return None
+
+
+class _temp_dir:
+    """A self-cleaning temporary directory."""
+
+    def __enter__(self) -> Path:
+        import tempfile
+
+        self._path = Path(tempfile.mkdtemp(prefix="music-cli-login-"))
+        return self._path
+
+    def __exit__(self, *args) -> None:
+        import shutil
+
+        shutil.rmtree(self._path, ignore_errors=True)
+
+
+def _verify_library(cookie_path: Path) -> tuple[str, int]:
+    """Confirm the captured cookies unlock the account, not just its page.
+
+    The account menu endpoint is parsed directly (ytmusicapi's own parser
+    is a fragile fixed path that blows up on unexpected response shapes);
+    it returns the account name only when the cookies truly authenticate.
+    """
+    from .playlists import Library, _account_session, _browser_auth
 
     cookies = Cookies.from_file(str(cookie_path))
     try:
-        return len(Library(cookies=cookies).playlists())
+        session = _account_session(cookies)
+        response = session.post(
+            ACCOUNT_MENU_URL,
+            headers=_browser_auth(session),
+            json=ACCOUNT_MENU_BODY,
+            timeout=30,
+        )
+        response.raise_for_status()
+        account_name = _find_first(response.json(), "accountName")
+        if isinstance(account_name, dict):
+            runs = account_name.get("runs")
+            if isinstance(runs, list) and runs:
+                account_name = runs[0].get("text")
+        account_name = str(account_name or "").strip()
+        if not account_name:
+            raise PlayerError("library rejected the cookies (no account returned)")
+        return account_name, len(Library(cookies=cookies).playlists())
+    except PlayerError:
+        raise
     except Exception as error:
+        detail = str(error).strip()
+        if len(detail) > 200:
+            detail = detail[:200] + "…"
         raise PlayerError(
             "Sign-in was detected but the library check failed "
-            f"({error}); try 'music-cli login' again"
+            f"({detail}); try 'music-cli login' again"
         ) from error
+
+
+def _find_first(value: object, key: str) -> object | None:
+    """Depth-first search for the first value stored under ``key``."""
+    if isinstance(value, dict):
+        for dict_key, item in value.items():
+            if dict_key == key:
+                return item
+            found = _find_first(item, key)
+            if found is not None:
+                return found
+    elif isinstance(value, list):
+        for item in value:
+            found = _find_first(item, key)
+            if found is not None:
+                return found
+    return None
 
 
 def _import_playwright():
