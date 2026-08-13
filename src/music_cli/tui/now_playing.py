@@ -8,20 +8,10 @@ from textual.containers import Horizontal, Vertical
 from textual.widget import Widget
 from textual.widgets import ProgressBar, Static
 
+from ..search import format_duration
 from .waveform import Waveform
 
 BAR_GRADIENT = Gradient((0.0, "#8b5cf6"), (0.6, "#a78bfa"), (1.0, "#67e8f9"))
-
-
-def format_time(seconds: float | None) -> str:
-    if not seconds or seconds < 0:
-        return "--:--"
-    total = int(seconds)
-    hours, remainder = divmod(total, 3600)
-    minutes, secs = divmod(remainder, 60)
-    if hours:
-        return f"{hours}:{minutes:02d}:{secs:02d}"
-    return f"{minutes}:{secs:02d}"
 
 
 class NowPlaying(Widget):
@@ -134,5 +124,6 @@ class NowPlaying(Widget):
     def _render_time(self) -> None:
         if not self._has_track:
             return
-        text = f"{format_time(self._position)} / {format_time(self._duration)}"
-        self.query_one("#np-time", Static).update(text)
+        pos = format_duration(self._position) or "--:--"
+        dur = format_duration(self._duration) or "--:--"
+        self.query_one("#np-time", Static).update(f"{pos} / {dur}")

@@ -46,7 +46,9 @@ from Foundation import (
 from yt_dlp.cookies import SUPPORTED_BROWSERS
 from ytmusicapi import YTMusic
 
-from .cache import AudioCache, DownloadResult, TrackMeta
+from .search import parse_artists
+
+
 
 # Not exposed by pyobjc's AVFoundation bindings; the constant's runtime value
 # is its own name string (see AVURLAsset.h).
@@ -241,7 +243,7 @@ class StreamExtractor:
             video_id=info.get("id") or video_id,
             title=info.get("title") or video_id,
             stream_url=info["url"],
-            artists=_parse_artists(info),
+            artists=parse_artists(info),
             duration=info.get("duration"),
             ext=info.get("ext") or "",
             format_id=info.get("format_id") or "",
@@ -276,15 +278,6 @@ class StreamExtractor:
         if not downloads or not downloads[0].get("filepath"):
             raise PlayerError(f"No audio was downloaded for {video_id}")
         return downloads[0]["filepath"]
-
-
-def _parse_artists(info: dict[str, Any]) -> list[str]:
-    artists = info.get("artists")
-    if isinstance(artists, list):
-        return [a for a in artists if isinstance(a, str)]
-    creator = info.get("creator") or info.get("uploader")
-    return [creator] if creator else []
-
 
 class WatchPlaylist:
     """Autoplay queue from the YouTube Music watch playlist endpoint.

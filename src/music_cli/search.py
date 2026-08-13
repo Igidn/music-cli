@@ -30,31 +30,33 @@ TYPE_LABELS = {
 }
 
 
-def _format_duration(raw: Any) -> str:
-    if isinstance(raw, int):
-        minutes, seconds = divmod(raw, 60)
-        hours, minutes = divmod(minutes, 60)
-        if hours:
-            return f"{hours}:{minutes:02d}:{seconds:02d}"
-        return f"{minutes}:{seconds:02d}"
+def format_duration(raw: Any) -> str:
+    """Seconds -> "m:ss"/"h:mm:ss"; strings pass through; junk -> "" ("--:--" up to caller)."""
     if isinstance(raw, str):
         return raw
-    return ""
+    if not isinstance(raw, (int, float)) or raw < 0:
+        return ""
+    total = int(raw)
+    hours, remainder = divmod(total, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes}:{secs:02d}"
 
 
-def _parse_artists(result: dict[str, Any]) -> list[str]:
-    artists = [
-        artist["name"]
-        for artist in (result.get("artists") or [])
-        if isinstance(artist, dict) and artist.get("name")
-    ]
-    if artists:
-        return artists
-    author = result.get("author")
-    if isinstance(author, dict) and author.get("name"):
-        return [author["name"]]
-    if isinstance(author, str) and author:
-        return [author]
+def parse_artists(info: dict[str, Any]) -> list[str]:
+    """Artist names from list-of-dicts (ytmusicapi) or list-of-str (yt-dlp)."""
+    raw = info.get("artists")
+    if isinstance(raw, list):
+        names = [a.get("name") if isinstance(a, dict) else a for a in raw]
+        if artists := [n for n in names if n]:
+            return artists
+    for key in ("author", "creator", "uploader"):
+        val = info.get(key)
+        if isinstance(val, dict) and val.get("name"):
+            return [val["name"]]
+        if isinstance(val, str) and val:
+            return [val]
     return []
 
 
@@ -68,14 +70,14 @@ def _parse_album(result: dict[str, Any]) -> str:
 
 
 def parse_search_result(result: dict[str, Any]) -> SearchResult:
-    duration = _format_duration(result.get("duration"))
+    duration = format_duration(result.get("duration"))
     if not duration:
-        duration = _format_duration(result.get("duration_seconds"))
+        duration = format_duration(result.get("duration_seconds"))
     year = result.get("year")
     return SearchResult(
         result_type=result.get("resultType", "unknown"),
         title=result.get("title") or "Unknown",
-        artists=_parse_artists(result),
+        artists=parse_artists(result),
         album=_parse_album(result),
         duration=duration,
         video_id=result.get("videoId") or "",
