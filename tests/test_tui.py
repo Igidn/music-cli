@@ -226,6 +226,7 @@ def test_arrow_key_pane_navigation():
             assert results.cursor_coordinate.row == 0
             await pilot.press("up")
             assert app.focused is search
+            assert search.selection.is_empty  # landing in search must not select all
 
             queue.set_tracks([PlaylistTrack(video_id="t1", title="One", artists=["A"])])
             queue.focus()
@@ -708,6 +709,42 @@ def test_narrow_layout_hides_side_panes():
             await pilot.pause()
             assert not app.screen.has_class("-narrow")
             assert queue.display and playlist.display
+
+    _run(scenario())
+
+
+def test_search_edges_jump_to_side_panes():
+    from music_cli.tui.app import LibraryTree, MusicTUI, QueueList, ResultsTable
+
+    async def scenario():
+        client = make_client()
+        app = MusicTUI(client)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            search = app.query_one("#search-input")
+            queue = app.query_one(QueueList)
+            playlist = app.query_one(LibraryTree)
+
+            # Empty input: left/right jump to the side panes.
+            await pilot.press("left")
+            assert app.focused is playlist
+            await pilot.press("right")
+            assert app.focused is app.query_one(ResultsTable)
+
+            search.focus()
+            search.value = "hello"
+            await pilot.press("right")  # at end of text → up next
+            assert app.focused is queue
+            await pilot.press("left")
+            assert app.focused is app.query_one(ResultsTable)
+
+            # Mid-text, left/right still move the cursor.
+            search.focus()
+            await pilot.pause()
+            search.cursor_position = 2
+            await pilot.press("left")
+            assert app.focused is search
+            assert search.cursor_position == 1
 
     _run(scenario())
 

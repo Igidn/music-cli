@@ -362,6 +362,22 @@ class QueueList(ListView):
         )
 
 
+class SearchInput(Input):
+    """Search box; left/right move the cursor, or jump panes at the edges."""
+
+    def action_cursor_left(self, select: bool = False) -> None:
+        if not select and self.cursor_position == 0:
+            self.app.action_pane_left()
+        else:
+            super().action_cursor_left(select)
+
+    def action_cursor_right(self, select: bool = False) -> None:
+        if not select and self.cursor_at_end and not self._suggestion:
+            self.app.action_pane_right()
+        else:
+            super().action_cursor_right(select)
+
+
 class FilterSelect(Select, inherit_bindings=False):
     """Search filter dropdown; enter/space opens it, arrows navigate panes."""
 
@@ -382,7 +398,11 @@ class MusicTUI(App[None]):
     HORIZONTAL_BREAKPOINTS: ClassVar = [(0, "-narrow"), (NARROW_WIDTH, "-wide")]
 
     PANE_NAV: ClassVar[dict[str, dict[str, str]]] = {
-        "search-input": {"down": "results", "left": "playlist-pane"},
+        "search-input": {
+            "down": "results",
+            "left": "playlist-pane",
+            "right": "queue-pane",
+        },
         "filter-select": {
             "down": "results",
             "left": "search-input",
@@ -477,9 +497,10 @@ class MusicTUI(App[None]):
             yield LibraryTree("Library", id="playlist-pane")
             with Vertical(id="results-pane"):
                 with Horizontal(id="search-box"):
-                    yield Input(
+                    yield SearchInput(
                         placeholder="Search songs, artists, albums…",
                         id="search-input",
+                        select_on_focus=False,
                     )
                     yield FilterSelect(
                         [
