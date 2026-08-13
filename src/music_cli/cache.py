@@ -23,7 +23,7 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
-from .db import ensure_schema, open_db, reset_database
+from .db import open_db_with_recovery
 
 CACHE_VERSION = 2
 DEFAULT_MAX_SIZE = 2 * 1024**3
@@ -295,7 +295,7 @@ class AudioCache:
     def _load(self) -> None:
         self.directory.mkdir(parents=True, exist_ok=True)
         self._tracks_dir.mkdir(parents=True, exist_ok=True)
-        conn = self._open_database()
+        conn = open_db_with_recovery(self._db_path)
         self._conn = conn
         for row in conn.execute("SELECT * FROM tracks"):
             entry = self._entry_from_row(row)
@@ -323,19 +323,6 @@ class AudioCache:
             }
             self._dirty = True
         self.evict()
-
-    def _open_database(self) -> sqlite3.Connection:
-        """Open the index database, rebuilding it when it is corrupt."""
-        try:
-            conn = open_db(self._db_path)
-            ensure_schema(conn)
-            conn.execute("SELECT COUNT(*) FROM tracks").fetchone()
-            return conn
-        except sqlite3.DatabaseError:
-            reset_database(self._db_path)
-            conn = open_db(self._db_path)
-            ensure_schema(conn)
-            return conn
 
     @staticmethod
     def _entry_from_row(row: sqlite3.Row) -> dict[str, Any] | None:
@@ -426,9 +413,7 @@ class AudioCache:
         except sqlite3.DatabaseError:
             # A write failure means the database is gone or corrupt; fall
             # back to keeping the in-memory index so playback still works.
-            reset_database(self._db_path)
-            conn = open_db(self._db_path)
-            ensure_schema(conn)
+            conn = open_db_with_recovery(self._db_path)
             self._conn.close()
             self._conn = conn
             with self._conn:

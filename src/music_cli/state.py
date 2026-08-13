@@ -20,7 +20,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from .db import ensure_schema, open_db, reset_database
+from .db import open_db_with_recovery
 from .paths import config_dir
 
 STATE_DB_FILENAME = "music-cli.db"
@@ -108,15 +108,7 @@ class PlayHistoryStore:
         return self._conn
 
     def _open_database(self) -> sqlite3.Connection:
-        try:
-            conn = open_db(self.path)
-            ensure_schema(conn)
-            return conn
-        except sqlite3.DatabaseError:
-            reset_database(self.path)
-            conn = open_db(self.path)
-            ensure_schema(conn)
-            return conn
+        return open_db_with_recovery(self.path)
 
     @staticmethod
     def _from_row(row: sqlite3.Row) -> PlayedTrack:
@@ -183,12 +175,5 @@ class SettingsStore:
 
     def _ensure_open(self) -> sqlite3.Connection:
         if self._conn is None:
-            try:
-                conn = open_db(self.path)
-                ensure_schema(conn)
-            except sqlite3.DatabaseError:
-                reset_database(self.path)
-                conn = open_db(self.path)
-                ensure_schema(conn)
-            self._conn = conn
+            self._conn = open_db_with_recovery(self.path)
         return self._conn
