@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .cache import AudioCache
 from .client import MusicClient
-from .login import auth_was_skipped, default_cookie_path
+from .login import default_cookie_path
 from .player import Cookies, PlayerError
 
 
@@ -90,20 +90,6 @@ def main() -> None:
         AudioCache().clear()
         print("music-cli: audio cache cleared")
         return
-    if (
-        not args.cookies
-        and not auth_was_skipped()
-        and sys.stdin.isatty()
-    ):
-        from .tui.onboarding import run_onboarding
-
-        try:
-            cookie_path = run_onboarding()
-        except PlayerError as error:
-            print(f"music-cli: {error}", file=sys.stderr)
-            sys.exit(1)
-        if cookie_path is not None:
-            args.cookies = str(cookie_path)
     try:
         client = build_client(args)
     except PlayerError as error:

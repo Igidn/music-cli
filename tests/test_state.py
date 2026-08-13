@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-
 from music_cli.state import (
     STATE_DB_FILENAME,
     PlayedTrack,
@@ -78,44 +76,6 @@ class TestPlayHistoryStore:
         path = tmp_path / "music-cli.db"
         PlayHistoryStore(path).record(PlayedTrack(video_id="v1", title="Song"))
         assert PlayHistoryStore(path).most_recent().video_id == "v1"
-
-    def test_migrates_legacy_last_track_json(self, tmp_path):
-        path = tmp_path / "music-cli.db"
-        legacy = tmp_path / "last-track.json"
-        legacy.write_text(
-            json.dumps(
-                {
-                    "video_id": "v1",
-                    "title": "Song",
-                    "artists": ["A", "B"],
-                    "duration": 213.0,
-                }
-            )
-        )
-        store = PlayHistoryStore(path)
-        track = store.most_recent()
-        assert track.video_id == "v1"
-        assert track.title == "Song"
-        assert track.artists == ("A", "B")
-        assert track.played == 1
-        assert not legacy.exists()
-
-    def test_migrates_minimal_legacy_track(self, tmp_path):
-        path = tmp_path / "music-cli.db"
-        legacy = tmp_path / "last-track.json"
-        legacy.write_text(json.dumps({"video_id": "v2", "title": ""}))
-        track = PlayHistoryStore(path).most_recent()
-        assert track.video_id == "v2"
-        assert track.title == "v2"
-        assert track.played == 1
-        assert not legacy.exists()
-
-    def test_ignores_corrupt_legacy_file(self, tmp_path):
-        path = tmp_path / "music-cli.db"
-        legacy = tmp_path / "last-track.json"
-        legacy.write_text("{not json")
-        assert PlayHistoryStore(path).most_recent() is None
-        assert not legacy.exists()
 
     def test_recovers_from_corrupt_database(self, tmp_path):
         path = tmp_path / "music-cli.db"

@@ -8,9 +8,7 @@ config directory, WAL mode):
   entry is what playback resumes from on startup, and the counters are
   the raw material for future year-in-review-style features.
 * ``settings`` — persistent player preferences (volume, muted, loop) and
-  small app flags (the ``no_sign_in`` marker), stored as text key/value.
-
-Legacy JSON/marker files are imported once on first access and removed.
+  small app flags, stored as text key/value.
 """
 
 from __future__ import annotations
@@ -26,7 +24,6 @@ from .db import ensure_schema, open_db, reset_database
 from .paths import config_dir
 
 STATE_DB_FILENAME = "music-cli.db"
-LEGACY_STATE_FILENAME = "last-track.json"
 
 SETTING_VOLUME = "volume"
 SETTING_MUTED = "muted"
@@ -107,7 +104,6 @@ class PlayHistoryStore:
     def _ensure_open(self) -> sqlite3.Connection:
         if self._conn is None:
             conn = self._open_database()
-            self._migrate_legacy_json(conn)
             self._conn = conn
         return self._conn
 
@@ -121,44 +117,6 @@ class PlayHistoryStore:
             conn = open_db(self.path)
             ensure_schema(conn)
             return conn
-
-    def _migrate_legacy_json(self, conn: sqlite3.Connection) -> None:
-        """Import the pre-SQLite ``last-track.json`` once, then remove it."""
-        path = self.path.parent / LEGACY_STATE_FILENAME
-        if not path.is_file():
-            return
-        try:
-            raw = json.loads(path.read_text())
-        except (OSError, ValueError):
-            raw = None
-        if isinstance(raw, dict):
-            video_id = raw.get("video_id")
-            if isinstance(video_id, str) and video_id:
-                title = raw.get("title")
-                artists = tuple(
-                    artist
-                    for artist in raw.get("artists") or ()
-                    if isinstance(artist, str)
-                )
-                duration = raw.get("duration")
-                conn.execute(
-                    """
-                    INSERT OR IGNORE INTO play_history
-                        (video_id, title, artists, duration, played, last_played)
-                    VALUES (?, ?, ?, ?, 1, ?)
-                    """,
-                    (
-                        video_id,
-                        title if isinstance(title, str) and title else video_id,
-                        json.dumps(list(artists)),
-                        duration
-                        if isinstance(duration, (int, float)) and duration > 0
-                        else None,
-                        time.time(),
-                    ),
-                )
-                conn.commit()
-        path.unlink(missing_ok=True)
 
     @staticmethod
     def _from_row(row: sqlite3.Row) -> PlayedTrack:

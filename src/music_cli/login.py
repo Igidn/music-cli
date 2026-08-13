@@ -25,7 +25,6 @@ from pathlib import Path
 
 from .paths import config_dir
 from .player import Cookies, PlayerError
-from .state import STATE_DB_FILENAME, SettingsStore
 
 SIGNIN_URL = "https://music.youtube.com/"
 
@@ -54,8 +53,6 @@ AUTH_COOKIE_NAMES = frozenset(
 
 COOKIE_FILENAME = "cookies.txt"
 BROWSER_PROFILE_DIRNAME = "browser-profile"
-SKIP_AUTH_MARKER_NAME = "no-sign-in"
-NO_SIGN_IN_KEY = "no_sign_in"
 
 StatusCallback = Callable[[str], None]
 
@@ -93,36 +90,6 @@ def reset_browser_profile() -> None:
     import shutil
 
     shutil.rmtree(browser_profile_dir(), ignore_errors=True)
-
-
-def skip_auth_marker() -> Path:
-    """Legacy marker file recording that the user declined sign-in onboarding.
-
-    Migrated into the settings database (``no_sign_in``) on first read;
-    kept for the one-time import.
-    """
-    return config_dir() / SKIP_AUTH_MARKER_NAME
-
-
-def auth_was_skipped() -> bool:
-    store = SettingsStore(config_dir() / STATE_DB_FILENAME)
-    skipped = store.get_bool(NO_SIGN_IN_KEY)
-    marker = skip_auth_marker()
-    if marker.is_file() and not skipped:
-        store.set(NO_SIGN_IN_KEY, True)
-        skipped = True
-    if marker.is_file() and skipped:
-        marker.unlink(missing_ok=True)
-    return skipped
-
-
-def mark_auth_skipped() -> None:
-    SettingsStore(config_dir() / STATE_DB_FILENAME).set(NO_SIGN_IN_KEY, True)
-    skip_auth_marker().unlink(missing_ok=True)
-
-
-def clear_auth_skipped() -> None:
-    SettingsStore(config_dir() / STATE_DB_FILENAME).delete(NO_SIGN_IN_KEY)
 
 
 def auth_cookies_present(cookies: Iterable[Mapping[str, object]]) -> bool:
@@ -235,7 +202,6 @@ def browser_login(
         finally:
             context.close()
     save_cookie_file(cookies, target)
-    clear_auth_skipped()
     report(f"Sign-in saved to {target}")
     return LoginResult(
         cookie_path=target, account_name=account_name, playlist_count=count
@@ -255,7 +221,10 @@ def _wait_for_verified_auth(
     cookies change again (i.e. the user finishes signing in).
     """
     checked: set[tuple[tuple[str, str], ...]] = set()
-    with _temp_dir() as temp:
+    import tempfile
+
+    with tempfile.TemporaryDirectory(prefix="music-cli-login-") as temp_dir:
+        temp = Path(temp_dir)
         while True:
             try:
                 cookies = context.cookies()
@@ -302,21 +271,6 @@ def _verify_live(
     with suppress(PlayerError, OSError):
         return _verify_library(candidate)
     return None
-
-
-class _temp_dir:
-    """A self-cleaning temporary directory."""
-
-    def __enter__(self) -> Path:
-        import tempfile
-
-        self._path = Path(tempfile.mkdtemp(prefix="music-cli-login-"))
-        return self._path
-
-    def __exit__(self, *args) -> None:
-        import shutil
-
-        shutil.rmtree(self._path, ignore_errors=True)
 
 
 def _verify_library(cookie_path: Path) -> tuple[str, int]:

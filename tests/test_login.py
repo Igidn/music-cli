@@ -122,15 +122,6 @@ def test_default_cookie_path(tmp_path, monkeypatch):
     assert default_cookie_path() == tmp_path / "custom.txt"
 
 
-def test_skip_auth_marker(tmp_path, monkeypatch):
-    monkeypatch.setenv("MUSIC_CLI_CONFIG_DIR", str(tmp_path))
-    assert not login.auth_was_skipped()
-    login.mark_auth_skipped()
-    assert login.auth_was_skipped()
-    login.clear_auth_skipped()
-    assert not login.auth_was_skipped()
-
-
 class FakePage:
     def goto(self, url: str) -> None:
         self.url = url

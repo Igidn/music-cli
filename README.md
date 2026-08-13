@@ -12,17 +12,17 @@ Requires Python 3.14+ and macOS (playback uses AVFoundation).
 
 ## Sign in
 
-Run the app — on first start an onboarding screen offers **Sign in with
-browser**. A browser window opens on music.youtube.com, you sign in with
-your Google account, and the window closes itself. The account cookies are
-saved to `~/.config/music-cli/cookies.txt` and unlock:
+Run `music-cli login` to sign in. A browser window opens on
+music.youtube.com, you sign in with your Google account, and the window
+closes itself. The account cookies are saved to
+`~/.config/music-cli/cookies.txt` and unlock:
 
 - your library playlists (sidebar)
 - account-aware stream extraction
 
-No Google OAuth client setup required. Re-run `music-cli login` to sign in
-again (for example when the cookies expire) — the same flow is available
-inside the TUI by pressing `s`.
+No Google OAuth client setup required. Re-run `music-cli login` when the
+cookies expire. Without a sign-in, the TUI runs anonymously and the
+playlist panel shows the login command.
 
 The browser is downloaded once on the first sign-in (~150 MB).
 
@@ -54,7 +54,6 @@ persisted too — once you've changed them, they win over `--volume`.
 | `n` | next |
 | `a` | toggle auto-next |
 | `l` | toggle loop |
-| `s` | sign in / re-sign in |
 | `ctrl+left/right` | seek |
 | `+` / `-` | volume |
 | `m` | mute |

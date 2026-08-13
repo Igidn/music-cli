@@ -6,9 +6,6 @@ WAL mode). A replay of a cached track needs no network at all: the client
 plays the local file straight away. The cache enforces size, entry-count
 and age budgets with LRU eviction, and serialises downloads of the same
 video across threads so each video is fetched at most once at a time.
-
-A legacy ``index.json`` (from before the SQLite migration) is imported
-once on first load and then removed.
 """
 
 from __future__ import annotations
@@ -34,7 +31,6 @@ DEFAULT_MAX_ENTRIES = 500
 DEFAULT_TTL = timedelta(days=30)
 
 CACHE_DB_FILENAME = "cache.db"
-LEGACY_INDEX_FILENAME = "index.json"
 
 
 def default_cache_dir() -> Path:
@@ -112,7 +108,6 @@ class AudioCache:
         self.ttl = ttl
         self._tracks_dir = self.directory / "tracks"
         self._db_path = self.directory / CACHE_DB_FILENAME
-        self._legacy_index_path = self.directory / LEGACY_INDEX_FILENAME
         self._conn: sqlite3.Connection | None = None
         self._entries: dict[str, dict[str, Any]] = {}
         self._inflight: dict[str, _InFlight] = {}
@@ -302,7 +297,6 @@ class AudioCache:
         self._tracks_dir.mkdir(parents=True, exist_ok=True)
         conn = self._open_database()
         self._conn = conn
-        self._migrate_legacy_index()
         for row in conn.execute("SELECT * FROM tracks"):
             entry = self._entry_from_row(row)
             if entry is None:
@@ -342,43 +336,6 @@ class AudioCache:
             conn = open_db(self._db_path)
             ensure_schema(conn)
             return conn
-
-    def _migrate_legacy_index(self) -> None:
-        """Import a pre-SQLite ``index.json`` once, then remove it."""
-        path = self._legacy_index_path
-        if not path.is_file():
-            return
-        try:
-            raw = json.loads(path.read_text())
-            entries = raw.get("tracks") if isinstance(raw, dict) else None
-        except (OSError, ValueError):
-            entries = None
-        if isinstance(entries, dict):
-            for video_id, entry in entries.items():
-                if (
-                    not isinstance(entry, dict)
-                    or not isinstance(entry.get("ext"), str)
-                    or not entry["ext"]
-                ):
-                    continue
-                cached = self._tracks_dir / f"{video_id}.{entry['ext']}"
-                if not cached.is_file():
-                    continue
-                self._entries[video_id] = {
-                    "title": entry.get("title") or video_id,
-                    "artists": [
-                        artist
-                        for artist in entry.get("artists") or ()
-                        if isinstance(artist, str)
-                    ],
-                    "duration": entry.get("duration"),
-                    "ext": entry["ext"],
-                    "size": entry.get("size") or cached.stat().st_size,
-                    "added": entry.get("added", time.time()),
-                    "last_used": entry.get("last_used", time.time()),
-                }
-                self._dirty = True
-        path.unlink(missing_ok=True)
 
     @staticmethod
     def _entry_from_row(row: sqlite3.Row) -> dict[str, Any] | None:

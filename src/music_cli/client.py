@@ -256,18 +256,6 @@ class MusicClient:
             raise
         return track
 
-    def refresh_auth(self, cookies: Cookies) -> None:
-        """Swap freshly captured cookies into the auth-aware components.
-
-        Used by the in-TUI re-sign-in flow. The player keeps the previous
-        cookies until the next restart: recreating it mid-session would
-        interrupt any track currently playing.
-        """
-        self._cookies = cookies
-        self.extractor = self._extractor_factory(cookies)
-        self.watch = WatchPlaylist(cookies=cookies)
-        self.library = Library(cookies=cookies)
-
     def close(self) -> None:
         self.player.close()
         if self.cache is not None:
