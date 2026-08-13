@@ -228,6 +228,11 @@ def test_arrow_key_pane_navigation():
             assert app.focused is search
             assert search.selection.is_empty  # landing in search must not select all
 
+            # Up from search wraps around to the bottom of the results.
+            await pilot.press("up")
+            assert app.focused is results
+            assert results.cursor_coordinate.row == 2
+
             queue.set_tracks([PlaylistTrack(video_id="t1", title="One", artists=["A"])])
             queue.focus()
             assert queue.index == 0

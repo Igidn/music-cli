@@ -399,6 +399,7 @@ class MusicTUI(App[None]):
 
     PANE_NAV: ClassVar[dict[str, dict[str, str]]] = {
         "search-input": {
+            "up": "results",
             "down": "results",
             "left": "playlist-pane",
             "right": "queue-pane",
@@ -946,6 +947,12 @@ class MusicTUI(App[None]):
             widget = self.query_one(f"#{target}")
             if widget.display:
                 widget.focus()
+                if (
+                    direction == "up"
+                    and isinstance(widget, ResultsTable)
+                    and widget.row_count
+                ):
+                    widget.move_cursor(row=widget.row_count - 1)
 
     def set_status(self, text: str) -> None:
         self.query_one(NowPlaying).set_status(text)
