@@ -359,6 +359,32 @@ class TestAVFoundationPlayer:
         assert fake.rate() == 1.0
         assert player.media_title == "T"
 
+    def test_play_retries_when_end_of_item_pause_drops_request(self):
+        """The end-of-item pause can land after the next play() request.
+
+        Replicates the auto-next race: play() is issued, the player briefly
+        reports rate 0 (the previous item's pause), so playback must be
+        re-requested until the rate sticks.
+        """
+
+        class DroppingAVPlayer(FakeAVPlayer):
+            def __init__(self):
+                super().__init__()
+                self.play_calls = 0
+                self._drop_next = True
+
+            def play(self):
+                self.play_calls += 1
+                if not self._drop_next:
+                    self._rate = 1.0
+                self._drop_next = False
+
+        fake = DroppingAVPlayer()
+        player = AVFoundationPlayer(player_factory=lambda: fake, fetch_stream=_local)
+        player.play(StreamInfo(video_id="v", title="T", stream_url="https://u"))
+        assert fake.play_calls >= 2
+        assert fake.rate() == 1.0
+
     def test_transport_controls(self):
         fake = FakeAVPlayer()
         player = AVFoundationPlayer(player_factory=lambda: fake, fetch_stream=_local)

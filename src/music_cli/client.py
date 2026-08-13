@@ -188,11 +188,19 @@ class MusicClient:
         return path is not None
 
     def _playback_started(self, timeout: float = PLAY_START_TIMEOUT) -> bool:
-        """Whether playback is actually underway, failing fast on load errors."""
+        """Whether playback is actually underway, failing fast on load errors.
+
+        A known duration alone does not count: after a track ends the player
+        is paused, and if the next play request was dropped the new item can
+        be loaded (duration known) while the rate stays at zero. Only report
+        started when the position is advancing or the player is running.
+        """
         deadline = time.monotonic() + timeout
         grace = time.monotonic() + 1.5
         while time.monotonic() < deadline:
-            if self.player.position > 0.5 or self.player.duration:
+            if self.player.position > 0.5:
+                return True
+            if self.player.duration and not self.player.paused:
                 return True
             if time.monotonic() > grace and not self.player.playing:
                 return False

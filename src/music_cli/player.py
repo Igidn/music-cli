@@ -16,6 +16,7 @@ import math
 import os
 import tempfile
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from http.cookiejar import MozillaCookieJar
@@ -52,6 +53,9 @@ from .cache import AudioCache, DownloadResult, TrackMeta
 AVURLAssetHTTPHeaderFieldsKey = "AVURLAssetHTTPHeaderFieldsKey"
 
 DEFAULT_PLAYER_CLIENT = "web_embedded"
+# How long play() keeps re-issuing the play request when the end-of-item
+# pause of the previous track drops it (see _ensure_playback_started).
+PLAY_RATE_TIMEOUT = 1.0
 # Prefer AAC in an MP4 container: AVFoundation plays it on every system,
 # whereas WebM/Opus support is missing on some macOS installs (the system's
 # own avconvert fails on webm, so downloads falling back to opus simply
@@ -503,7 +507,28 @@ class AVFoundationPlayer:
         )
         self._current_item = item
         self._player.replaceCurrentItemWithPlayerItem_(item)
-        self._player.play()
+        self._ensure_playback_started()
+
+    def _ensure_playback_started(self) -> None:
+        """Start playback, re-issuing play() until the rate actually rises.
+
+        The player pauses when an item ends (actionAtItemEnd is Pause), and
+        that end-of-item pause can land *after* a play request issued for the
+        next track — leaving the new item loaded but silent. This is exactly
+        the auto-next path: the EOF notification fires, then the next track
+        is resolved and played in quick succession. Keep re-requesting
+        playback for a short window so the next track reliably starts.
+        """
+        deadline = time.monotonic() + PLAY_RATE_TIMEOUT
+        while True:
+            self._player.play()
+            time.sleep(0.05)
+            if self._player.rate() != 0.0:
+                time.sleep(0.1)
+                if self._player.rate() != 0.0:
+                    return
+            if time.monotonic() >= deadline:
+                return
 
     def stop(self) -> None:
         self._unobserve()
