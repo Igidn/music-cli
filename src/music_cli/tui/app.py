@@ -416,7 +416,6 @@ class MusicTUI(App[None]):
 
     BINDINGS: ClassVar[list[Binding]] = [
         Binding("slash", "focus_search", "Search"),
-        Binding("p", "focus_playlists", "Playlists"),
         Binding("space", "toggle_playback", "Play/Pause"),
         Binding("ctrl+right", "seek_forward", "Seek +5s"),
         Binding("ctrl+left", "seek_back", "Seek -5s"),
@@ -917,11 +916,6 @@ class MusicTUI(App[None]):
 
     def action_focus_search(self) -> None:
         self.query_one("#search-input", Input).focus()
-
-    def action_focus_playlists(self) -> None:
-        pane = self.query_one("#playlist-pane")
-        if pane.display:
-            pane.focus()
 
     def action_focus_results(self) -> None:
         self.query_one(ResultsTable).focus()
