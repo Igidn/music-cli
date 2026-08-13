@@ -40,6 +40,25 @@ def reset_database(path: str | Path) -> None:
             pass
 
 
+def open_db_with_recovery(path: str | Path) -> sqlite3.Connection:
+    """Open a database with its schema ensured, resetting it when corrupt.
+
+    A corrupt database is discarded and recreated from scratch (orphan audio
+    files are re-adopted by the cache). The smoke query forces a real read
+    so corruption deeper than the header still triggers recovery.
+    """
+    try:
+        conn = open_db(path)
+        ensure_schema(conn)
+        conn.execute("SELECT COUNT(*) FROM tracks").fetchone()
+        return conn
+    except sqlite3.DatabaseError:
+        reset_database(path)
+        conn = open_db(path)
+        ensure_schema(conn)
+        return conn
+
+
 def ensure_schema(conn: sqlite3.Connection, version: int = SCHEMA_VERSION) -> None:
     """Upgrade the database to ``version``, running migrations as needed."""
     current = conn.execute("PRAGMA user_version").fetchone()[0]
