@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, ClassVar
+from dataclasses import dataclass
+from typing import Any, Callable, ClassVar, Literal
 
 from rich.cells import cell_len, set_cell_size
 from rich.text import Text
@@ -66,6 +67,17 @@ TYPE_COLORS = {
 
 class TrackEnded(Message):
     """Posted on the app thread when the player reports end-of-file."""
+
+
+@dataclass
+class _PlayRequest:
+    """One play attempt: video id (for dedup), the thread-side stream
+    resolver, and how to finish the attempt back on the app thread."""
+
+    video_id: str
+    resolve: Callable[[], StreamInfo]
+    kind: Literal["result", "queue", "playlist"]
+    on_fail: Callable[[], None] = lambda: None
 
 
 class TopBar(Widget):
@@ -416,17 +428,10 @@ class MusicTUI(App[None]):
         self._search_worker: Worker[list[SearchResult]] | None = None
         self._queue_worker: Worker[list[PlaylistTrack]] | None = None
         self._play_worker: Worker[StreamInfo] | None = None
-        self._play_worker_video_id: str = ""
-        self._play_queued_worker: Worker[StreamInfo] | None = None
-        self._play_queued_worker_video_id: str = ""
-        self._play_playlist_worker: Worker[StreamInfo] | None = None
-        self._play_playlist_worker_video_id: str = ""
-        self._pending_playlist_track: PlaylistTrack | None = None
+        self._play_request: _PlayRequest | None = None
         self._library_worker: Worker[list[LibraryPlaylist]] | None = None
         self._playlist_workers: dict[str, Worker[list[PlaylistTrack]]] = {}
         self._last_video_id: str = ""
-        self._pending_track: PlaylistTrack | None = None
-        self._pending_index: int = 0
         self._auto_next = True
         self._loop_enabled = False
 
@@ -545,13 +550,10 @@ class MusicTUI(App[None]):
         handlers = {
             "run_search": self._on_search_finished,
             "play_worker": self._on_play_finished,
-            "play_video_worker": self._on_play_finished,
             "fetch_queue_worker": self._on_queue_fetched,
-            "play_queued_worker": self._on_play_queued_finished,
             "refill_worker": self._on_refill_finished,
             "library_worker": self._on_library_fetched,
             "playlist_tracks_worker": self._on_playlist_tracks_fetched,
-            "play_playlist_worker": self._on_play_playlist_finished,
         }
         handler = handlers.get(worker.name)
         if handler is not None:
@@ -585,52 +587,48 @@ class MusicTUI(App[None]):
         """
         if self.client.current is not None and self.client.current.video_id == video_id:
             return True
-        for worker, worker_video_id in (
-            (self._play_worker, self._play_worker_video_id),
-            (self._play_queued_worker, self._play_queued_worker_video_id),
-            (self._play_playlist_worker, self._play_playlist_worker_video_id),
-        ):
-            if (
-                worker is not None
-                and worker.state in (WorkerState.PENDING, WorkerState.RUNNING)
-                and worker_video_id == video_id
-            ):
-                return True
-        return False
+        request = self._play_request
+        return (
+            request is not None
+            and request.video_id == video_id
+            and self._play_worker is not None
+            and self._play_worker.state in (WorkerState.PENDING, WorkerState.RUNNING)
+        )
 
     def play_result(self, result: SearchResult) -> None:
-        if self._play_pending(result.video_id):
-            return
-        self._last_video_id = result.video_id
-        self._cancel_queue_fetch()
-        self.query_one(NowPlaying).set_track(
+        self._start_play(
+            _PlayRequest(result.video_id, lambda: self.client.play_result(result), "result"),
             result.title,
             result.subtitle,
         )
-        self.set_status("Resolving stream…")
-        self._play_worker_video_id = result.video_id
-        self._play_worker = self.play_worker(result)
-
-    @work(thread=True, exit_on_error=False)
-    def play_worker(self, result: SearchResult) -> StreamInfo:
-        return self.client.play_result(result)
 
     def play_video(self, video_id: str, title: str, subtitle: str = "") -> None:
         """Play a bare video id (used to resume the last played track)."""
-        if self._play_pending(video_id):
+        self._start_play(
+            _PlayRequest(video_id, lambda: self.client.play_video(video_id, title), "result"),
+            title,
+            subtitle,
+        )
+
+    def _start_play(self, request: _PlayRequest, title: str, subtitle: str) -> None:
+        """Resolve and play ``request``, skipping duplicates of what's on."""
+        if self._play_pending(request.video_id):
             return
-        self._last_video_id = video_id
+        self._last_video_id = request.video_id
         self._cancel_queue_fetch()
         self.query_one(NowPlaying).set_track(title, subtitle)
         self.set_status("Resolving stream…")
-        self._play_worker_video_id = video_id
-        self._play_worker = self.play_video_worker(video_id, title)
+        self._play_request = request
+        self._play_worker = self.play_worker(request)
 
     @work(thread=True, exit_on_error=False)
-    def play_video_worker(self, video_id: str, title: str) -> StreamInfo:
-        return self.client.play_video(video_id, title)
+    def play_worker(self, request: _PlayRequest) -> StreamInfo:
+        return request.resolve()
 
     def _on_play_finished(self, worker: Worker[StreamInfo]) -> None:
+        request = self._play_request
+        if worker is not self._play_worker or request is None:
+            return
         if worker.state is WorkerState.SUCCESS:
             stream = worker.result
             self._record_play(stream)
@@ -639,9 +637,15 @@ class MusicTUI(App[None]):
                 ", ".join(stream.artists) or "Unknown artist",
                 stream.duration,
             )
-            self.set_status("Loading up-next queue…")
-            self._queue_worker = self.fetch_queue_worker(stream.video_id)
+            if request.kind == "result":
+                self.set_status("Loading up-next queue…")
+                self._queue_worker = self.fetch_queue_worker(stream.video_id)
+            else:
+                self._refresh_queue()
+                self._prefetch_next()
+                self.set_status(f"Playing from {request.kind}")
         else:
+            request.on_fail()
             self.set_status("Playback failed")
             self.notify(
                 f"Could not play: {worker.error}", title="Playback", severity="error"
@@ -736,41 +740,16 @@ class MusicTUI(App[None]):
     @on(LibraryTree.TrackActivated)
     def _on_playlist_track_activated(self, message: LibraryTree.TrackActivated) -> None:
         track = message.track
-        if self._play_pending(track.video_id):
-            return
-        self._pending_playlist_track = track
-        self._last_video_id = track.video_id
-        self.query_one(NowPlaying).set_track(track.title, " • ".join(track.artists))
-        self.set_status("Resolving stream…")
-        self._play_playlist_worker_video_id = track.video_id
-        self._play_playlist_worker = self.play_playlist_worker(
-            message.playlist_id, message.index
+        self._start_play(
+            _PlayRequest(
+                track.video_id,
+                lambda: self.client.play_from_playlist(message.playlist_id, message.index),
+                "playlist",
+                on_fail=lambda: self._restore_queue(0, track),
+            ),
+            track.title,
+            " • ".join(track.artists),
         )
-
-    @work(thread=True, exit_on_error=False)
-    def play_playlist_worker(self, playlist_id: str, index: int) -> StreamInfo:
-        return self.client.play_from_playlist(playlist_id, index)
-
-    def _on_play_playlist_finished(self, worker: Worker[StreamInfo]) -> None:
-        if worker.state is WorkerState.SUCCESS:
-            stream = worker.result
-            self._record_play(stream)
-            self.query_one(NowPlaying).set_track(
-                stream.title,
-                ", ".join(stream.artists) or "Unknown artist",
-                stream.duration,
-            )
-            self._refresh_queue()
-            self._prefetch_next()
-            self.set_status("Playing from playlist")
-        else:
-            if self._pending_playlist_track is not None:
-                self.client.queue.insert(0, self._pending_playlist_track)
-            self._refresh_queue()
-            self.set_status("Playback failed")
-            self.notify(
-                f"Could not play: {worker.error}", title="Playback", severity="error"
-            )
 
     @on(QueueList.Selected)
     def _on_queue_selected(self, event: QueueList.Selected) -> None:
@@ -791,37 +770,16 @@ class MusicTUI(App[None]):
                 break
         else:
             return
-        self._last_video_id = track.video_id
-        self._pending_track = track
-        self._pending_index = index
-        self.query_one(NowPlaying).set_track(track.title, " • ".join(track.artists))
-        self.set_status("Resolving stream…")
-        self._play_queued_worker_video_id = track.video_id
-        self._play_queued_worker = self.play_queued_worker(track)
-
-    @work(thread=True, exit_on_error=False)
-    def play_queued_worker(self, track: PlaylistTrack) -> StreamInfo:
-        return self.client.play_track(track)
-
-    def _on_play_queued_finished(self, worker: Worker[StreamInfo]) -> None:
-        if worker.state is WorkerState.SUCCESS:
-            stream = worker.result
-            self._record_play(stream)
-            self.query_one(NowPlaying).set_track(
-                stream.title,
-                ", ".join(stream.artists) or "Unknown artist",
-                stream.duration,
-            )
-            self._refresh_queue()
-            self._prefetch_next()
-            self.set_status("Playing from queue")
-        else:
-            self.client.queue.insert(self._pending_index, self._pending_track)
-            self._refresh_queue()
-            self.set_status("Playback failed")
-            self.notify(
-                f"Could not play: {worker.error}", title="Playback", severity="error"
-            )
+        self._start_play(
+            _PlayRequest(
+                track.video_id,
+                lambda: self.client.play_track(track),
+                "queue",
+                on_fail=lambda: self._restore_queue(index, track),
+            ),
+            track.title,
+            " • ".join(track.artists),
+        )
 
     def _record_play(self, stream: StreamInfo) -> None:
         """Persist the resolved track into play history."""
@@ -833,6 +791,11 @@ class MusicTUI(App[None]):
                 duration=stream.duration,
             )
         )
+
+    def _restore_queue(self, index: int, track: PlaylistTrack) -> None:
+        """Put ``track`` back in the queue after a failed play."""
+        self.client.queue.insert(index, track)
+        self._refresh_queue()
 
     def _refresh_queue(self) -> None:
         self.query_one(QueueList).set_tracks(self.client.queue)
