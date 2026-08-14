@@ -9,9 +9,16 @@ from textual.widget import Widget
 from textual.widgets import ProgressBar, Static
 
 from ...yt.search import format_duration
-from .waveform import Waveform
+from .waveform import Waveform, _gradient_colors
 
-BAR_GRADIENT = Gradient((0.0, "#8b5cf6"), (0.6, "#a78bfa"), (1.0, "#67e8f9"))
+
+def _bar_gradient(theme) -> Gradient:
+    colors = _gradient_colors(theme)
+    return Gradient(
+        (0.0, colors[0]),
+        (0.6, colors[1]),
+        (1.0, colors[3]),
+    )
 
 
 class NowPlaying(Widget):
@@ -43,11 +50,18 @@ class NowPlaying(Widget):
             total=0,
             show_eta=False,
             show_percentage=False,
-            gradient=BAR_GRADIENT,
             id="np-progress",
         )
         with Horizontal(id="np-foot"):
             yield Static("Ready", id="np-status")
+
+    def _apply_theme(self) -> None:
+        bar = self.query_one("#np-progress", ProgressBar)
+        bar.gradient = _bar_gradient(self.app.current_theme)
+        self.query_one(Waveform)._apply_theme()
+
+    def on_mount(self) -> None:
+        self._apply_theme()
 
     def set_track(
         self, title: str, subtitle: str, duration: float | None = None

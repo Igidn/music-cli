@@ -389,10 +389,20 @@ def test_theme_switch_restyles_and_persists(monkeypatch):
             await pilot.pause()
             assert app.theme == MUSIC_CLI_THEME.name
             bg = app.screen.styles.background
+            from textual.widgets import ProgressBar
+
+            from music_cli.tui.components import Waveform
+
+            waveform = app.query_one(Waveform)
+            progress = app.query_one("#np-progress", ProgressBar)
+            wave_gradient = waveform._gradient
+            bar_gradient = progress.gradient
             app.theme = "tokyo-night"
             await pilot.pause()
             await pilot.pause()
             assert app.screen.styles.background != bg
+            assert waveform._gradient != wave_gradient
+            assert progress.gradient != bar_gradient
             assert app._settings_store.get(SETTING_THEME) == "tokyo-night"
 
     _run(scenario())

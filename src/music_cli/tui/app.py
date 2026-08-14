@@ -214,6 +214,10 @@ class MusicTUI(App[None]):
     def watch_theme(self, theme_name: str) -> None:
         """Persist the palette-chosen theme (Ctrl+P → Theme) across restarts."""
         self._settings_store.set(SETTING_THEME, theme_name)
+        if self._is_mounted:
+            now_playing = self.query_one(NowPlaying)
+            now_playing._apply_theme()
+            now_playing.refresh()
 
     def on_mount(self) -> None:
         self.query_one("#search-input", Input).focus()
