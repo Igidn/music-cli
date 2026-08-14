@@ -174,13 +174,16 @@ class AVFoundationPlayer:
         self._player.setActionAtItemEnd_(AVPlayerActionAtItemEndPause)
 
     def pump(self) -> None:
-        """Service the main run loop for one short slice.
+        """Service the main run loop once, without blocking.
 
         AVFoundation advances the media pipeline only while the main run loop
         runs; the TUI calls this from its own event loop on the main thread.
+        The deadline is "now" so pending sources are drained but the call
+        returns immediately: a blocking wait here would freeze TUI input and
+        rendering for its whole duration, several times per second.
         """
         NSRunLoop.currentRunLoop().runMode_beforeDate_(
-            NSDefaultRunLoopMode, NSDate.dateWithTimeIntervalSinceNow_(0.02)
+            NSDefaultRunLoopMode, NSDate.date()
         )
 
     def play(self, stream: StreamInfo) -> None:
