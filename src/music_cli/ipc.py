@@ -1,22 +1,33 @@
-"""Unix-socket JSON protocol between the CLI client and the playback daemon.
+"""Unix-socket JSON protocol between the CLI/TUI and the playback daemon.
 
-One connection per request: the client connects, sends one JSON object
-terminated by a newline, and reads back one newline-terminated JSON object.
+Two sockets, both in the config dir:
 
-Request:  ``{"cmd": "<name>", ...args}``
-Response: ``{"ok": true, "data": ...}`` or ``{"ok": false, "error": "..."}``
+Control socket. One connection per request: the client connects, sends one
+JSON object terminated by a newline, and reads back one newline-terminated
+JSON object.
+  Request:  ``{"cmd": "<name>", ...args}``
+  Response: ``{"ok": true, "data": ...}`` or ``{"ok": false, "error": "..."}``
+
+Events socket. A client connects, sends ``{"cmd": "subscribe"}\n`` once, and
+the connection stays open; the daemon writes newline-terminated JSON events
+to it. Event: ``{"event": "state", "status": <full status dict>}``.
 """
 
 from __future__ import annotations
 
 import json
 import socket
+import subprocess
+import sys
+import time
 from pathlib import Path
 from typing import Any
 
 from .core.errors import PlayerError
 from .core.paths import config_dir
 
+# The daemon's control socket; "play", "pause", ... are mutually-exclusive
+# targets for the "play" command (query | video_id | playlist_id | queue_index).
 COMMANDS = (
     "play",
     "pause",
@@ -31,12 +42,18 @@ COMMANDS = (
     "status",
     "queue",
     "stop",
+    "quit",
 )
 
 
 def socket_path() -> Path:
     """The daemon's control socket (``~/.config/music-cli/control.sock``)."""
     return config_dir() / "control.sock"
+
+
+def events_socket_path() -> Path:
+    """The daemon's events socket, where subscribers receive pushed state."""
+    return config_dir() / "events.sock"
 
 
 def send_request(request: dict[str, Any], timeout: float = 30.0) -> dict[str, Any]:
@@ -83,3 +100,37 @@ def recv_message(conn: socket.socket) -> dict[str, Any]:
     if not isinstance(message, dict):
         raise PlayerError(f"malformed response from the daemon: {data!r}")
     return message
+
+
+def ensure_daemon(cookies: str | None = None, volume: int | None = None) -> None:
+    """Start the playback daemon in the background unless it already answers.
+
+    Probes the control socket with a short ``status``; when nothing answers a
+    detached daemon is spawned and awaited (up to ~10s). Raises
+    ``PlayerError`` if the daemon never comes up.
+    """
+    try:
+        send_request({"cmd": "status"}, timeout=1.0)
+        return
+    except PlayerError:
+        pass
+    command = [sys.executable, "-m", "music_cli.daemon"]
+    if cookies:
+        command += ["--cookies", cookies]
+    if volume is not None:
+        command += ["--volume", str(volume)]
+    subprocess.Popen(  # noqa: S603 — argv is fixed, no user input
+        command,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        try:
+            send_request({"cmd": "status"}, timeout=1.0)
+            return
+        except PlayerError:
+            time.sleep(0.1)
+    raise PlayerError("the daemon did not start")

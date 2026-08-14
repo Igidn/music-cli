@@ -60,8 +60,14 @@ class FakeSession:
     def play_video(self, video_id, title=""):
         self._record("play_video", video_id, title)
 
-    def play_playlist(self, playlist_id):
-        self._record("play_playlist", playlist_id)
+    def play_playlist(self, playlist_id, start_index=0):
+        self._record("play_playlist", playlist_id, start_index)
+
+    def play_queue_track(self, index):
+        self._record("play_queue_track", index)
+
+    def stop(self):
+        self._record("stop")
 
     def resume_last(self):
         self._record("resume_last")
@@ -140,7 +146,7 @@ def test_play_by_video_id(session):
 def test_play_by_playlist_id(session):
     response = handle_request(session, {"cmd": "play", "playlist_id": "PL123"})
     assert response["ok"] is True
-    assert session.calls == [("play_playlist", ("PL123",), {})]
+    assert session.calls == [("play_playlist", ("PL123", 0), {})]
 
 
 def test_play_flags_applied_before_play(session):
@@ -165,6 +171,42 @@ def test_play_with_multiple_targets_fails(session):
     response = handle_request(session, {"cmd": "play", "query": "a", "video_id": "b"})
     assert response["ok"] is False
     assert session.calls == []
+
+
+def test_play_by_queue_index(session):
+    response = handle_request(session, {"cmd": "play", "queue_index": 2})
+    assert response["ok"] is True
+    assert session.calls == [("play_queue_track", (2,), {})]
+
+
+def test_play_by_queue_index_zero(session):
+    response = handle_request(session, {"cmd": "play", "queue_index": 0})
+    assert response["ok"] is True
+    assert session.calls == [("play_queue_track", (0,), {})]
+
+
+def test_play_queue_index_with_another_target_fails(session):
+    response = handle_request(
+        session, {"cmd": "play", "queue_index": 0, "playlist_id": "PL1"}
+    )
+    assert response["ok"] is False
+    assert session.calls == []
+
+
+def test_play_playlist_with_start_index(session):
+    response = handle_request(
+        session, {"cmd": "play", "playlist_id": "PL1", "playlist_index": 3}
+    )
+    assert response["ok"] is True
+    assert session.calls == [("play_playlist", ("PL1", 3), {})]
+
+
+def test_play_video_with_title(session):
+    response = handle_request(
+        session, {"cmd": "play", "video_id": "abc", "title": "Song"}
+    )
+    assert response["ok"] is True
+    assert session.calls == [("play_video", ("abc", "Song"), {})]
 
 
 @pytest.mark.parametrize("cmd", ["pause", "toggle", "next"])
@@ -269,9 +311,15 @@ def test_queue_passthrough(session):
     assert response["data"] is session._queue
 
 
-@pytest.mark.parametrize("cmd", ["stop", "quit"])
-def test_stop_and_quit(session, cmd):
-    assert handle_request(session, {"cmd": cmd}) == {"ok": True, "data": None}
+def test_stop_keeps_daemon_alive_and_returns_status(session):
+    response = handle_request(session, {"cmd": "stop"})
+    assert response == {"ok": True, "data": session._status}
+    assert session.names() == ["stop"]
+
+
+def test_quit_returns_null_payload(session):
+    assert handle_request(session, {"cmd": "quit"}) == {"ok": True, "data": None}
+    assert session.calls == []
 
 
 def test_unknown_command(session):
