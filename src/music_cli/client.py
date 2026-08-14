@@ -204,6 +204,10 @@ class MusicClient:
         deadline = time.monotonic() + timeout
         grace = time.monotonic() + 1.5
         while time.monotonic() < deadline:
+            # AVFoundation only advances the media pipeline while the main
+            # run loop is serviced; pump it so playback can actually start
+            # here (the daemon calls this on its main thread).
+            self.player.pump()
             if self.player.position > 0.5:
                 return True
             if self.player.duration and not self.player.paused:

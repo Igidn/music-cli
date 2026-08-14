@@ -252,6 +252,7 @@ class AVFoundationPlayer:
         deadline = time.monotonic() + PLAY_RATE_TIMEOUT
         while True:
             self._player.play()
+            self.pump()
             time.sleep(0.05)
             if self._player.rate() != 0.0:
                 time.sleep(0.1)

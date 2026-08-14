@@ -96,6 +96,9 @@ class FakePlayer:
         self.seek_calls.append(("relative", delta))
         self.position += delta
 
+    def pump(self):
+        pass
+
     def close(self):
         pass
 

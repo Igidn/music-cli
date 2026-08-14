@@ -60,6 +60,9 @@ class FakePlayer:
         self.playing = True
         self.paused = False
 
+    def pump(self):
+        pass
+
 
 class FakeWatch:
     def __init__(self, tracks):
