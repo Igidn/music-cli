@@ -86,6 +86,7 @@ class LibraryTree(Tree[dict[str, Any] | None], inherit_bindings=False):
     def on_mount(self) -> None:
         self.border_title = " PLAYLISTS "
         self.show_root = False
+        self._last_kind: str | None = None
         self.root.add_leaf("Loading library…")
 
     def set_playlists(self, playlists: list[LibraryPlaylist]) -> None:
@@ -215,7 +216,14 @@ class LibraryTree(Tree[dict[str, Any] | None], inherit_bindings=False):
             )
 
     def on_tree_node_highlighted(self, event: Tree.NodeHighlighted) -> None:
-        self.refresh_bindings()
+        # refresh_bindings() recomposes the whole footer — too costly per
+        # arrow-key repeat. The footer only depends on the cursor node kind,
+        # so refresh only when it flips (e.g. playlist node → track leaf).
+        data = event.node.data
+        kind = data.get("kind") if isinstance(data, dict) else None
+        if kind != self._last_kind:
+            self._last_kind = kind
+            self.refresh_bindings()
 
     def _cursor_data(self) -> dict[str, Any] | None:
         node = self.cursor_node

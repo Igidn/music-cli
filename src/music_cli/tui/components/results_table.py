@@ -44,6 +44,7 @@ class ResultsTable(DataTable, inherit_bindings=False):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self._results: dict[str, SearchResult] = {}
+        self._last_can_add = False
 
     def action_cursor_up(self) -> None:
         if not self.row_count or self.cursor_coordinate.row == 0:
@@ -98,7 +99,13 @@ class ResultsTable(DataTable, inherit_bindings=False):
             )
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
-        self.refresh_bindings()
+        # refresh_bindings() recomposes the whole footer — too costly per
+        # arrow-key repeat. The footer only cares whether `s` applies to the
+        # highlighted row, so refresh only when that flips.
+        can_add = str(event.row_key.value) in self._results
+        if can_add != self._last_can_add:
+            self._last_can_add = can_add
+            self.refresh_bindings()
 
     def _fit(self, value: str, column_key: str) -> str:
         """Truncate a cell value to its column width, appending '...' when cut off."""

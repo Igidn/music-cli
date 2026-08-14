@@ -20,6 +20,7 @@ class QueueList(ListView):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self._tracks: list[PlaylistTrack] = []
+        self._last_can_add = False
 
     def on_mount(self) -> None:
         self.border_title = " UP NEXT "
@@ -42,7 +43,13 @@ class QueueList(ListView):
             )
 
     def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
-        self.refresh_bindings()
+        # refresh_bindings() recomposes the whole footer — too costly per
+        # arrow-key repeat. The footer only cares whether `s` applies to the
+        # highlighted row, so refresh only when that flips.
+        can_add = self.track_at(self.index) is not None
+        if can_add != self._last_can_add:
+            self._last_can_add = can_add
+            self.refresh_bindings()
 
     def action_cursor_up(self) -> None:
         if self.index in (None, 0):
