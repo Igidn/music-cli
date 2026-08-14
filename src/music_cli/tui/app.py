@@ -19,13 +19,9 @@ from textual.widgets import Footer, Input, Label, Select
 from textual.worker import Worker, WorkerState
 
 from music_cli.client import MusicClient
+from music_cli.session import PlaybackSession
 from music_cli.storage.state import (
-    SETTING_AUTO_NEXT,
-    SETTING_LOOP,
-    SETTING_MUTED,
     SETTING_THEME,
-    SETTING_VOLUME,
-    PlayedTrack,
     PlayHistoryStore,
     SettingsStore,
 )
@@ -197,7 +193,10 @@ class MusicTUI(App[None]):
         self._library_worker: Worker[list[LibraryPlaylist]] | None = None
         self._playlist_workers: dict[str, Worker[list[PlaylistTrack]]] = {}
         self._library_playlists: list[LibraryPlaylist] = []
-        self._last_video_id: str = ""
+        self.session = PlaybackSession(
+            self.client, self._history_store, self._settings_store
+        )
+        self._advance_worker: Worker[PlaylistTrack | None] | None = None
         self._auto_next = True
         self._loop_enabled = False
         self.register_theme(GITHUB_THEME)
@@ -208,6 +207,15 @@ class MusicTUI(App[None]):
             if saved_theme in self.available_themes
             else MUSIC_CLI_THEME.name
         )
+
+    @property
+    def _last_video_id(self) -> str:
+        """Back-compat handle; the session owns the last-played id now."""
+        return self.session.last_video_id
+
+    @_last_video_id.setter
+    def _last_video_id(self, value: str) -> None:
+        self.session.last_video_id = value
 
     def watch_theme(self, theme_name: str) -> None:
         """Persist the palette-chosen theme (Ctrl+P → Theme) across restarts."""
@@ -238,13 +246,9 @@ class MusicTUI(App[None]):
             self.query_one(NowPlaying).set_paused(True)
 
     def _apply_saved_settings(self) -> None:
-        """Restore persisted player preferences; saved settings always win."""
-        player = self.client.player
-        player.volume = self._settings_store.get_int(SETTING_VOLUME, player.volume)
-        player.muted = self._settings_store.get_bool(SETTING_MUTED)
-        self._loop_enabled = self._settings_store.get_bool(SETTING_LOOP)
-        self.client.loop = self._loop_enabled
-        self._auto_next = self._settings_store.get_bool(SETTING_AUTO_NEXT, True)
+        """Sync the app flags; the session already restored them on init."""
+        self._auto_next = self.session.auto_next
+        self._loop_enabled = self.client.loop
 
     def on_unmount(self) -> None:
         if self._search_timer is not None:
@@ -336,7 +340,7 @@ class MusicTUI(App[None]):
             "run_search": self._on_search_finished,
             "play_worker": self._on_play_finished,
             "fetch_queue_worker": self._on_queue_fetched,
-            "refill_worker": self._on_refill_finished,
+            "advance_worker": self._on_advance_finished,
             "library_worker": self._on_library_fetched,
             "playlist_tracks_worker": self._on_playlist_tracks_fetched,
             "playlist_mutation_worker": self._on_playlist_mutation_finished,
@@ -684,14 +688,7 @@ class MusicTUI(App[None]):
 
     def _record_play(self, stream: StreamInfo) -> None:
         """Persist the resolved track into play history."""
-        self._history_store.record(
-            PlayedTrack(
-                video_id=stream.video_id,
-                title=stream.title,
-                artists=tuple(stream.artists),
-                duration=stream.duration,
-            )
-        )
+        self.session.record(stream)
         self._refresh_history()
 
     def _refresh_history(self) -> None:
@@ -724,27 +721,40 @@ class MusicTUI(App[None]):
         )
 
     def action_next_track(self) -> None:
-        if self.client.queue:
-            self._play_queued_track(self.client.queue[0])
-        elif self.client.loop_playlist():
-            self._play_queued_track(self.client.queue[0])
-            self._refresh_queue()
-        elif self._last_video_id:
-            self.set_status("Refilling station…")
-            self.refill_worker(self._last_video_id)
+        """Advance to the next track through the session engine.
+
+        Runs off the UI thread (a radio refill hits the network); a second
+        request while one is underway is dropped, or a double keypress would
+        skip a track.
+        """
+        if self._advance_worker is not None and self._advance_worker.state in (
+            WorkerState.PENDING,
+            WorkerState.RUNNING,
+        ):
+            return
+        self._advance_worker = self.advance_worker()
 
     @work(thread=True, exit_on_error=False)
-    def refill_worker(self, video_id: str) -> None:
-        self.client.load_queue(video_id, radio=True)
+    def advance_worker(self) -> PlaylistTrack | None:
+        return self.session.next_track()
 
-    def _on_refill_finished(self, worker: Worker[None]) -> None:
+    def _on_advance_finished(self, worker: Worker[PlaylistTrack | None]) -> None:
+        if worker is not self._advance_worker:
+            return
         if worker.state is WorkerState.SUCCESS:
-            if self.client.queue:
-                self._play_queued_track(self.client.queue[0])
-                self._prefetch_next()
-            else:
+            stream = self.client.current
+            if worker.result is None or stream is None:
                 self._refresh_queue()
                 self.set_status("End of station")
+                return
+            self.query_one(NowPlaying).set_track(
+                stream.title,
+                ", ".join(stream.artists) or "Unknown artist",
+                stream.duration,
+            )
+            self._refresh_queue()
+            self._prefetch_next()
+            self.set_status("Playing from queue")
         else:
             self.set_status("Station unavailable")
             self.notify(
@@ -770,21 +780,19 @@ class MusicTUI(App[None]):
 
     def on_track_ended(self) -> None:
         self.client.current = None
-        if self._auto_next:
+        if self.session.auto_next:
             self.action_next_track()
         else:
             self.set_status("Track ended — auto next is off")
 
     def action_toggle_auto_next(self) -> None:
-        self._auto_next = not self._auto_next
+        self.session.set_auto_next("toggle")
+        self._auto_next = self.session.auto_next
         self.query_one(NowPlaying).set_modes(self._auto_next, self._loop_enabled)
-        self._settings_store.set(SETTING_AUTO_NEXT, self._auto_next)
 
     def action_toggle_loop(self) -> None:
-        self._loop_enabled = not self._loop_enabled
-        self.client.loop = self._loop_enabled
+        self._loop_enabled = self.session.set_loop("toggle")
         self.query_one(NowPlaying).set_modes(self._auto_next, self._loop_enabled)
-        self._settings_store.set(SETTING_LOOP, self._loop_enabled)
 
     def action_toggle_playback(self) -> None:
         if self.client.current is not None:
@@ -807,14 +815,10 @@ class MusicTUI(App[None]):
         self._change_volume(-5)
 
     def _change_volume(self, delta: int) -> None:
-        player = self.client.player
-        player.volume = player.volume + delta
-        self._settings_store.set(SETTING_VOLUME, player.volume)
+        self.session.set_volume(delta=delta)
 
     def action_toggle_mute(self) -> None:
-        player = self.client.player
-        player.muted = not player.muted
-        self._settings_store.set(SETTING_MUTED, player.muted)
+        self.session.set_muted("toggle")
 
     def action_focus_search(self) -> None:
         self.query_one("#search-input", Input).focus()
