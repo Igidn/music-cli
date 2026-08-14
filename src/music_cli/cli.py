@@ -265,8 +265,10 @@ def _cmd_play(args: argparse.Namespace) -> int:
     if args.play_volume is not None:
         request["volume"] = args.play_volume
     ensure_daemon(args)
-    # play can include a full download before the daemon answers.
-    data = _send(args, request, timeout=180.0)
+    # Stream resolution and a possible download happen before the daemon answers,
+    # so surface that with a spinner instead of silently blocking.
+    with _console.status("Resolving stream…", spinner="dots"):
+        data = _send(args, request, timeout=180.0)
     if data is None:
         return 1
     _console.print(_track_line(data))
@@ -276,7 +278,9 @@ def _cmd_play(args: argparse.Namespace) -> int:
 def _cmd_resume(args: argparse.Namespace) -> int:
     """resume a paused track, or start the daemon and replay the last track."""
     ensure_daemon(args)
-    data = _send(args, {"cmd": "resume"})
+    # resume may fall back to replaying the last track, which re-resolves its stream.
+    with _console.status("Resolving stream…", spinner="dots"):
+        data = _send(args, {"cmd": "resume"})
     if data is None:
         return 1
     _console.print(_track_line(data))
@@ -284,8 +288,18 @@ def _cmd_resume(args: argparse.Namespace) -> int:
 
 
 def _cmd_transport(args: argparse.Namespace) -> int:
-    """pause/toggle/next: confirm with the resulting now-playing line."""
+    """pause/toggle: confirm with the resulting now-playing line."""
     data = _send(args, {"cmd": args.command})
+    if data is None:
+        return 1
+    _console.print(_track_line(data))
+    return 0
+
+
+def _cmd_next(args: argparse.Namespace) -> int:
+    """next: skip to the next queued track, resolving its stream first."""
+    with _console.status("Resolving next track…", spinner="dots"):
+        data = _send(args, {"cmd": "next"})
     if data is None:
         return 1
     _console.print(_track_line(data))
@@ -561,7 +575,7 @@ _DISPATCH = {
     "pause": _cmd_transport,
     "resume": _cmd_resume,
     "toggle": _cmd_transport,
-    "next": _cmd_transport,
+    "next": _cmd_next,
     "stop": _cmd_stop,
     "seek": _cmd_seek,
     "volume": _cmd_volume,
