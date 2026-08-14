@@ -49,11 +49,11 @@ TopBar {
 }
 
 #queue-pane {
-    width: 32;
+    width: 36;
 }
 
 #playlist-pane {
-    width: 30;
+    width: 34;
     border-top: solid $border-blurred;
     border-right: solid $border-blurred;
     border-title-color: $accent;
