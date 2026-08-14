@@ -534,6 +534,10 @@ class MusicTUI(App[None]):
                 self._history_track_id = track["video_id"]
                 self._refresh_history()
         state = status.get("state")
+        if state == "stopped" or track is None:
+            self.set_status("Ready")
+        else:
+            self.set_status("Playing" if state == "playing" else "Paused")
         now_playing.set_progress(
             status.get("position", 0.0), status.get("duration") or 0.0
         )
