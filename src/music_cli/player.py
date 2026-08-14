@@ -48,6 +48,7 @@ from Foundation import (
 from yt_dlp.cookies import SUPPORTED_BROWSERS
 from ytmusicapi import YTMusic
 
+from .cache import AudioCache, DownloadResult, TrackMeta
 from .search import parse_artists
 
 
