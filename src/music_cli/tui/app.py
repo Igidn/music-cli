@@ -650,6 +650,9 @@ class MusicTUI(App[None]):
     def action_next_track(self) -> None:
         if self.client.queue:
             self._play_queued_track(self.client.queue[0])
+        elif self.client.loop_playlist():
+            self._play_queued_track(self.client.queue[0])
+            self._refresh_queue()
         elif self._last_video_id:
             self.set_status("Refilling station…")
             self.refill_worker(self._last_video_id)

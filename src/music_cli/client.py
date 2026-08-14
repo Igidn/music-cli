@@ -53,6 +53,7 @@ class MusicClient:
         )
         self.queue: list[PlaylistTrack] = []
         self.current: StreamInfo | None = None
+        self._playlist: list[PlaylistTrack] = []
         self._in_flight: set[str] = set()
         self._play_lock = threading.Lock()
 
@@ -219,6 +220,7 @@ class MusicClient:
         queue only holds tracks that come after it.
         """
         tracks = self.watch.get(video_id, radio=radio)
+        self._playlist = []
         self.queue = [track for track in tracks if track.video_id != video_id]
         if not self.queue:
             self.queue = tracks
@@ -235,6 +237,7 @@ class MusicClient:
             raise PlayerError("Playlist is empty")
         if not 0 <= start_index < len(tracks):
             start_index = 0
+        self._playlist = tracks
         self.queue = tracks[start_index + 1 :]
         self.play_track(tracks[start_index])
         return self.current  # type: ignore[return-value]
@@ -250,6 +253,17 @@ class MusicClient:
             self.queue.insert(0, track)
             raise
         return track
+
+    def loop_playlist(self) -> bool:
+        """Re-queue the active playlist when auto-next exhausts it.
+
+        Returns ``True`` when a playlist is active and its tracks have been
+        re-queued for another pass; ``False`` when nothing to loop.
+        """
+        if not self._playlist:
+            return False
+        self.queue = list(self._playlist)
+        return True
 
     def close(self) -> None:
         self.player.close()

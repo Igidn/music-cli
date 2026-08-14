@@ -179,6 +179,7 @@ def make_client() -> MusicClient:
     client.library = FakeLibrary()
     client.queue = []
     client.current = None
+    client._playlist = []
     client.cache = None
     client.player = FakePlayer()
     client._in_flight = set()
@@ -455,6 +456,30 @@ def test_tui_loop_toggle():
             app.action_toggle_loop()
             assert app._loop_enabled is False
             assert client.player.loop is False
+
+    _run(scenario())
+
+
+def test_tui_auto_next_loops_exhausted_playlist():
+    from music_cli.tui.app import MusicTUI
+    from music_cli.yt.extract import PlaylistTrack
+
+    async def scenario():
+        client = make_client()
+        client._playlist = [
+            PlaylistTrack(video_id="p1t1", title="One", artists=["A"]),
+            PlaylistTrack(video_id="p1t2", title="Two", artists=["A"]),
+        ]
+        client.queue = []
+        app = MusicTUI(client)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+
+            app.action_next_track()
+            await pilot.pause()
+            assert client.player.played[-1].video_id == "p1t1"
+            assert len(client.queue) == 1
+            assert client.queue[0].video_id == "p1t2"
 
     _run(scenario())
 
