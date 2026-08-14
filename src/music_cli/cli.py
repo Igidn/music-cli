@@ -273,8 +273,18 @@ def _cmd_play(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_resume(args: argparse.Namespace) -> int:
+    """resume a paused track, or start the daemon and replay the last track."""
+    ensure_daemon(args)
+    data = _send(args, {"cmd": "resume"})
+    if data is None:
+        return 1
+    _console.print(_track_line(data))
+    return 0
+
+
 def _cmd_transport(args: argparse.Namespace) -> int:
-    """pause/resume/toggle/next: confirm with the resulting now-playing line."""
+    """pause/toggle/next: confirm with the resulting now-playing line."""
     data = _send(args, {"cmd": args.command})
     if data is None:
         return 1
@@ -549,7 +559,7 @@ def _cmd_history(args: argparse.Namespace) -> int:
 _DISPATCH = {
     "play": _cmd_play,
     "pause": _cmd_transport,
-    "resume": _cmd_transport,
+    "resume": _cmd_resume,
     "toggle": _cmd_transport,
     "next": _cmd_transport,
     "stop": _cmd_stop,
