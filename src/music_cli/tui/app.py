@@ -826,6 +826,7 @@ class MusicTUI(App[None]):
         if self._next_pending:
             return
         self._next_pending = True
+        self.set_status("Resolving stream…")
         self.rpc_worker({"cmd": "next"})
 
     def action_toggle_auto_next(self) -> None:
