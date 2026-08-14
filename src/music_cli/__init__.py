@@ -104,8 +104,8 @@ def main() -> None:
     from . import ipc
     from .tui.app import MusicTUI
 
-    ipc.ensure_daemon(None, args.volume)
-    MusicTUI(client).run()
+    ipc.ensure_daemon(args.cookies, args.volume)
+    MusicTUI(client, cookies=args.cookies).run()
 
 
 def run_login(filepath: str | None) -> None:

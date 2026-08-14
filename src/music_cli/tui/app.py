@@ -176,9 +176,11 @@ class MusicTUI(App[None]):
         client: MusicClient | None = None,
         history_store: PlayHistoryStore | None = None,
         settings_store: SettingsStore | None = None,
+        cookies: str | None = None,
     ) -> None:
         super().__init__()
         self.client = client or MusicClient()
+        self._cookies = cookies
         self._history_store = history_store or PlayHistoryStore()
         self._settings_store = settings_store or SettingsStore()
         self._search_timer: Timer | None = None
@@ -434,7 +436,7 @@ class MusicTUI(App[None]):
     @work(thread=True, exit_on_error=False)
     def init_status_worker(self) -> dict:
         try:
-            ipc.ensure_daemon()
+            ipc.ensure_daemon(self._cookies)
         except Exception:  # noqa: BLE001, S110 — no daemon yet; status reports it
             pass
         try:
