@@ -325,12 +325,16 @@ class FakeItem:
     def __init__(self, duration=100.0, status=1):
         self._duration = CMTimeMakeWithSeconds(duration, 600)
         self._status = status
+        self.audio_mix = None
 
     def duration(self):
         return self._duration
 
     def status(self):
         return self._status
+
+    def setAudioMix_(self, mix):
+        self.audio_mix = mix
 
 
 def _local(stream: StreamInfo) -> LocalFile:
@@ -340,10 +344,21 @@ def _local(stream: StreamInfo) -> LocalFile:
 class TestAVFoundationPlayer:
     def test_constructor_applies_volume(self):
         fake = FakeAVPlayer()
-        AVFoundationPlayer(volume=50, player_factory=lambda: fake)
-        assert fake.volume() == 0.5
+        player = AVFoundationPlayer(volume=50, player_factory=lambda: fake)
+        assert player.volume == 50
+        assert fake.volume() == 1.0
         assert not fake.isMuted()
         assert fake.action_at_item_end == AVPlayerActionAtItemEndPause
+
+    def test_volume_carried_on_item_audio_mix(self):
+        fake = FakeAVPlayer()
+        player = AVFoundationPlayer(volume=40, player_factory=lambda: fake)
+        item = FakeItem()
+        player._current_item = item
+        player.volume = 75
+        assert item.audio_mix is not None
+        assert item.audio_mix.inputParameters()
+        assert player.volume == 75
 
     def test_play_sets_item_and_starts(self):
         fake = FakeAVPlayer()

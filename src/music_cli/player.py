@@ -31,6 +31,8 @@ from AVFoundation import (
     AVPlayerItem,
     AVPlayerItemDidPlayToEndTimeNotification,
     AVPlayerItemStatusFailed,
+    AVMutableAudioMix,
+    AVMutableAudioMixInputParameters,
     AVURLAsset,
     CMTimeGetSeconds,
     CMTimeMakeWithSeconds,
@@ -453,7 +455,11 @@ class AVFoundationPlayer:
         self._local_url: str | None = None
         self._fetch_stream = fetch_stream or _default_fetch_stream(cookies, cache=cache)
         self._player = player_factory()
-        self._player.setVolume_(max(0, min(100, volume)) / 100.0)
+        # Volume lives on the track's audio mix, not the player: AVPlayer.volume
+        # is unreliable for macOS local-file streams, so it is kept at unity and
+        # the real level is carried per item (see _apply_volume).
+        self._volume = max(0, min(100, int(volume)))
+        self._player.setVolume_(1.0)
         self._player.setMuted_(False)
         self._player.setActionAtItemEnd_(AVPlayerActionAtItemEndPause)
 
@@ -500,7 +506,25 @@ class AVFoundationPlayer:
         )
         self._current_item = item
         self._player.replaceCurrentItemWithPlayerItem_(item)
+        self._apply_volume()
         self._ensure_playback_started()
+
+    def _apply_volume(self) -> None:
+        """Push the current volume onto the active item's audio mix.
+
+        ``AVPlayer.volume`` is not honoured reliably on macOS for these
+        local-file streams, so each new item gets its own mix carrying the
+        level, keeping the player itself at unity.
+        """
+        if self._current_item is None:
+            return
+        params = AVMutableAudioMixInputParameters.audioMixInputParametersWithTrack_(
+            None
+        )
+        params.setVolume_atTime_(self._volume / 100.0, kCMTimeZero)
+        mix = AVMutableAudioMix.alloc().init()
+        mix.setInputParameters_([params])
+        self._current_item.setAudioMix_(mix)
 
     def _ensure_playback_started(self) -> None:
         """Start playback, re-issuing play() until the rate actually rises.
@@ -577,11 +601,12 @@ class AVFoundationPlayer:
 
     @property
     def volume(self) -> int:
-        return round(self._player.volume() * 100)
+        return self._volume
 
     @volume.setter
     def volume(self, value: int) -> None:
-        self._player.setVolume_(max(0, min(100, int(value))) / 100.0)
+        self._volume = max(0, min(100, int(value)))
+        self._apply_volume()
 
     @property
     def muted(self) -> bool:
