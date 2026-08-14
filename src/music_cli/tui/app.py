@@ -523,18 +523,28 @@ class MusicTUI(App[None]):
     def _render_status(self, status: dict) -> None:
         now_playing = self.query_one(NowPlaying)
         track = status.get("track")
-        self._current_video_id = track["video_id"] if track else None
-        if track is None:
-            self._show_last_track_paused()
-        else:
-            now_playing.set_track(
-                track["title"],
-                ", ".join(track.get("artists") or []) or "Unknown artist",
-                track.get("duration"),
-            )
-            if track["video_id"] != self._history_track_id:
-                self._history_track_id = track["video_id"]
-                self._refresh_history()
+        # While a play request is in flight (_pending_play), a per-track push can
+        # arrive for a different track than the one we asked for — the up-next
+        # head auto-advancing, or a stale heartbeat of the previous track. Show
+        # the requested target, not those transient frames.
+        holds_target = not (
+            track is not None
+            and self._pending_play
+            and track["video_id"] != self._pending_play
+        )
+        if holds_target:
+            self._current_video_id = track["video_id"] if track else None
+            if track is None:
+                self._show_last_track_paused()
+            else:
+                now_playing.set_track(
+                    track["title"],
+                    ", ".join(track.get("artists") or []) or "Unknown artist",
+                    track.get("duration"),
+                )
+                if track["video_id"] != self._history_track_id:
+                    self._history_track_id = track["video_id"]
+                    self._refresh_history()
         state = status.get("state")
         if state == "stopped" or track is None:
             self.set_status("Ready")

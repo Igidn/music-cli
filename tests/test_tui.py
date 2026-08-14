@@ -558,6 +558,70 @@ def test_history_select_sends_play_request(monkeypatch):
     _run(scenario())
 
 
+def test_in_flight_play_ignores_stale_track_status(monkeypatch):
+    """A per-track push for a different track must not flash while play is pending.
+
+    Selecting a track (e.g. from history) optimistically shows it, then the
+    daemon resolves it asynchronously. Between the two, stale statuses can
+    arrive for the up-next head or the previous track; the control bar must
+    not briefly regress to those before the requested track lands.
+    """
+    from music_cli.tui.app import MusicTUI
+    from music_cli.tui.components import NowPlaying
+
+    install_daemon(monkeypatch)
+
+    def status_for(track_id, title, artist):
+        return {
+            "state": "playing",
+            "track": {
+                "video_id": track_id,
+                "title": title,
+                "artists": [artist],
+                "duration": 200.0,
+            },
+            "position": 10.0,
+            "duration": 200.0,
+            "volume": 80,
+            "muted": False,
+            "loop": False,
+            "auto_next": True,
+            "queue": [],
+        }
+
+    async def scenario():
+        app = MusicTUI(make_client())
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _settle(pilot, 6)
+            _push(app, status_for("A", "Track A", "Artist A"))
+            await _settle(pilot)
+            np = app.query_one(NowPlaying)
+
+            def title() -> str:
+                return str(np.query_one("#np-title").content)
+
+            # User selects a track: optimistic display + in-flight play guard.
+            app._pending_play = "C"
+            np.set_track("Track C", "Artist C")
+            assert title() == "Track C"
+
+            # The up-next head auto-advances (or a stale heartbeat arrives) and
+            # is pushed before the requested track has resolved.
+            _push(app, status_for("B", "Up Next B", "Artist B"))
+            await _settle(pilot)
+            assert title() == "Track C"
+            assert app._current_video_id == "A"
+
+            # The requested track finally resolves and takes over the bar.
+            app._pending_play = None
+            _push(app, status_for("C", "Track C", "Artist C"))
+            await _settle(pilot)
+            assert title() == "Track C"
+            assert app._current_video_id == "C"
+
+    _run(scenario())
+
+
 def test_transport_actions_send_ipc(monkeypatch):
     from music_cli.tui.app import MusicTUI
 

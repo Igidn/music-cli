@@ -273,6 +273,12 @@ def _serve(
                         continue  # malformed request; keep serving
                     response = handle_request(session, request)
                     ipc.send_message(conn, response)
+                    # A play request replaces the current track; drop any
+                    # pending track-end from the track it superseded, or the
+                    # loop below would auto-advance straight past what the
+                    # user just asked to play (up-next flashes as current).
+                    if request.get("cmd") == "play" and response.get("ok"):
+                        eof.clear()
                 last_activity = time.monotonic()
                 if request.get("cmd") == "quit":
                     return
