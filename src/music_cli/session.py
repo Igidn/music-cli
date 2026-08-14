@@ -82,6 +82,12 @@ class PlaybackSession:
         self._load_up_next(video_id)
         return stream
 
+    def play_queue_track(self, index: int) -> StreamInfo:
+        """Play the queued track at ``index`` and record it."""
+        stream = self.client.play_queue_track(index)
+        self.record(stream)
+        return stream
+
     def play_playlist(self, playlist_id: str, start_index: int = 0) -> StreamInfo:
         """Play a playlist from ``start_index``; the client queues the remainder."""
         stream = self.client.play_from_playlist(playlist_id, start_index)
