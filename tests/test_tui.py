@@ -649,6 +649,38 @@ def test_pushed_status_updates_now_playing_and_queue(monkeypatch):
     _run(scenario())
 
 
+def test_pointer_on_popped_head_stays_highlighted(monkeypatch):
+    """Cursor parked on the up-next head survives that track starting to play.
+
+    The head pops out of the queue when it begins playing, so the rebuilt row
+    must be re-highlighted rather than left with the stale (removed) row.
+    """
+    from music_cli.tui.app import MusicTUI
+    from music_cli.tui.components import QueueList
+
+    install_daemon(monkeypatch)
+
+    async def scenario():
+        app = MusicTUI(make_client())
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _settle(pilot)
+            _push(app, STATUS)
+            await _settle(pilot)
+            queue = app.query_one(QueueList)
+            assert queue.index == 0  # pointer on the top (next) track
+            st = dict(STATUS)
+            st["track"] = dict(STATUS["track"])
+            st["track"]["video_id"] = "q1"  # q1 starts playing
+            st["queue"] = [st["queue"][1]]  # ...and leaves the queue (now [q2])
+            _push(app, st)
+            await _settle(pilot)
+            assert queue.index == 0
+            assert len(queue._nodes) == 1
+            assert queue._nodes[0].highlighted is True
+
+    _run(scenario())
+
+
 def test_progress_position_from_status_event(monkeypatch):
     from music_cli.tui.app import MusicTUI
     from music_cli.tui.components import NowPlaying

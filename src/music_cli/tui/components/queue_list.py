@@ -73,8 +73,25 @@ class QueueList(ListView):
             return
         for track in tracks:
             self.append(self._item(track))
+        # The queue pops its head the moment that track starts playing, so a
+        # refresh often leaves the cursor parked (index 0). Setting the index
+        # synchronously races the async mount of the new rows and highlights a
+        # stale row that is about to be removed, leaving nothing selected. Re-set
+        # it after the rebuilt rows are mounted.
         self.index = 0
+        self.call_after_refresh(self._highlight_head)
         self.refresh_bindings()
+
+    def _highlight_head(self) -> None:
+        if not self._tracks:
+            return
+        # index may already be 0 (set on a stale row), so the reactive setter
+        # would dedup and skip re-highlighting the freshly mounted row. Force a
+        # re-validation exactly like ListView.pop/remove do.
+        old_index = self.index
+        self.index = self.index
+        if old_index == self.index:
+            self.watch_index(old_index, self.index)
 
     def track_at(self, index: int | None) -> PlaylistTrack | None:
         """The track the user sees at ``index``, independent of queue mutations.
