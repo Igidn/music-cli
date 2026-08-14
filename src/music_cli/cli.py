@@ -120,6 +120,15 @@ def register_subcommands(subparsers: argparse._SubParsersAction) -> None:
     remove = commands.add_parser("remove", help="remove a track from a playlist")
     remove.add_argument("id", metavar="ID")
     remove.add_argument("video_id", metavar="VIDEO_ID")
+    play = commands.add_parser("play", help="play a playlist, optionally from a track")
+    play.add_argument("id", metavar="ID", help="playlist id")
+    play.add_argument(
+        "--track",
+        type=int,
+        default=1,
+        metavar="N",
+        help="start from this track, 1-based in list order (default: 1)",
+    )
 
     history = subparsers.add_parser("history", help="show recently played tracks")
     history.add_argument(
@@ -436,6 +445,8 @@ def _cmd_playlists(args: argparse.Namespace) -> int:
         return _playlists_list(args, library)
     if action == "tracks":
         return _playlists_tracks(args, library)
+    if action == "play":
+        return _playlists_play(args)
     if action == "create":
         playlist_id = library.create_playlist(args.name)
         _console.print(f"Created playlist “{escape(args.name)}” ({playlist_id})")
@@ -507,6 +518,26 @@ def _playlists_tracks(args: argparse.Namespace, library: Any) -> int:
             track.video_id,
         )
     _console.print(table)
+    return 0
+
+
+def _playlists_play(args: argparse.Namespace) -> int:
+    """Play a playlist from ``--track`` (1-based) via the daemon.
+
+    Only the start index matters here; the daemon queues the rest of the
+    playlist for auto-next, so playback continues in order.
+    """
+    _ensure_daemon(args)
+    request: dict[str, Any] = {
+        "cmd": "play",
+        "playlist_id": args.id,
+        "playlist_index": max(args.track - 1, 0),
+    }
+    with _console.status("Resolving stream…", spinner="dots"):
+        data = _send(args, request, timeout=180.0)
+    if data is None:
+        return 1
+    _console.print(_track_line(data))
     return 0
 
 
