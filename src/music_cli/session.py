@@ -82,11 +82,21 @@ class PlaybackSession:
         self._load_up_next(video_id)
         return stream
 
-    def play_playlist(self, playlist_id: str) -> StreamInfo:
-        """Play a playlist from the top; the client queues the remainder."""
-        stream = self.client.play_from_playlist(playlist_id, 0)
+    def play_playlist(self, playlist_id: str, start_index: int = 0) -> StreamInfo:
+        """Play a playlist from ``start_index``; the client queues the remainder."""
+        stream = self.client.play_from_playlist(playlist_id, start_index)
         self.record(stream)
         return stream
+
+    def stop(self) -> None:
+        """Stop playback and drop the queue/current track.
+
+        Keeps the daemon (and the history) alive; ``quit`` is the shutdown
+        analogue.
+        """
+        self.client.player.stop()
+        self.client.current = None
+        self.client.queue = []
 
     def resume_last(self) -> StreamInfo | None:
         """Replay the most recent history entry, if any."""

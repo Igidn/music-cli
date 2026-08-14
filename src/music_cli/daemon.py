@@ -12,11 +12,14 @@ pumps the run loop between connections, mirroring the TUI's pump_platform.
 from __future__ import annotations
 
 import argparse
+import json
 import select
 import signal
 import socket
 import sys
 import threading
+import time
+from collections import deque
 from typing import TYPE_CHECKING
 
 from . import ipc
@@ -26,7 +29,13 @@ if TYPE_CHECKING:
     from .session import PlaybackSession
 
 _STATE_VALUES = ("on", "off", "toggle")
-_PLAY_TARGETS = ("query", "video_id", "playlist_id")
+_PLAY_TARGETS = ("query", "video_id", "playlist_id", "queue_index")
+#: Seconds a stopped, un-subscribed daemon lingers before exiting itself.
+IDLE_TIMEOUT = 30.0
+#: Cap per-subscriber bytes buffered awaiting a writable socket.
+_MAX_SUBSCRIBER_BYTES = 1 << 20
+#: Heartbeat interval at which the current status is re-pushed.
+_HEARTBEAT = 0.5
 
 
 def handle_request(session: PlaybackSession, request: dict) -> dict:
@@ -66,7 +75,10 @@ def _dispatch(session: PlaybackSession, request: dict) -> dict:
         return _toggle_state(session, cmd, request)
     elif cmd == "queue":
         return {"ok": True, "data": session.queue()}
-    elif cmd in ("stop", "quit"):
+    elif cmd == "stop":
+        session.stop()
+        return {"ok": True, "data": session.status()}
+    elif cmd == "quit":
         return {"ok": True, "data": None}
     elif cmd != "status":
         return {"ok": False, "error": f"unknown command: {cmd!r}"}
@@ -75,11 +87,14 @@ def _dispatch(session: PlaybackSession, request: dict) -> dict:
 
 
 def _play(session: PlaybackSession, request: dict) -> dict:
-    targets = [key for key in _PLAY_TARGETS if request.get(key)]
+    targets = [key for key in _PLAY_TARGETS if key in request]
     if len(targets) != 1:
         return {
             "ok": False,
-            "error": "play requires exactly one of: query, video_id, playlist_id",
+            "error": (
+                "play requires exactly one of: query, video_id, playlist_id,"
+                " queue_index"
+            ),
         }
     # Launch flags first: they must shape playback before the track starts.
     if "volume" in request:
@@ -92,9 +107,11 @@ def _play(session: PlaybackSession, request: dict) -> dict:
     if target == "query":
         session.play_query(request["query"])
     elif target == "video_id":
-        session.play_video(request["video_id"])
+        session.play_video(request["video_id"], request.get("title", ""))
+    elif target == "playlist_id":
+        session.play_playlist(request["playlist_id"], request.get("playlist_index", 0))
     else:
-        session.play_playlist(request["playlist_id"])
+        session.play_queue_track(request["queue_index"])
     return {"ok": True, "data": session.status()}
 
 
@@ -152,6 +169,12 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         "--cookies", metavar="FILE", default=None, help="Netscape cookie file"
     )
     parser.add_argument("--volume", type=int, default=80, help="initial volume")
+    parser.add_argument(
+        "--idle-timeout",
+        type=float,
+        default=IDLE_TIMEOUT,
+        help="seconds idle before the daemon exits itself",
+    )
     return parser.parse_args(argv)
 
 
@@ -192,6 +215,8 @@ def main(argv: list[str] | None = None) -> None:
 
     path = ipc.socket_path()
     server = _claim_socket(path)
+    events_path = ipc.events_socket_path()
+    event_server = _claim_socket(events_path)
     # Track-end fires from an AVFoundation notification; the flag lets the
     # serve loop run auto-next on the main thread, where pump() runs.
     eof = threading.Event()
@@ -200,9 +225,43 @@ def main(argv: list[str] | None = None) -> None:
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, lambda *a: stop.set())
     try:
-        while not stop.is_set():
-            readable, _, _ = select.select([server], [], [], 0.02)
-            if readable:
+        _serve(session, server, event_server, eof, stop, args.idle_timeout)
+    finally:
+        server.close()
+        event_server.close()
+        path.unlink(missing_ok=True)
+        events_path.unlink(missing_ok=True)
+        session.close()
+
+
+def _serve(
+    session: PlaybackSession,
+    server: socket.socket,
+    event_server: socket.socket,
+    eof: threading.Event,
+    stop: threading.Event,
+    idle_timeout: float,
+) -> None:
+    """Serve control requests and push state events until quit/idle/signal.
+
+    One loop pumps the AVFoundation run loop, handles control requests, and
+    fans state events out to subscribers. Push happens when the discrete
+    state signature changes or as a coarse heartbeat, so a connected TUI gets
+    fresh ``position`` without polling.
+    """
+    subscribers: dict[socket.socket, deque[bytes]] = {}
+    last_signature: tuple | None = None
+    last_heartbeat = time.monotonic()
+    last_activity = time.monotonic()
+    while not stop.is_set():
+        readable, writable, _ = select.select(
+            [server, event_server, *subscribers],
+            list(subscribers),
+            [],
+            0.02,
+        )
+        for sock in readable:
+            if sock is server:
                 conn, _ = server.accept()
                 with conn:
                     try:
@@ -211,19 +270,111 @@ def main(argv: list[str] | None = None) -> None:
                         continue  # malformed request; keep serving
                     response = handle_request(session, request)
                     ipc.send_message(conn, response)
-                if request.get("cmd") in ("stop", "quit"):
-                    stop.set()
-            if eof.is_set():
-                eof.clear()
+                last_activity = time.monotonic()
+                if request.get("cmd") == "quit":
+                    return
+            elif sock is event_server:
+                conn, _ = event_server.accept()
+                conn.setblocking(False)
+                subscribers[conn] = deque()
+                last_activity = time.monotonic()
+            elif sock in subscribers:
+                # Non-control senders send one subscribe line then go quiet;
+                # read to notice a closed (or badly-behaved) connection.
                 try:
-                    session.on_track_end()
-                except PlayerError:
-                    pass  # a failed auto-next must not kill the daemon
-            session.client.player.pump()
-    finally:
-        server.close()
-        path.unlink(missing_ok=True)
-        session.close()
+                    data = sock.recv(65536)
+                except OSError:
+                    data = b""
+                if not data:
+                    _drop_subscriber(sock, subscribers)
+        for sock in writable:
+            if sock in subscribers:
+                _flush_subscriber(sock, subscribers)
+        if eof.is_set():
+            eof.clear()
+            try:
+                session.on_track_end()
+            except PlayerError:
+                pass  # a failed auto-next must not kill the daemon
+        status = session.status()
+        signature = _status_signature(status)
+        if signature != last_signature:
+            last_signature = signature
+            last_heartbeat = time.monotonic()
+            _push(subscribers, status)
+        elif time.monotonic() - last_heartbeat >= _HEARTBEAT:
+            last_heartbeat = time.monotonic()
+            _push(subscribers, status)
+        if _idle(session, subscribers, last_activity, idle_timeout):
+            return
+        session.client.player.pump()
+
+
+def _status_signature(status: dict) -> tuple:
+    """The discrete state signature: anything except position and duration."""
+    track = status["track"]
+    return (
+        status["state"],
+        track["video_id"] if track else None,
+        status["queue"],
+        status["volume"],
+        status["muted"],
+        status["loop"],
+        status["auto_next"],
+    )
+
+
+def _push(subscribers: dict[socket.socket, deque[bytes]], status: dict) -> None:
+    """Enqueue the current status as an event for every subscriber."""
+    payload = json.dumps({"event": "state", "status": status}).encode() + b"\n"
+    for conn, buffer in list(subscribers.items()):
+        buffer.append(payload)
+        if sum(len(chunk) for chunk in buffer) > _MAX_SUBSCRIBER_BYTES:
+            _drop_subscriber(conn, subscribers)
+
+
+def _flush_subscriber(
+    conn: socket.socket, subscribers: dict[socket.socket, deque[bytes]]
+) -> None:
+    """Non-blockingly drain a subscriber's pending events; drop it when stuck."""
+    buffer = subscribers[conn]
+    while buffer:
+        chunk = buffer[0]
+        try:
+            sent = conn.send(chunk)
+        except BlockingIOError, ConnectionError, OSError:
+            _drop_subscriber(conn, subscribers)
+            return
+        if sent == 0:
+            _drop_subscriber(conn, subscribers)
+            return
+        if sent < len(chunk):
+            buffer[0] = chunk[sent:]
+            return
+        buffer.popleft()
+
+
+def _drop_subscriber(conn: socket.socket, subscribers: dict) -> None:
+    """Remove and close a dead, slow, or unreadable subscriber."""
+    if subscribers.pop(conn, None) is not None:
+        try:
+            conn.close()
+        except OSError:
+            pass
+
+
+def _idle(
+    session: PlaybackSession,
+    subscribers: dict,
+    last_activity: float,
+    idle_timeout: float,
+) -> bool:
+    """Whether to idle-exit: nothing playing, no subscribers, quiet for a while."""
+    if session.client.current is not None:
+        return False
+    if subscribers:
+        return False
+    return time.monotonic() - last_activity > idle_timeout
 
 
 if __name__ == "__main__":

@@ -254,6 +254,22 @@ class MusicClient:
             raise
         return track
 
+    def play_queue_track(self, index: int) -> StreamInfo:
+        """Play the queued track at ``index``, popping it, re-inserting on failure.
+
+        Mirrors :meth:`next`'s failure handling: a track that refuses to play
+        goes back where it was so the queue stays intact.
+        """
+        if not 0 <= index < len(self.queue):
+            raise PlayerError(f"No track at queue index {index}")
+        track = self.queue.pop(index)
+        try:
+            stream = self.play_track(track)
+        except PlayerError:
+            self.queue.insert(index, track)
+            raise
+        return stream  # type: ignore[return-value]
+
     def loop_playlist(self) -> bool:
         """Re-queue the active playlist when auto-next exhausts it.
 
