@@ -62,3 +62,24 @@ With a song selected (search results, up next or a playlist's tracks) `s`
 opens a picker to add it to playlists. In the playlists panel, `c` creates a
 playlist, `r` renames the selected playlist and `d` removes the selected song
 from its playlist. These keys appear in the footer only when they apply.
+
+## CLI
+
+Playback commands talk to a background daemon over a control socket;
+`play` starts it automatically. `status`, `queue`, `search`, `playlists`
+and `history` accept `--json` for machine-readable output.
+
+```sh
+music-cli play "never gonna give you up"   # search and play
+music-cli play --video-id dQw4w9WgXcQ      # play a video id
+music-cli play --playlist PL... [--loop] [--no-auto-next] [--volume 65]
+music-cli pause|resume|toggle|next|stop    # transport
+music-cli seek +30 | seek -10 | seek 90    # forward / back / absolute
+music-cli volume 65 | volume +5            # absolute / relative
+music-cli mute on|off|toggle               # also: loop, auto-next
+music-cli status                           # what is playing
+music-cli queue                            # the up-next queue
+music-cli search QUERY [--limit N] [--filter songs|videos|albums|artists|playlists]
+music-cli playlists list                   # also: tracks/create/rename/add/remove
+music-cli history [--limit N]              # recently played tracks
+```
