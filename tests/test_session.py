@@ -196,9 +196,7 @@ class TestSettingsRestore:
 
 
 class TestPlay:
-    def test_play_query_skips_results_without_video_id(
-        self, client, session, history
-    ):
+    def test_play_query_skips_results_without_video_id(self, client, session, history):
         client.search_api = FakeSearch(
             [make_result(video_id="", title="An Artist"), make_result("v1")]
         )
@@ -385,7 +383,9 @@ class TestStatus:
         }
 
     def test_playing(self, client, session):
-        client.watch = FakeWatch([make_track("v1"), make_track("t1", artists=("A", "B"))])
+        client.watch = FakeWatch(
+            [make_track("v1"), make_track("t1", artists=("A", "B"))]
+        )
         session.play_video("v1", "Title")
         status = session.status()
         assert status["state"] == "playing"
@@ -398,7 +398,12 @@ class TestStatus:
         assert status["position"] == 0.5
         assert status["duration"] == 200.0
         assert status["queue"] == [
-            {"video_id": "t1", "title": "Track One", "artists": ["A", "B"], "duration": ""}
+            {
+                "video_id": "t1",
+                "title": "Track One",
+                "artists": ["A", "B"],
+                "duration": "",
+            }
         ]
         session.pause()
         assert session.status()["state"] == "paused"

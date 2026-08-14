@@ -160,9 +160,7 @@ class PlaybackSession:
         elif offset is not None:
             self.client.player.seek_relative(offset)
 
-    def set_volume(
-        self, *, volume: int | None = None, delta: int | None = None
-    ) -> int:
+    def set_volume(self, *, volume: int | None = None, delta: int | None = None) -> int:
         """Set or bump the volume (the player clamps to 0-100); persists."""
         player = self.client.player
         if volume is not None:

@@ -106,9 +106,7 @@ def register_subcommands(subparsers: argparse._SubParsersAction) -> None:
     )
     _add_json(search)
 
-    playlists = subparsers.add_parser(
-        "playlists", help="manage your library playlists"
-    )
+    playlists = subparsers.add_parser("playlists", help="manage your library playlists")
     commands = playlists.add_subparsers(dest="playlists_command", required=True)
     _add_json(commands.add_parser("list", help="list your playlists"))
     tracks = commands.add_parser("tracks", help="list a playlist's tracks")
@@ -329,8 +327,9 @@ def _cmd_state(args: argparse.Namespace) -> int:
         on = data
     else:
         on = None
-    _console.print((on_label if on else off_label) if on is not None
-                   else f"{name} toggled")
+    _console.print(
+        (on_label if on else off_label) if on is not None else f"{name} toggled"
+    )
     return 0
 
 

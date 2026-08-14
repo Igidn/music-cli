@@ -1,19 +1,11 @@
-"""Dispatch tests for the daemon: no sockets, no AVFoundation, no session.py."""
+"""Dispatch tests for the daemon: no sockets, no AVFoundation."""
 
 from __future__ import annotations
-
-import sys
 
 import pytest
 
 from music_cli.core.errors import PlayerError
 from music_cli.daemon import handle_request
-
-
-def test_importing_daemon_does_not_import_session():
-    # session.py is written in parallel; the lazy import in main() keeps the
-    # module importable without it, which is all the tests need.
-    assert "music_cli.session" not in sys.modules
 
 
 class FakePlayer:

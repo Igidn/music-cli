@@ -25,8 +25,12 @@ STATUS = {
     "loop": False,
     "auto_next": True,
     "queue": [
-        {"video_id": "q1", "title": "Next One", "artists": ["Artist B"],
-         "duration": "2:01"},
+        {
+            "video_id": "q1",
+            "title": "Next One",
+            "artists": ["Artist B"],
+            "duration": "2:01",
+        },
     ],
 }
 
@@ -86,7 +90,9 @@ class FakeLibrary:
         self.calls.append(("tracks", playlist_id))
         return [
             PlaylistTrack(
-                video_id="t1", title="Track One", artists=["Artist A"],
+                video_id="t1",
+                title="Track One",
+                artists=["Artist A"],
                 duration="3:00",
             )
         ]
@@ -179,7 +185,10 @@ class TestArgParsing:
     def test_playlists_subcommands(self):
         args = parse("playlists", "list", "--json")
         assert (args.command, args.playlists_command, args.json) == (
-            "playlists", "list", True)
+            "playlists",
+            "list",
+            True,
+        )
         assert parse("playlists", "tracks", "PL1").id == "PL1"
         assert parse("playlists", "create", "My Mix").name == "My Mix"
         args = parse("playlists", "rename", "PL1", "New Name")
@@ -355,9 +364,7 @@ class TestEnsureDaemon:
             ipc, "send_request", lambda request, timeout=30.0: {"ok": True}
         )
         spawned = []
-        monkeypatch.setattr(
-            subprocess, "Popen", lambda *a, **k: spawned.append(a[0])
-        )
+        monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: spawned.append(a[0]))
         cli.ensure_daemon(parse("play", "x"))
         assert spawned == []
 
@@ -372,9 +379,7 @@ class TestEnsureDaemon:
 
         spawned = []
         monkeypatch.setattr(ipc, "send_request", send)
-        monkeypatch.setattr(
-            subprocess, "Popen", lambda *a, **k: spawned.append(a[0])
-        )
+        monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: spawned.append(a[0]))
         monkeypatch.setattr(time, "sleep", lambda seconds: None)
         cli.ensure_daemon(parse("play", "x"))
         assert spawned == [[sys.executable, "-m", "music_cli.daemon"]]
@@ -412,7 +417,12 @@ class TestSearch:
         for line in lines:
             obj = json.loads(line)
             assert set(obj) == {
-                "video_id", "title", "artists", "album", "duration", "type",
+                "video_id",
+                "title",
+                "artists",
+                "album",
+                "duration",
+                "type",
             }
         assert json.loads(lines[0])["title"] == "One"
 
@@ -476,13 +486,17 @@ class TestHistory:
         store = PlayHistoryStore()
         store.record(
             PlayedTrack(
-                video_id="h1", title="Old Song", artists=("Old Artist",),
+                video_id="h1",
+                title="Old Song",
+                artists=("Old Artist",),
                 duration=100.0,
             )
         )
         store.record(
             PlayedTrack(
-                video_id="h2", title="New Song", artists=("New Artist",),
+                video_id="h2",
+                title="New Song",
+                artists=("New Artist",),
                 duration=200.0,
             )
         )
