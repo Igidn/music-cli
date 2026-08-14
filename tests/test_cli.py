@@ -267,6 +267,7 @@ class TestDaemonCommands:
         assert "Nothing is playing" in capsys.readouterr().out
 
     def test_stop(self, daemon, capsys):
+        daemon.data = None  # the real daemon answers stop with data=None
         assert cli.run(parse("stop")) == 0
         assert daemon.requests == [{"cmd": "stop"}]
         assert "Stopped" in capsys.readouterr().out

@@ -200,9 +200,11 @@ def _volume_value(text: str) -> tuple[str, int]:
     return ("level", number)
 
 
-def _send(args: argparse.Namespace, request: dict[str, Any]) -> Any | None:
+def _send(
+    args: argparse.Namespace, request: dict[str, Any], timeout: float = 30.0
+) -> Any | None:
     """Send ``request`` to the daemon; print the error and return None on failure."""
-    response = ipc.send_request(request)
+    response = ipc.send_request(request, timeout=timeout)
     if not response.get("ok"):
         error = response.get("error", "unknown error")
         _errors.print(f"music-cli: {error}", style="bold red")
@@ -263,7 +265,8 @@ def _cmd_play(args: argparse.Namespace) -> int:
     if args.play_volume is not None:
         request["volume"] = args.play_volume
     ensure_daemon(args)
-    data = _send(args, request)
+    # play can include a full download before the daemon answers.
+    data = _send(args, request, timeout=180.0)
     if data is None:
         return 1
     _console.print(_track_line(data))
@@ -280,7 +283,11 @@ def _cmd_transport(args: argparse.Namespace) -> int:
 
 
 def _cmd_stop(args: argparse.Namespace) -> int:
-    if _send(args, {"cmd": "stop"}) is None:
+    # stop's payload is data=None, so check the response itself, not _send.
+    response = ipc.send_request({"cmd": "stop"})
+    if not response.get("ok"):
+        error = response.get("error", "unknown error")
+        _errors.print(f"music-cli: {error}", style="bold red")
         return 1
     _console.print("Stopped")
     return 0

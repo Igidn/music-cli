@@ -67,7 +67,10 @@ def recv_message(conn: socket.socket) -> dict[str, Any]:
     """Read one newline-terminated JSON object from ``conn``."""
     data = b""
     while not data.endswith(b"\n"):
-        chunk = conn.recv(65536)
+        try:
+            chunk = conn.recv(65536)
+        except TimeoutError as error:
+            raise PlayerError("timed out waiting for the daemon") from error
         if not chunk:
             break
         data += chunk
