@@ -1,33 +1,42 @@
-"""Textual TUI orchestrator for music-cli: threading, state and playback control."""
+"""Textual TUI orchestrator for music-cli: threading, state and playback control.
+
+The TUI is a controller + view over the background playback daemon. All
+transport and playback actions are sent over IPC (``ipc.send_request``) from
+``@work(thread=True)`` workers so the UI never blocks; daemon push events on
+the events socket drive all now-playing / progress / queue rendering. The
+local ``MusicClient`` is kept only for stateless queries (search, library,
+history, theme).
+"""
 
 from __future__ import annotations
 
-import asyncio
+import json
+import socket
+import threading
+import time
 from collections.abc import Callable
-from dataclasses import dataclass
-from typing import ClassVar, Literal
+from typing import ClassVar
 
 from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
-from textual.message import Message
 from textual.theme import Theme
 from textual.timer import Timer
 from textual.widget import Widget
 from textual.widgets import Footer, Input, Label, Select
 from textual.worker import Worker, WorkerState
 
+from music_cli import ipc
 from music_cli.client import MusicClient
-from music_cli.session import PlaybackSession
 from music_cli.storage.state import (
     SETTING_THEME,
     PlayHistoryStore,
     SettingsStore,
 )
-from music_cli.yt.extract import PlaylistTrack, StreamInfo
+from music_cli.yt.extract import PlaylistTrack
 from music_cli.yt.playlists import LibraryPlaylist
-from music_cli.yt.search import SearchFilter, SearchResult
+from music_cli.yt.search import SearchFilter, SearchResult, format_duration
 
 from .components import (
     AddToPlaylistRequested,
@@ -110,20 +119,8 @@ MUSIC_CLI_THEME = Theme(
     },
 )
 
-
-class TrackEnded(Message):
-    """Posted on the app thread when the player reports end-of-file."""
-
-
-@dataclass
-class _PlayRequest:
-    """One play attempt: video id (for dedup), the thread-side stream
-    resolver, and how to finish the attempt back on the app thread."""
-
-    video_id: str
-    resolve: Callable[[], StreamInfo]
-    kind: Literal["result", "queue", "playlist"]
-    on_fail: Callable[[], None] = lambda: None
+_EVENTS_RECONNECT_SECS = 2.0
+_DEFAULT_SOCKET_TIMEOUT = 0.5
 
 
 class MusicTUI(App[None]):
@@ -184,21 +181,25 @@ class MusicTUI(App[None]):
         self.client = client or MusicClient()
         self._history_store = history_store or PlayHistoryStore()
         self._settings_store = settings_store or SettingsStore()
-        self.client.on_track_end = self._on_player_eof
         self._search_timer: Timer | None = None
         self._search_worker: Worker[list[SearchResult]] | None = None
-        self._queue_worker: Worker[list[PlaylistTrack]] | None = None
-        self._play_worker: Worker[StreamInfo] | None = None
-        self._play_request: _PlayRequest | None = None
         self._library_worker: Worker[list[LibraryPlaylist]] | None = None
         self._playlist_workers: dict[str, Worker[list[PlaylistTrack]]] = {}
         self._library_playlists: list[LibraryPlaylist] = []
-        self.session = PlaybackSession(
-            self.client, self._history_store, self._settings_store
-        )
-        self._advance_worker: Worker[PlaylistTrack | None] | None = None
+        # Reflect-the-daemon state; the daemon owns the truth and pushes it.
+        self._current_video_id: str | None = None
+        self._pending_play: str | None = None
+        self._next_pending = False
         self._auto_next = True
         self._loop_enabled = False
+        self._volume = 80
+        self._muted = False
+        self._queue_video_ids: tuple[str, ...] = ()
+        self._history_track_id: str | None = None
+        # A raw socket for daemon push events; None until we've connected.
+        self._events_socket: socket.socket | None = None
+        self._events_thread: threading.Thread | None = None
+        self._events_lock = threading.Lock()
         self.register_theme(GITHUB_THEME)
         self.register_theme(MUSIC_CLI_THEME)
         saved_theme = self._settings_store.get(SETTING_THEME)
@@ -208,23 +209,12 @@ class MusicTUI(App[None]):
             else MUSIC_CLI_THEME.name
         )
 
-    @property
-    def _last_video_id(self) -> str:
-        """Back-compat handle; the session owns the last-played id now."""
-        return self.session.last_video_id
-
-    @_last_video_id.setter
-    def _last_video_id(self, value: str) -> None:
-        self.session.last_video_id = value
-
     def watch_theme(self, theme_name: str) -> None:
         """Persist the palette-chosen theme (Ctrl+P → Theme) across restarts."""
         self._settings_store.set(SETTING_THEME, theme_name)
 
     def on_mount(self) -> None:
-        self.set_interval(0.5, self._tick)
         self.query_one("#search-input", Input).focus()
-        self.run_worker(self.pump_platform(), exclusive=False)
         if self.client.library.authenticated:
             self._library_worker = self.library_worker()
         else:
@@ -232,27 +222,94 @@ class MusicTUI(App[None]):
                 "Sign in to browse your playlists\n"
                 "(run 'music-cli login' in a terminal, or pass --cookies)"
             )
-        self._apply_saved_settings()
         self._refresh_history()
-        self._show_last_track_paused()
+        self._start_events_thread()
+        self.init_status_worker()
 
-    def _show_last_track_paused(self) -> None:
-        """Show the most recently played track, without playing it."""
-        track = self._history_store.most_recent()
-        if track is not None:
-            self.query_one(NowPlaying).set_track(
-                track.title, " • ".join(track.artists), track.duration
+    def _start_events_thread(self) -> None:
+        """Subscribe to daemon push events on a background thread.
+
+        The worker reconnects with a short backoff when the connection drops
+        (daemon restart), and drains as it exits with the app.
+        """
+        with self._events_lock:
+            if self._events_thread is not None and self._events_thread.is_alive():
+                return
+            self._events_thread = threading.Thread(
+                target=self._events_worker, name="tui-events", daemon=True
             )
-            self.query_one(NowPlaying).set_paused(True)
+            self._events_thread.start()
 
-    def _apply_saved_settings(self) -> None:
-        """Sync the app flags; the session already restored them on init."""
-        self._auto_next = self.session.auto_next
-        self._loop_enabled = self.client.loop
+    def _events_worker(self) -> None:
+        while self.is_running:
+            try:
+                with self._open_events_socket() as conn:
+                    ipc.send_message(conn, {"cmd": "subscribe"})
+                    self._read_events(conn)
+            except OSError:
+                pass  # daemon not up / socket dropped; back off and retry
+            finally:
+                self._clear_events_socket()
+            if self.is_running:
+                time.sleep(_EVENTS_RECONNECT_SECS)
+
+    def _open_events_socket(self) -> socket.socket:
+        conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            conn.connect(str(ipc.events_socket_path()))
+        except OSError:
+            conn.close()
+            raise
+        with self._events_lock:
+            self._events_socket = conn
+        return conn
+
+    def _clear_events_socket(self) -> None:
+        with self._events_lock:
+            if self._events_socket is not None:
+                try:
+                    self._events_socket.close()
+                except OSError:
+                    pass
+                self._events_socket = None
+
+    def _read_events(self, conn: socket.socket) -> None:
+        conn.settimeout(_DEFAULT_SOCKET_TIMEOUT)
+        buffer = b""
+        while self.is_running:
+            try:
+                data = conn.recv(65536)
+            except TimeoutError:
+                continue
+            except OSError:
+                return
+            if not data:
+                return
+            buffer += data
+            while b"\n" in buffer:
+                line, _, buffer = buffer.partition(b"\n")
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    continue
+                if event.get("event") == "state":
+                    status = event.get("status")
+                    if status is not None:
+                        self.call_from_thread(self._render_status, status)
 
     def on_unmount(self) -> None:
+        self._clear_events_socket()
         if self._search_timer is not None:
             self._search_timer.stop()
+        # Best-effort stop: quitting the TUI ends playback; the daemon stays
+        # alive and idles out on its own. Never blocks on a dead daemon.
+        try:
+            ipc.send_request({"cmd": "stop"}, timeout=_EVENTS_RECONNECT_SECS)
+        except Exception:  # noqa: BLE001, S110 — shutdown path must never raise
+            pass
         self.client.close()
         self._history_store.close()
         self._settings_store.close()
@@ -338,9 +395,9 @@ class MusicTUI(App[None]):
             return
         handlers = {
             "run_search": self._on_search_finished,
-            "play_worker": self._on_play_finished,
-            "fetch_queue_worker": self._on_queue_fetched,
-            "advance_worker": self._on_advance_finished,
+            "rpc_worker": self._on_rpc_finished,
+            "state_worker": self._on_state_finished,
+            "init_status_worker": self._on_init_status_finished,
             "library_worker": self._on_library_fetched,
             "playlist_tracks_worker": self._on_playlist_tracks_fetched,
             "playlist_mutation_worker": self._on_playlist_mutation_finished,
@@ -362,121 +419,231 @@ class MusicTUI(App[None]):
                 f"Search failed: {worker.error}", title="Search", severity="error"
             )
 
+    # ------------------------------------------------------------------
+    # Daemon IPC: actions run off the UI thread and render from responses.
+    # ------------------------------------------------------------------
+
+    @work(thread=True, exit_on_error=False)
+    def rpc_worker(self, request: object) -> dict:
+        return ipc.send_request(request)
+
+    @work(thread=True, exit_on_error=False)
+    def state_worker(self, request: object) -> dict:
+        return ipc.send_request(request)
+
+    @work(thread=True, exit_on_error=False)
+    def init_status_worker(self) -> dict:
+        try:
+            ipc.ensure_daemon()
+        except Exception:  # noqa: BLE001, S110 — no daemon yet; status reports it
+            pass
+        try:
+            return ipc.send_request({"cmd": "status"})
+        except Exception as error:  # noqa: BLE001 — surface as a status line
+            return {"ok": False, "error": str(error)}
+
+    def _on_init_status_finished(self, worker: Worker[dict]) -> None:
+        if worker.state is WorkerState.SUCCESS:
+            response = worker.result or {}
+            if response.get("ok"):
+                status = response["data"]
+                self._render_status(status)
+                if status.get("track") is None:
+                    self._show_last_track_paused()
+                return
+            self.set_status(f"Daemon unavailable: {response.get('error')}")
+        else:
+            self.set_status("Daemon unavailable")
+
+    def _show_last_track_paused(self) -> None:
+        """Show the most recently played track, without playing it."""
+        track = self._history_store.most_recent()
+        if track is not None:
+            self.query_one(NowPlaying).set_track(
+                track.title, " • ".join(track.artists), track.duration
+            )
+            self.query_one(NowPlaying).set_paused(True)
+
+    def _on_rpc_finished(self, worker: Worker[dict]) -> None:
+        # Any IPC finishing clears the in-flight guards; the daemon also
+        # dedups, so an over-eager clear just lets a re-click re-send.
+        self._pending_play = None
+        self._next_pending = False
+        if worker.state is WorkerState.SUCCESS:
+            response = worker.result or {}
+            if response.get("ok"):
+                self._render_status(response.get("data"))
+            else:
+                self.set_status("Playback failed")
+                self.notify(
+                    f"Playback failed: {response.get('error')}",
+                    title="Playback",
+                    severity="error",
+                )
+        else:
+            self.set_status("Playback failed")
+
+    def _on_state_finished(self, worker: Worker[dict]) -> None:
+        if worker.state is not WorkerState.SUCCESS:
+            self.notify(
+                f"Settings update failed: {worker.error}",
+                title="Settings",
+                severity="warning",
+            )
+            return
+        response = worker.result or {}
+        if not response.get("ok"):
+            self.notify(
+                f"Settings update failed: {response.get('error')}",
+                title="Settings",
+                severity="warning",
+            )
+            return
+        data = response.get("data") or {}
+        now_playing = self.query_one(NowPlaying)
+        if "volume" in data:
+            self._volume = int(data["volume"])
+            now_playing.set_volume(self._volume, self._muted)
+        if "mute" in data:
+            self._muted = bool(data["mute"])
+            now_playing.set_volume(self._volume, self._muted)
+        if "auto_next" in data:
+            self._auto_next = bool(data["auto_next"])
+            now_playing.set_modes(self._auto_next, self._loop_enabled)
+        if "loop" in data:
+            self._loop_enabled = bool(data["loop"])
+            now_playing.set_modes(self._auto_next, self._loop_enabled)
+
+    # ------------------------------------------------------------------
+    # Event-driven rendering from pushed daemon status.
+    # ------------------------------------------------------------------
+
+    def _render_status(self, status: dict) -> None:
+        now_playing = self.query_one(NowPlaying)
+        track = status.get("track")
+        self._current_video_id = track["video_id"] if track else None
+        if track is None:
+            now_playing.clear_track()
+        else:
+            now_playing.set_track(
+                track["title"],
+                ", ".join(track.get("artists") or []) or "Unknown artist",
+                track.get("duration"),
+            )
+            if track["video_id"] != self._history_track_id:
+                self._history_track_id = track["video_id"]
+                self._refresh_history()
+        state = status.get("state")
+        now_playing.set_progress(
+            status.get("position", 0.0), status.get("duration") or 0.0
+        )
+        now_playing.set_paused(state == "paused")
+        self._volume = int(status.get("volume", self._volume))
+        self._muted = bool(status.get("muted", self._muted))
+        now_playing.set_volume(self._volume, self._muted)
+        self._auto_next = bool(status.get("auto_next", self._auto_next))
+        self._loop_enabled = bool(status.get("loop", self._loop_enabled))
+        now_playing.set_modes(self._auto_next, self._loop_enabled)
+        self._refresh_queue_from_status(status.get("queue") or [])
+
+    def _refresh_queue_from_status(self, queue: list[dict]) -> None:
+        ids = tuple(entry.get("video_id") for entry in queue)
+        if ids == self._queue_video_ids:
+            return
+        self._queue_video_ids = ids
+        tracks = [self._queue_track(entry) for entry in queue]
+        self.query_one(QueueList).set_tracks(tracks)
+        self.query_one("#queue-count", Label).update(
+            f"{len(tracks)} up next" if tracks else ""
+        )
+
+    @staticmethod
+    def _queue_track(entry: dict) -> PlaylistTrack:
+        return PlaylistTrack(
+            video_id=entry.get("video_id", ""),
+            title=entry.get("title", "Unknown track"),
+            artists=list(entry.get("artists") or []),
+            duration=format_duration(entry.get("duration")),
+        )
+
+    # ------------------------------------------------------------------
+    # Query side (unchanged): search results, library, history, settings.
+    # ------------------------------------------------------------------
+
     @on(ResultsTable.RowSelected)
     def _on_result_selected(self, event: ResultsTable.RowSelected) -> None:
         result = self.query_one(ResultsTable).selected_result()
         if result is not None:
             self.play_result(result)
 
-    def _play_pending(self, video_id: str) -> bool:
-        """Whether an identical playback request is already underway.
-
-        Covers both a duplicate still being resolved and the same song already
-        on, so a double click on a row never spawns a second stream
-        resolution for the same video (which would risk YouTube throttling).
-        """
-        if self.client.current is not None and self.client.current.video_id == video_id:
-            return True
-        request = self._play_request
-        return (
-            request is not None
-            and request.video_id == video_id
-            and self._play_worker is not None
-            and self._play_worker.state in (WorkerState.PENDING, WorkerState.RUNNING)
-        )
-
     def play_result(self, result: SearchResult) -> None:
         self._start_play(
-            _PlayRequest(
-                result.video_id, lambda: self.client.play_result(result), "result"
-            ),
+            result.video_id,
             result.title,
             result.subtitle,
+            {"cmd": "play", "video_id": result.video_id, "title": result.title},
         )
 
     def play_video(self, video_id: str, title: str, subtitle: str = "") -> None:
         """Play a bare video id (used to resume the last played track)."""
         self._start_play(
-            _PlayRequest(
-                video_id, lambda: self.client.play_video(video_id, title), "result"
-            ),
+            video_id,
             title,
             subtitle,
+            {"cmd": "play", "video_id": video_id, "title": title},
         )
 
-    def _start_play(self, request: _PlayRequest, title: str, subtitle: str) -> None:
-        """Resolve and play ``request``, skipping duplicates of what's on."""
-        if self._play_pending(request.video_id):
+    @on(QueueList.Selected)
+    def _on_queue_selected(self, event: QueueList.Selected) -> None:
+        track = self.query_one(QueueList).track_at(event.index)
+        if track is None:
             return
-        self._last_video_id = request.video_id
-        self._cancel_queue_fetch()
+        self._start_play(
+            track.video_id,
+            track.title,
+            " • ".join(track.artists),
+            {"cmd": "play", "queue_index": event.index},
+        )
+
+    @on(HistoryList.Selected)
+    def _on_history_selected(self, event: HistoryList.Selected) -> None:
+        track = self.query_one(HistoryList).track_at(event.index)
+        if track is None:
+            return
+        self._start_play(
+            track.video_id,
+            track.title,
+            " • ".join(track.artists),
+            {"cmd": "play", "video_id": track.video_id, "title": track.title},
+        )
+
+    @on(LibraryTree.TrackActivated)
+    def _on_playlist_track_activated(self, message: LibraryTree.TrackActivated) -> None:
+        track = message.track
+        self._start_play(
+            track.video_id,
+            track.title,
+            " • ".join(track.artists),
+            {
+                "cmd": "play",
+                "playlist_id": message.playlist_id,
+                "playlist_index": message.index,
+            },
+        )
+
+    def _start_play(
+        self, video_id: str, title: str, subtitle: str, request: dict
+    ) -> None:
+        """Send one play request, skipping duplicates already on or in flight."""
+        if video_id == self._current_video_id or video_id == self._pending_play:
+            return
+        self._pending_play = video_id
         self.query_one(NowPlaying).set_track(title, subtitle)
         self.set_status("Resolving stream…")
-        self._play_request = request
-        self._play_worker = self.play_worker(request)
+        self.rpc_worker(request)
 
-    @work(thread=True, exit_on_error=False)
-    def play_worker(self, request: _PlayRequest) -> StreamInfo:
-        return request.resolve()
-
-    def _on_play_finished(self, worker: Worker[StreamInfo]) -> None:
-        request = self._play_request
-        if worker is not self._play_worker or request is None:
-            return
-        if worker.state is WorkerState.SUCCESS:
-            stream = worker.result
-            self._record_play(stream)
-            self.query_one(NowPlaying).set_track(
-                stream.title,
-                ", ".join(stream.artists) or "Unknown artist",
-                stream.duration,
-            )
-            if request.kind == "result":
-                self.set_status("Loading up-next queue…")
-                self._queue_worker = self.fetch_queue_worker(stream.video_id)
-            else:
-                self._refresh_queue()
-                self._prefetch_next()
-                self.set_status(f"Playing from {request.kind}")
-        else:
-            request.on_fail()
-            self.set_status("Playback failed")
-            self.notify(
-                f"Could not play: {worker.error}", title="Playback", severity="error"
-            )
-
-    def _cancel_queue_fetch(self) -> None:
-        if self._queue_worker is not None and self._queue_worker.is_running:
-            self._queue_worker.cancel()
-        self._queue_worker = None
-
-    @work(thread=True, exit_on_error=False)
-    def fetch_queue_worker(self, video_id: str) -> list[PlaylistTrack]:
-        return self.client.load_queue(video_id, radio=False)
-
-    def _on_queue_fetched(self, worker: Worker[list[PlaylistTrack]]) -> None:
-        if worker.state is WorkerState.SUCCESS:
-            self._refresh_queue()
-            self._prefetch_next()
-            self.set_status(
-                "Playing" if self.client.queue else "Playing — no up next available"
-            )
-        else:
-            self.set_status("Playing — queue unavailable")
-            self.notify(
-                f"Could not load the queue: {worker.error}",
-                title="Queue",
-                severity="warning",
-            )
-
-    def _prefetch_next(self) -> None:
-        """Background-download the next queued track so the transition is instant."""
-        if self.client.queue:
-            self.prefetch_worker(self.client.queue[0].video_id)
-
-    @work(thread=True, exit_on_error=False)
-    def prefetch_worker(self, video_id: str) -> None:
-        self.client.prefetch(video_id)
+    def _refresh_history(self) -> None:
+        self.query_one(HistoryList).set_tracks(self._history_store.recent(15))
 
     @work(thread=True, exit_on_error=False)
     def library_worker(self) -> list[LibraryPlaylist]:
@@ -531,22 +698,6 @@ class MusicTUI(App[None]):
                 title="Playlists",
                 severity="warning",
             )
-
-    @on(LibraryTree.TrackActivated)
-    def _on_playlist_track_activated(self, message: LibraryTree.TrackActivated) -> None:
-        track = message.track
-        self._start_play(
-            _PlayRequest(
-                track.video_id,
-                lambda: self.client.play_from_playlist(
-                    message.playlist_id, message.index
-                ),
-                "playlist",
-                on_fail=lambda: self._restore_queue(0, track),
-            ),
-            track.title,
-            " • ".join(track.artists),
-        )
 
     @on(AddToPlaylistRequested)
     def _on_add_to_playlist_requested(self, message: AddToPlaylistRequested) -> None:
@@ -656,147 +807,29 @@ class MusicTUI(App[None]):
             self._library_worker.cancel()
         self._library_worker = self.library_worker()
 
-    @on(QueueList.Selected)
-    def _on_queue_selected(self, event: QueueList.Selected) -> None:
-        self._play_queued_track(self.query_one(QueueList).track_at(event.index))
-
-    def _play_queued_track(self, track: PlaylistTrack | None) -> None:
-        """Play ``track`` from the queue, ignoring duplicates of the current request.
-
-        The track is looked up by video id rather than by the event index so a
-        double click on one row cannot pop a *different* track that shifted
-        into the same index after the first pop.
-        """
-        if track is None or self._play_pending(track.video_id):
-            return
-        for index, queued in enumerate(self.client.queue):
-            if queued.video_id == track.video_id:
-                del self.client.queue[index]
-                break
-        else:
-            return
-        self._start_play(
-            _PlayRequest(
-                track.video_id,
-                lambda: self.client.play_track(track),
-                "queue",
-                on_fail=lambda: self._restore_queue(index, track),
-            ),
-            track.title,
-            " • ".join(track.artists),
-        )
-
-    def _record_play(self, stream: StreamInfo) -> None:
-        """Persist the resolved track into play history."""
-        self.session.record(stream)
-        self._refresh_history()
-
-    def _refresh_history(self) -> None:
-        self.query_one(HistoryList).set_tracks(self._history_store.recent(15))
-
-    @on(HistoryList.Selected)
-    def _on_history_selected(self, event: HistoryList.Selected) -> None:
-        track = self.query_one(HistoryList).track_at(event.index)
-        if track is None or self._play_pending(track.video_id):
-            return
-        self._start_play(
-            _PlayRequest(
-                track.video_id,
-                lambda: self.client.play_video(track.video_id, track.title),
-                "result",
-            ),
-            track.title,
-            " • ".join(track.artists),
-        )
-
-    def _restore_queue(self, index: int, track: PlaylistTrack) -> None:
-        """Put ``track`` back in the queue after a failed play."""
-        self.client.queue.insert(index, track)
-        self._refresh_queue()
-
-    def _refresh_queue(self) -> None:
-        self.query_one(QueueList).set_tracks(self.client.queue)
-        self.query_one("#queue-count", Label).update(
-            f"{len(self.client.queue)} up next"
-        )
+    # ------------------------------------------------------------------
+    # Transport / settings actions → IPC workers.
+    # ------------------------------------------------------------------
 
     def action_next_track(self) -> None:
-        """Advance to the next track through the session engine.
+        """Advance to the next track; drop a second press while one is in flight.
 
-        Runs off the UI thread (a radio refill hits the network); a second
-        request while one is underway is dropped, or a double keypress would
-        skip a track.
+        The daemon also advances on track-end, so a queued double skip would
+        otherwise fire twice; the guard collapses a double press into one.
         """
-        if self._advance_worker is not None and self._advance_worker.state in (
-            WorkerState.PENDING,
-            WorkerState.RUNNING,
-        ):
+        if self._next_pending:
             return
-        self._advance_worker = self.advance_worker()
-
-    @work(thread=True, exit_on_error=False)
-    def advance_worker(self) -> PlaylistTrack | None:
-        return self.session.next_track()
-
-    def _on_advance_finished(self, worker: Worker[PlaylistTrack | None]) -> None:
-        if worker is not self._advance_worker:
-            return
-        if worker.state is WorkerState.SUCCESS:
-            stream = self.client.current
-            if worker.result is None or stream is None:
-                self._refresh_queue()
-                self.set_status("End of station")
-                return
-            self.query_one(NowPlaying).set_track(
-                stream.title,
-                ", ".join(stream.artists) or "Unknown artist",
-                stream.duration,
-            )
-            self._refresh_queue()
-            self._prefetch_next()
-            self.set_status("Playing from queue")
-        else:
-            self.set_status("Station unavailable")
-            self.notify(
-                f"Could not refill the queue: {worker.error}",
-                title="Queue",
-                severity="warning",
-            )
-
-    async def pump_platform(self) -> None:
-        """Pump the main NSRunLoop so the AVFoundation pipeline advances.
-
-        Runs on the app's main thread (asyncio task); the player requires the
-        main run loop to be serviced for playback to progress.
-        """
-        while True:
-            self.client.player.pump()
-            await asyncio.sleep(0.02)
-
-    def _on_player_eof(self) -> None:
-        if not self.is_running:
-            return
-        self.post_message(TrackEnded())
-
-    def on_track_ended(self) -> None:
-        self.client.current = None
-        if self.session.auto_next:
-            self.action_next_track()
-        else:
-            self.set_status("Track ended — auto next is off")
+        self._next_pending = True
+        self.rpc_worker({"cmd": "next"})
 
     def action_toggle_auto_next(self) -> None:
-        self.session.set_auto_next("toggle")
-        self._auto_next = self.session.auto_next
-        self.query_one(NowPlaying).set_modes(self._auto_next, self._loop_enabled)
+        self.state_worker({"cmd": "auto_next", "state": "toggle"})
 
     def action_toggle_loop(self) -> None:
-        self._loop_enabled = self.session.set_loop("toggle")
-        self.query_one(NowPlaying).set_modes(self._auto_next, self._loop_enabled)
+        self.state_worker({"cmd": "loop", "state": "toggle"})
 
     def action_toggle_playback(self) -> None:
-        if self.client.current is not None:
-            self.client.player.toggle()
+        self.rpc_worker({"cmd": "toggle"})
 
     def action_seek_forward(self) -> None:
         self._seek(5)
@@ -805,8 +838,7 @@ class MusicTUI(App[None]):
         self._seek(-5)
 
     def _seek(self, delta: int) -> None:
-        if self.client.current is not None:
-            self.client.player.seek_relative(delta)
+        self.rpc_worker({"cmd": "seek", "offset": delta})
 
     def action_volume_up(self) -> None:
         self._change_volume(5)
@@ -815,10 +847,10 @@ class MusicTUI(App[None]):
         self._change_volume(-5)
 
     def _change_volume(self, delta: int) -> None:
-        self.session.set_volume(delta=delta)
+        self.state_worker({"cmd": "volume", "delta": delta})
 
     def action_toggle_mute(self) -> None:
-        self.session.set_muted("toggle")
+        self.state_worker({"cmd": "mute", "state": "toggle"})
 
     def action_focus_search(self) -> None:
         self.query_one("#search-input", Input).focus()
@@ -857,13 +889,3 @@ class MusicTUI(App[None]):
 
     def set_status(self, text: str) -> None:
         self.query_one(NowPlaying).set_status(text)
-
-    def _tick(self) -> None:
-        player = self.client.player
-        now_playing = self.query_one(NowPlaying)
-        now_playing.set_progress(player.position, player.duration or 0.0)
-        now_playing.set_paused(
-            player.paused if self.client.current is not None else False
-        )
-        now_playing.set_volume(player.volume, player.muted)
-        now_playing.set_modes(self._auto_next, self._loop_enabled)
