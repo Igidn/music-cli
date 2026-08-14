@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from .history_list import HistoryList
 from .library_tree import LibraryTree
 from .messages import AddToPlaylistRequested
 from .now_playing import NowPlaying
@@ -15,6 +16,7 @@ __all__ = [
     "TYPE_COLORS",
     "AddToPlaylistRequested",
     "FilterSelect",
+    "HistoryList",
     "LibraryTree",
     "NowPlaying",
     "QueueList",

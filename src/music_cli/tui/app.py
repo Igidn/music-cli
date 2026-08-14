@@ -13,6 +13,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.message import Message
 from textual.timer import Timer
+from textual.widget import Widget
 from textual.widgets import Footer, Input, Label, Select
 from textual.worker import Worker, WorkerState
 
@@ -33,6 +34,7 @@ from music_cli.yt.search import SearchFilter, SearchResult
 from .components import (
     AddToPlaylistRequested,
     FilterSelect,
+    HistoryList,
     LibraryTree,
     NowPlaying,
     QueueList,
@@ -92,7 +94,8 @@ class MusicTUI(App[None]):
         },
         "results": {"left": "playlist-pane", "right": "queue-pane"},
         "queue-pane": {"left": "results"},
-        "playlist-pane": {"right": "results"},
+        "library-tree": {"right": "results", "down": "history-pane"},
+        "history-pane": {"right": "results", "up": "library-tree"},
     }
 
     BINDINGS: ClassVar[list[Binding]] = [
@@ -149,6 +152,7 @@ class MusicTUI(App[None]):
                 "(run 'music-cli login' in a terminal, or pass --cookies)"
             )
         self._apply_saved_settings()
+        self._refresh_history()
         self._resume_last_track()
 
     def _apply_saved_settings(self) -> None:
@@ -176,7 +180,9 @@ class MusicTUI(App[None]):
     def compose(self) -> ComposeResult:
         yield TopBar()
         with Horizontal(id="body"):
-            yield LibraryTree("Library", id="playlist-pane")
+            with Vertical(id="playlist-pane"):
+                yield LibraryTree("Library", id="library-tree")
+                yield HistoryList(id="history-pane")
             with Vertical(id="results-pane"):
                 with Horizontal(id="search-box"):
                     yield SearchInput(
@@ -610,6 +616,25 @@ class MusicTUI(App[None]):
                 duration=stream.duration,
             )
         )
+        self._refresh_history()
+
+    def _refresh_history(self) -> None:
+        self.query_one(HistoryList).set_tracks(self._history_store.recent(15))
+
+    @on(HistoryList.Selected)
+    def _on_history_selected(self, event: HistoryList.Selected) -> None:
+        track = self.query_one(HistoryList).track_at(event.index)
+        if track is None or self._play_pending(track.video_id):
+            return
+        self._start_play(
+            _PlayRequest(
+                track.video_id,
+                lambda: self.client.play_video(track.video_id, track.title),
+                "result",
+            ),
+            track.title,
+            " • ".join(track.artists),
+        )
 
     def _restore_queue(self, index: int, track: PlaylistTrack) -> None:
         """Put ``track`` back in the queue after a failed play."""
@@ -735,16 +760,17 @@ class MusicTUI(App[None]):
         if focused is None:
             return
         target = self.PANE_NAV.get(focused.id, {}).get(direction)
-        if target is not None:
-            widget = self.query_one(f"#{target}")
-            if widget.display:
-                widget.focus()
-                if (
-                    direction == "up"
-                    and isinstance(widget, ResultsTable)
-                    and widget.row_count
-                ):
-                    widget.move_cursor(row=widget.row_count - 1)
+        if target is None:
+            return
+        widget = self.query_one(f"#{target}")
+        if not widget.display:
+            return
+        # Panes may be containers (e.g. #playlist-pane); sink to their first
+        # focusable child.
+        child = next((c for c in widget.walk_children(Widget) if c.focusable), widget)
+        child.focus()
+        if direction == "up" and isinstance(child, ResultsTable) and child.row_count:
+            child.move_cursor(row=child.row_count - 1)
 
     def set_status(self, text: str) -> None:
         self.query_one(NowPlaying).set_status(text)

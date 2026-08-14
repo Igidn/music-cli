@@ -80,7 +80,7 @@ TopBar {
     background: $surface;
 }
 
-#playlist-pane:focus {
+#playlist-pane:focus-within {
     border-top: solid $accent;
     border-right: solid $accent;
 }
@@ -104,6 +104,32 @@ LibraryTree:focus > .tree--cursor {
     background: $accent;
     color: #0d1117;
     text-style: bold;
+}
+
+HistoryList {
+    height: 8;
+    border-top: solid $border-soft;
+    border-title-color: $accent;
+    border-title-style: bold;
+    background: $surface;
+}
+
+HistoryList > ListItem {
+    height: 2;
+    padding: 0 1;
+    overflow: hidden hidden;
+}
+
+HistoryList > ListItem.-highlight {
+    background: $accent;
+}
+
+HistoryList > ListItem.-highlight .queue-title {
+    color: #0d1117;
+}
+
+HistoryList > ListItem.-highlight .queue-subtitle {
+    color: #1c2432;
 }
 
 #search-box {

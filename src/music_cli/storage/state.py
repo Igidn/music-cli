@@ -96,6 +96,18 @@ class PlayHistoryStore:
         ).fetchall()
         return [self._from_row(row) for row in rows]
 
+    def recent(self, limit: int = 15) -> list[PlayedTrack]:
+        """The most recently played tracks, newest first.
+
+        One row per track (``record`` upserts on ``video_id``), so this is
+        already deduplicated — a repeated track simply moves to the top.
+        """
+        rows = self._ensure_open().execute(
+            "SELECT * FROM play_history ORDER BY last_played DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [self._from_row(row) for row in rows]
+
     def close(self) -> None:
         if self._conn is not None:
             self._conn.close()

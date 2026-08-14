@@ -7,6 +7,8 @@ async scenario with ``asyncio.run`` so no async pytest plugin is needed.
 from __future__ import annotations
 
 import asyncio
+import os
+import tempfile
 import threading
 
 from music_cli.client import MusicClient
@@ -261,7 +263,7 @@ def test_arrow_key_pane_navigation():
             await pilot.press("left")
             assert app.focused is results
 
-            playlist = app.query_one("#playlist-pane")
+            playlist = app.query_one("#library-tree")
             await pilot.press("left")
             assert app.focused is playlist
             await pilot.press("right")
@@ -613,7 +615,7 @@ def test_library_tree_renders_playlists():
             for _ in range(10):
                 await pilot.pause()
             tree = app.query_one(LibraryTree)
-            assert tree.id == "playlist-pane"
+            assert tree.id == "library-tree"
             assert tree.can_focus
             playlists = list(tree.root.children)
             assert [node.data["kind"] for node in playlists] == ["playlist", "playlist"]
@@ -704,14 +706,14 @@ def test_library_tree_activates_track_plays_and_queues_playlist():
 
 def test_narrow_layout_hides_side_panes():
     from music_cli.tui.app import MusicTUI
-    from music_cli.tui.components import LibraryTree, ResultsTable
+    from music_cli.tui.components import ResultsTable
 
     async def scenario():
         client = make_client()
         app = MusicTUI(client)
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            playlist = app.query_one(LibraryTree)
+            playlist = app.query_one("#playlist-pane")
             queue = app.query_one("#queue-pane")
             assert not app.screen.has_class("-narrow")
             assert queue.display and playlist.display
@@ -1138,5 +1140,61 @@ def test_playlist_keybinds_hidden_when_unauthenticated():
             bindings = app.screen.active_bindings
             assert "c" not in bindings and "r" not in bindings
             assert "s" not in bindings and "d" not in bindings
+
+    _run(scenario())
+
+
+def test_history_panel_renders_dedups_and_plays():
+    from music_cli.storage.state import PlayHistoryStore
+    from music_cli.tui.app import MusicTUI
+    from music_cli.tui.components import HistoryList, LibraryTree, ResultsTable
+
+    async def scenario():
+        client = make_client()
+        app = MusicTUI(
+            client,
+            history_store=PlayHistoryStore(os.path.join(tempfile.mkdtemp(), "h.db")),
+        )
+        async with app.run_test(size=(120, 40)) as pilot:
+            for _ in range(10):
+                await pilot.pause()
+            history = app.query_one(HistoryList)
+            assert history.index is None  # empty until something is played
+
+            search = app.query_one("#search-input")
+            search.value = "songs"
+            await pilot.pause(0.6)
+            results = app.query_one(ResultsTable)
+
+            # Play three distinct results, then repeat the first -> deduped, moved to top.
+            for i in ("v0", "v1", "v2"):
+                app.play_result(results._results[i])
+                await pilot.pause()
+                await pilot.pause()
+            app.play_result(results._results["v0"])
+            await pilot.pause()
+            await pilot.pause()
+
+            assert len(history._tracks) == 3
+            assert history._tracks[0].video_id == "v0"
+            assert history.track_at(0).video_id == "v0"
+
+            # Arrow down from the bottom of the playlist tree enters history.
+            tree = app.query_one(LibraryTree)
+            tree.focus()
+            tree.move_cursor_to_line(tree.last_line)
+            await pilot.pause()
+            await pilot.press("down")
+            assert app.focused is history
+
+            # Selecting a history row replays it (newest-first: row 1 = v2).
+            selected = history.track_at(1).video_id
+            app.query_one(HistoryList).focus()
+            history.index = 1
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+            await pilot.pause()
+            assert selected in [p.video_id for p in client.player.played[-3:]]
 
     _run(scenario())

@@ -149,6 +149,15 @@ class LibraryTree(Tree[dict[str, Any] | None], inherit_bindings=False):
         node.collapse()
         self.refresh_bindings()
 
+    def action_cursor_down(self) -> None:
+        """Hand off to the history panel when the cursor sits on the last line."""
+        if self.cursor_line >= self.last_line:
+            history = self.app.query_one("#history-pane")
+            if history.display:
+                history.focus()
+            return
+        super().action_cursor_down()
+
     def action_activate(self) -> None:
         """Expand/play the cursor node: branch toggles, leaf track plays."""
         node = self.cursor_node
