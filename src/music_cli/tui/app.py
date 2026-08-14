@@ -553,7 +553,8 @@ class MusicTUI(App[None]):
         now_playing.set_progress(
             status.get("position", 0.0), status.get("duration") or 0.0
         )
-        now_playing.set_paused(state == "paused")
+        if track is not None:
+            now_playing.set_paused(state == "paused")
         self._volume = int(status.get("volume", self._volume))
         self._muted = bool(status.get("muted", self._muted))
         now_playing.set_volume(self._volume, self._muted)
@@ -609,7 +610,10 @@ class MusicTUI(App[None]):
             {"cmd": "play", "video_id": video_id, "title": title},
         )
 
-    @on(QueueList.Selected)
+    # QueueList.Selected and HistoryList.Selected are the same inherited
+    # ListView.Selected class: scope each handler by selector or a selection
+    # in one list would fire a play for the same row in the other.
+    @on(QueueList.Selected, "#queue-pane")
     def _on_queue_selected(self, event: QueueList.Selected) -> None:
         track = self.query_one(QueueList).track_at(event.index)
         if track is None:
@@ -621,7 +625,7 @@ class MusicTUI(App[None]):
             {"cmd": "play", "queue_index": event.index},
         )
 
-    @on(HistoryList.Selected)
+    @on(HistoryList.Selected, "#history-pane")
     def _on_history_selected(self, event: HistoryList.Selected) -> None:
         track = self.query_one(HistoryList).track_at(event.index)
         if track is None:

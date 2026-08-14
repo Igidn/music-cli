@@ -558,6 +558,52 @@ def test_history_select_sends_play_request(monkeypatch):
     _run(scenario())
 
 
+def test_list_selection_plays_only_the_clicked_pane_track(monkeypatch):
+    """A history selection must not also play the queue row at the same index.
+
+    QueueList and HistoryList share the inherited ``ListView.Selected``
+    message class; without a CSS selector the app's ``@on`` handlers both
+    fire for either list, so clicking history row i also fired
+    ``play queue_index=i`` — the daemon resolved, played and recorded that
+    up-next track before the requested one. Same for a queue click firing a
+    history play.
+    """
+    from music_cli.storage.state import PlayedTrack, PlayHistoryStore
+    from music_cli.tui.app import MusicTUI
+    from music_cli.tui.components import HistoryList, QueueList
+
+    fake = install_daemon(monkeypatch)
+
+    async def scenario():
+        store = PlayHistoryStore(os.path.join(tempfile.mkdtemp(), "h.db"))
+        store.record(PlayedTrack("h1", "History One", ("A",)))
+        store.record(PlayedTrack("h2", "History Two", ("B",)))
+        app = MusicTUI(make_client(), history_store=store)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _settle(pilot, 8)
+            _push(app, STATUS)  # populates the up-next queue (q1, q2)
+            await _settle(pilot)
+            history = app.query_one(HistoryList)
+            # Real dispatch: the Selected message bubbles to the app.
+            history.post_message(HistoryList.Selected(history, None, index=0))
+            await _settle(pilot, 8)
+
+            plays = [r for r in fake.requests if r["cmd"] == "play"]
+            assert len(plays) == 1
+            assert plays[0]["video_id"] == "h2"
+
+            queue = app.query_one(QueueList)
+            queue.post_message(QueueList.Selected(queue, None, index=0))
+            await _settle(pilot, 8)
+
+            plays = [r for r in fake.requests if r["cmd"] == "play"]
+            assert len(plays) == 2
+            assert plays[1].get("queue_index") == 0
+            assert "video_id" not in plays[1]
+
+    _run(scenario())
+
+
 def test_in_flight_play_ignores_stale_track_status(monkeypatch):
     """A per-track push for a different track must not flash while play is pending.
 
@@ -813,6 +859,7 @@ def test_idle_status_shows_last_played_track(monkeypatch):
             _push(app, IDLE_STATUS)  # daemon idle event would previously wipe the bar
             np = app.query_one(NowPlaying)
             assert str(np.query_one("#np-title").content) == "Last Track"
+            assert str(np.query_one("#np-icon").content) == "⏸"
 
     _run(scenario())
 

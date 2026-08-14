@@ -501,6 +501,43 @@ class TestAVFoundationPlayer:
         player._on_item_ended(None)
         assert player.eof_reached
 
+    def test_stale_end_notification_from_replaced_item_is_ignored(self):
+        """Replacing the current item must not register the old item's end.
+
+        The previous item's DidPlayToEndTime can be delivered late (queued on
+        the run loop before _unobserve ran, fired by the next pump()). Without
+        a guard it would auto-advance past the track just requested — the
+        up-next head flashing as current and landing in the play history.
+        """
+        ended = threading.Event()
+        player = AVFoundationPlayer(
+            on_track_end=ended.set,
+            player_factory=lambda: FakeAVPlayer(),
+            fetch_stream=_local,
+        )
+        player.play(StreamInfo(video_id="old", title="Old", stream_url="https://u"))
+        old_item = player._current_item
+        # User switches: a new item replaces the old one before the old item's
+        # end notification is delivered.
+        player.play(StreamInfo(video_id="new", title="New", stream_url="https://u"))
+        assert player._current_item is not old_item
+
+        class _Note:
+            def __init__(self, obj):
+                self._obj = obj
+
+            def object(self):
+                return self._obj
+
+        # The stale notification for the replaced item must be ignored.
+        player._on_item_ended(_Note(old_item))
+        assert not player.eof_reached
+        assert not ended.is_set()
+        # A real end of the current item still registers.
+        player._on_item_ended(_Note(player._current_item))
+        assert player.eof_reached
+        assert ended.is_set()
+
     def test_loop_property_defaults_off(self):
         player = AVFoundationPlayer(player_factory=lambda: FakeAVPlayer())
         assert player.loop is False

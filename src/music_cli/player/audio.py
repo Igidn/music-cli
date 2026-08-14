@@ -290,6 +290,15 @@ class AVFoundationPlayer:
         self.seek(self.position + delta)
 
     def _on_item_ended(self, notification: Any) -> None:
+        # A replaced item's end notification can be delivered late: it was
+        # already queued on the run loop when _unobserve ran, and the next
+        # pump() (during the replacement track's start) fires it. Ignore it —
+        # that track is no longer current, so this is not a real track end.
+        ended_item = getattr(notification, "object", None)
+        if callable(ended_item):  # PyObjC exposes .object as a method
+            ended_item = ended_item()
+        if ended_item is not None and ended_item is not self._current_item:
+            return
         if self._loop:
             self._player.seekToTime_toleranceBefore_toleranceAfter_(
                 kCMTimeZero, kCMTimeZero, kCMTimeZero
