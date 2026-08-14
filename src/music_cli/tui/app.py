@@ -55,6 +55,34 @@ SEARCH_FILTERS: list[tuple[str, SearchFilter | None]] = [
     ("Playlists", "playlists"),
 ]
 
+# GitHub Dark palette, as a switchable Textual theme.
+GITHUB_THEME = Theme(
+    name="github-dark",
+    primary="#58a6ff",
+    secondary="#7ee787",
+    accent="#58a6ff",
+    foreground="#c9d1d9",
+    background="#0d1117",
+    surface="#161b22",
+    warning="#d29922",
+    error="#f85149",
+    dark=True,
+    variables={
+        "border": "#30363d",
+        "border-blurred": "#21262d",
+        "text-muted": "#8b949e",
+        "accent-lighten-1": "#79c0ff",
+        "surface-lighten-1": "#1c2128",
+        "scrollbar": "#30363d",
+        "scrollbar-hover": "#484f58",
+        "scrollbar-active": "#58a6ff",
+        "scrollbar-background": "#161b22",
+        "scrollbar-background-hover": "#1c2128",
+        "scrollbar-background-active": "#1c2128",
+        "scrollbar-corner-color": "#0d1117",
+    },
+)
+
 # The app's original palette, as a switchable Textual theme (the default).
 # Other themes come from Textual's built-ins via Ctrl+P → "Theme".
 MUSIC_CLI_THEME = Theme(
@@ -172,6 +200,7 @@ class MusicTUI(App[None]):
         self._last_video_id: str = ""
         self._auto_next = True
         self._loop_enabled = False
+        self.register_theme(GITHUB_THEME)
         self.register_theme(MUSIC_CLI_THEME)
         saved_theme = self._settings_store.get(SETTING_THEME)
         self.theme = (
