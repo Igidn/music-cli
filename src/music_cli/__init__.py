@@ -80,9 +80,7 @@ def build_client(args: argparse.Namespace) -> MusicClient:
     if size_mb is None:
         size_mb = int(os.environ.get("MUSIC_CLI_CACHE_SIZE_MB") or "2048")
     cache = AudioCache(max_size=size_mb * 1024 * 1024)
-    return MusicClient(
-        cookies=cookies, volume=args.volume, cache=cache
-    )
+    return MusicClient(cookies=cookies, volume=args.volume, cache=cache)
 
 
 def main() -> None:
@@ -103,8 +101,10 @@ def main() -> None:
     except PlayerError as error:
         print(f"music-cli: {error}", file=sys.stderr)
         sys.exit(1)
+    from . import ipc
     from .tui.app import MusicTUI
 
+    ipc.ensure_daemon(None, args.volume)
     MusicTUI(client).run()
 
 

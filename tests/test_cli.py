@@ -1,9 +1,6 @@
 from __future__ import annotations
 
 import json
-import subprocess
-import sys
-import time
 
 import pytest
 
@@ -72,7 +69,9 @@ class FakeDaemon:
 @pytest.fixture
 def daemon(monkeypatch):
     fake = FakeDaemon()
-    monkeypatch.setattr(cli, "ensure_daemon", lambda args: None)
+    monkeypatch.setattr(
+        ipc, "ensure_daemon", lambda cookies=None, volume=None: None, raising=False
+    )
     monkeypatch.setattr(ipc, "send_request", fake.send)
     return fake
 
@@ -241,7 +240,12 @@ class TestDaemonCommands:
 
     def test_play_starts_the_daemon(self, monkeypatch):
         calls = []
-        monkeypatch.setattr(cli, "ensure_daemon", lambda args: calls.append(args))
+        monkeypatch.setattr(
+            ipc,
+            "ensure_daemon",
+            lambda cookies=None, volume=None: calls.append(cookies),
+            raising=False,
+        )
         fake = FakeDaemon()
         monkeypatch.setattr(ipc, "send_request", fake.send)
         assert cli.run(parse("play", "x")) == 0
@@ -267,7 +271,7 @@ class TestDaemonCommands:
         assert "Nothing is playing" in capsys.readouterr().out
 
     def test_stop(self, daemon, capsys):
-        daemon.data = None  # the real daemon answers stop with data=None
+        daemon.data = {"state": "stopped", "track": None}
         assert cli.run(parse("stop")) == 0
         assert daemon.requests == [{"cmd": "stop"}]
         assert "Stopped" in capsys.readouterr().out
@@ -354,48 +358,60 @@ class TestDaemonCommands:
         def dead(request, timeout=30.0):
             raise PlayerError("the daemon is not running")
 
+        monkeypatch.setattr(
+            ipc, "ensure_daemon", lambda cookies=None, volume=None: None, raising=False
+        )
         monkeypatch.setattr(ipc, "send_request", dead)
         assert cli.run(parse("status")) == 1
         assert "not running" in capsys.readouterr().err
 
 
-class TestEnsureDaemon:
-    def test_noop_when_daemon_answers(self, monkeypatch):
-        monkeypatch.setattr(
-            ipc, "send_request", lambda request, timeout=30.0: {"ok": True}
-        )
-        spawned = []
-        monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: spawned.append(a[0]))
-        cli.ensure_daemon(parse("play", "x"))
-        assert spawned == []
+class TestEnsureBeforeCommands:
+    """Every daemon-backed command respawns the daemon before sending."""
 
-    def test_spawns_and_waits(self, monkeypatch):
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            ("pause",),
+            ("toggle",),
+            ("next",),
+            ("stop",),
+            ("seek", "90"),
+            ("volume", "65"),
+            ("mute", "on"),
+            ("loop", "off"),
+            ("auto-next", "on"),
+            ("status",),
+            ("queue",),
+        ],
+    )
+    def test_ensures_then_sends(self, monkeypatch, argv):
+        fake = FakeDaemon()
+        if argv[0] == "queue":
+            fake.data = STATUS["queue"]
         calls = []
+        monkeypatch.setattr(
+            ipc,
+            "ensure_daemon",
+            lambda cookies=None, volume=None: calls.append(cookies),
+            raising=False,
+        )
+        monkeypatch.setattr(ipc, "send_request", fake.send)
+        assert cli.run(parse(*argv)) == 0
+        assert len(calls) == 1
 
-        def send(request, timeout=30.0):
-            calls.append(request)
-            if len(calls) < 3:
-                raise PlayerError("not running")
-            return {"ok": True, "data": {}}
-
-        spawned = []
-        monkeypatch.setattr(ipc, "send_request", send)
-        monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: spawned.append(a[0]))
-        monkeypatch.setattr(time, "sleep", lambda seconds: None)
-        cli.ensure_daemon(parse("play", "x"))
-        assert spawned == [[sys.executable, "-m", "music_cli.daemon"]]
-
-    def test_times_out(self, monkeypatch):
-        def dead(request, timeout=30.0):
-            raise PlayerError("not running")
-
-        monkeypatch.setattr(ipc, "send_request", dead)
-        monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: None)
-        monkeypatch.setattr(time, "sleep", lambda seconds: None)
-        ticks = iter([0.0, 0.0, 5.0, 11.0])
-        monkeypatch.setattr(time, "monotonic", lambda: next(ticks, 12.0))
-        with pytest.raises(PlayerError, match="did not start"):
-            cli.ensure_daemon(parse("play", "x"))
+    def test_resume_ensures(self, monkeypatch):
+        fake = FakeDaemon()
+        calls = []
+        monkeypatch.setattr(
+            ipc,
+            "ensure_daemon",
+            lambda cookies=None, volume=None: calls.append(cookies),
+            raising=False,
+        )
+        monkeypatch.setattr(ipc, "send_request", fake.send)
+        assert cli.run(parse("resume")) == 0
+        assert len(calls) == 1
 
 
 class TestSearch:

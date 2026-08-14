@@ -9,9 +9,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import subprocess
-import sys
-import time
 from typing import Any
 
 from rich.console import Console
@@ -144,32 +141,9 @@ def run(args: argparse.Namespace) -> int:
         return 1
 
 
-def ensure_daemon(args: argparse.Namespace) -> None:
-    """Start the playback daemon in the background unless it already answers."""
-    try:
-        ipc.send_request({"cmd": "status"}, timeout=1.0)
-        return
-    except PlayerError:
-        pass
-    command = [sys.executable, "-m", "music_cli.daemon"]
-    cookies = getattr(args, "cookies", None)
-    if cookies:
-        command += ["--cookies", cookies]
-    subprocess.Popen(  # noqa: S603 — argv is fixed, no user input
-        command,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-    )
-    deadline = time.monotonic() + 10
-    while time.monotonic() < deadline:
-        try:
-            ipc.send_request({"cmd": "status"}, timeout=1.0)
-            return
-        except PlayerError:
-            time.sleep(0.1)
-    raise PlayerError("the daemon did not start")
+def _ensure_daemon(args: argparse.Namespace) -> None:
+    """Ensure the background daemon is up, spawning it if it idle-exited."""
+    ipc.ensure_daemon(getattr(args, "cookies", None), getattr(args, "volume", None))
 
 
 def _add_json(parser: argparse.ArgumentParser) -> None:
@@ -264,7 +238,7 @@ def _cmd_play(args: argparse.Namespace) -> int:
         request["auto_next"] = args.auto_next
     if args.play_volume is not None:
         request["volume"] = args.play_volume
-    ensure_daemon(args)
+    _ensure_daemon(args)
     # Stream resolution and a possible download happen before the daemon answers,
     # so surface that with a spinner instead of silently blocking.
     with _console.status("Resolving stream…", spinner="dots"):
@@ -277,7 +251,7 @@ def _cmd_play(args: argparse.Namespace) -> int:
 
 def _cmd_resume(args: argparse.Namespace) -> int:
     """resume a paused track, or start the daemon and replay the last track."""
-    ensure_daemon(args)
+    _ensure_daemon(args)
     # resume may fall back to replaying the last track, which re-resolves its stream.
     with _console.status("Resolving stream…", spinner="dots"):
         data = _send(args, {"cmd": "resume"})
@@ -289,6 +263,7 @@ def _cmd_resume(args: argparse.Namespace) -> int:
 
 def _cmd_transport(args: argparse.Namespace) -> int:
     """pause/toggle: confirm with the resulting now-playing line."""
+    _ensure_daemon(args)
     data = _send(args, {"cmd": args.command})
     if data is None:
         return 1
@@ -298,6 +273,7 @@ def _cmd_transport(args: argparse.Namespace) -> int:
 
 def _cmd_next(args: argparse.Namespace) -> int:
     """next: skip to the next queued track, resolving its stream first."""
+    _ensure_daemon(args)
     with _console.status("Resolving next track…", spinner="dots"):
         data = _send(args, {"cmd": "next"})
     if data is None:
@@ -307,11 +283,9 @@ def _cmd_next(args: argparse.Namespace) -> int:
 
 
 def _cmd_stop(args: argparse.Namespace) -> int:
-    # stop's payload is data=None, so check the response itself, not _send.
-    response = ipc.send_request({"cmd": "stop"})
-    if not response.get("ok"):
-        error = response.get("error", "unknown error")
-        _errors.print(f"music-cli: {error}", style="bold red")
+    """stop: halt playback but leave the daemon alive to idle-exit."""
+    _ensure_daemon(args)
+    if _send(args, {"cmd": "stop"}) is None:
         return 1
     _console.print("Stopped")
     return 0
@@ -319,6 +293,7 @@ def _cmd_stop(args: argparse.Namespace) -> int:
 
 def _cmd_seek(args: argparse.Namespace) -> int:
     key, number = args.value
+    _ensure_daemon(args)
     data = _send(args, {"cmd": "seek", key: number})
     if data is None:
         return 1
@@ -329,6 +304,7 @@ def _cmd_seek(args: argparse.Namespace) -> int:
 
 def _cmd_volume(args: argparse.Namespace) -> int:
     key, number = args.value
+    _ensure_daemon(args)
     data = _send(args, {"cmd": "volume", key: number})
     if data is None:
         return 1
@@ -346,6 +322,7 @@ _STATE_LABELS = {
 def _cmd_state(args: argparse.Namespace) -> int:
     key, on_label, off_label, name = _STATE_LABELS[args.command]
     cmd = "auto_next" if args.command == "auto-next" else args.command
+    _ensure_daemon(args)
     data = _send(args, {"cmd": cmd, "state": args.state})
     if data is None:
         return 1
@@ -365,6 +342,7 @@ def _cmd_state(args: argparse.Namespace) -> int:
 
 
 def _cmd_status(args: argparse.Namespace) -> int:
+    _ensure_daemon(args)
     data = _send(args, {"cmd": "status"})
     if data is None:
         return 1
@@ -384,6 +362,7 @@ def _cmd_status(args: argparse.Namespace) -> int:
 
 
 def _cmd_queue(args: argparse.Namespace) -> int:
+    _ensure_daemon(args)
     tracks = _send(args, {"cmd": "queue"})
     if tracks is None:
         return 1

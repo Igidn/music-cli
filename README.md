@@ -65,15 +65,18 @@ from its playlist. These keys appear in the footer only when they apply.
 
 ## CLI
 
-Playback commands talk to a background daemon over a control socket;
-`play` starts it automatically. `status`, `queue`, `search`, `playlists`
-and `history` accept `--json` for machine-readable output.
+Playback commands talk to a background daemon over a control socket. The
+daemon is not an always-on service: any `music-cli` command that touches
+playback (or opening the TUI) starts it on demand, and it exits automatically
+after roughly 30 seconds of idle. `status`, `queue`, `search`,
+`playlists` and `history` accept `--json` for machine-readable output.
 
 ```sh
 music-cli play "never gonna give you up"   # search and play
 music-cli play --video-id dQw4w9WgXcQ      # play a video id
 music-cli play --playlist PL... [--loop] [--no-auto-next] [--volume 65]
-music-cli pause|resume|toggle|next|stop    # transport
+music-cli pause|resume|toggle|next|stop    # transport; stop halts playback
+                                           # and the daemon exits on its own
 music-cli seek +30 | seek -10 | seek 90    # forward / back / absolute
 music-cli volume 65 | volume +5            # absolute / relative
 music-cli mute on|off|toggle               # also: loop, auto-next
