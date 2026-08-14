@@ -1172,6 +1172,11 @@ def test_waveform_widget_tracks_playback_state(monkeypatch):
             assert len(idle.plain.splitlines()) == waveform.size.height
 
             np.set_track("Title", "Artist", 213.0)
+            assert not waveform._active
+            # The waveform stays flat until playback actually starts.
+            await pilot.pause(0.3)
+            assert "▁" in waveform.render().plain
+            np.set_progress(0.5, 213.0)
             assert waveform._active
             await pilot.pause(0.3)
             animated = waveform.render()

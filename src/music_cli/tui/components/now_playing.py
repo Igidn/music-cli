@@ -23,6 +23,7 @@ class NowPlaying(Widget):
         self._paused = False
         self._duration: float = 0.0
         self._position: float = 0.0
+        self._waveform_started = False
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="np-head"):
@@ -54,11 +55,12 @@ class NowPlaying(Widget):
         self.query_one("#np-title", Static).update(title)
         self.query_one("#np-subtitle", Static).update(subtitle)
         self._has_track = True
+        self._waveform_started = False
         if duration:
             self._duration = float(duration)
         waveform = self.query_one(Waveform)
         waveform.set_seed(f"{title} — {subtitle}")
-        waveform.set_active(True)
+        waveform.set_active(False)
         waveform.set_paused(self._paused)
         self._render_icon()
         self._render_time()
@@ -68,6 +70,7 @@ class NowPlaying(Widget):
         self._paused = False
         self._duration = 0.0
         self._position = 0.0
+        self._waveform_started = False
         self.query_one("#np-title", Static).update("Nothing playing")
         self.query_one("#np-subtitle", Static).update(
             "Type to search, or press / to focus the search box"
@@ -84,6 +87,12 @@ class NowPlaying(Widget):
         self.query_one(Waveform).set_paused(paused)
 
     def set_progress(self, position: float, duration: float) -> None:
+        # Keep the waveform flat (idle) until playback actually moves: while
+        # a track loads or is otherwise silent, position sits at 0, so the
+        # bars stay down instead of dancing to nothing.
+        if position > 0 and not self._waveform_started:
+            self._waveform_started = True
+            self.query_one(Waveform).set_active(True)
         self._position = max(0.0, position)
         if duration:
             self._duration = duration
