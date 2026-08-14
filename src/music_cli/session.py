@@ -157,6 +157,11 @@ class PlaybackSession:
         self.client.player.resume()
 
     def toggle(self) -> None:
+        if self.client.current is None:
+            # Nothing loaded: resume the last history track, same as `resume`.
+            if self.resume_last() is None:
+                return  # nothing to play; stays idle
+            return
         self.client.player.toggle()
 
     def seek(

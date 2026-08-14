@@ -311,12 +311,20 @@ class TestNextTrack:
 
 class TestControls:
     def test_transport_passthroughs(self, client, session):
+        client.current = StreamInfo(video_id="v0", title="T", stream_url="u")
         session.pause()
         assert client.player.paused is True
         session.resume()
         assert client.player.paused is False
         session.toggle()
         assert client.player.paused is True
+
+    def test_toggle_resumes_last_track_when_idle(self, client, session, history):
+        history.record(PlayedTrack(video_id="old", title="Old"))
+        client.current = None
+        session.toggle()
+        assert client.player.played[-1].video_id == "old"
+        assert client.player.paused is False
 
     def test_seek_offset_and_position(self, client, session):
         client.current = StreamInfo(video_id="v0", title="T", stream_url="u")

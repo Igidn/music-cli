@@ -702,7 +702,7 @@ def test_track_change_refreshes_history(monkeypatch):
 
 def test_idle_status_shows_last_played_track(monkeypatch):
     """An idle daemon (track=None) shows the last history track, not a blank bar."""
-    from music_cli.storage.state import PlayHistoryStore, PlayedTrack
+    from music_cli.storage.state import PlayedTrack, PlayHistoryStore
     from music_cli.tui.app import MusicTUI
     from music_cli.tui.components.now_playing import NowPlaying
 
