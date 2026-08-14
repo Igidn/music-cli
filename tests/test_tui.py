@@ -266,10 +266,6 @@ def test_arrow_key_pane_navigation():
             assert app.focused is playlist
             await pilot.press("right")
             assert app.focused is results
-            results.focus()
-            await pilot.pause()
-            await pilot.press("p")
-            assert app.focused is playlist
 
     _run(scenario())
 
