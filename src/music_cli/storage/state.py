@@ -29,6 +29,7 @@ SETTING_VOLUME = "volume"
 SETTING_MUTED = "muted"
 SETTING_LOOP = "loop"
 SETTING_AUTO_NEXT = "auto_next"
+SETTING_THEME = "theme"
 
 
 @dataclass(frozen=True)

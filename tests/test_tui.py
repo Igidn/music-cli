@@ -273,6 +273,40 @@ def test_arrow_key_pane_navigation():
     _run(scenario())
 
 
+def test_theme_switch_restyles_and_persists():
+    """Switching themes (Ctrl+P → Theme) recolors the UI and is saved."""
+    from music_cli.storage.state import SETTING_THEME
+    from music_cli.tui.app import MUSIC_CLI_THEME, MusicTUI
+
+    async def scenario():
+        app = MusicTUI(make_client())
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            assert app.theme == MUSIC_CLI_THEME.name
+            bg = app.screen.styles.background
+            app.theme = "tokyo-night"
+            await pilot.pause()
+            await pilot.pause()
+            assert app.screen.styles.background != bg
+            assert app._settings_store.get(SETTING_THEME) == "tokyo-night"
+
+    _run(scenario())
+
+
+def test_theme_restored_from_settings():
+    """A theme saved by a previous run wins over the built-in default."""
+    from music_cli.tui.app import MusicTUI
+
+    async def scenario():
+        app = MusicTUI(make_client())
+        async with app.run_test(size=(120, 40)):
+            app.theme = "nord"
+        restored = MusicTUI(make_client())
+        assert restored.theme == "nord"
+
+    _run(scenario())
+
+
 def test_tui_search_play_queue_and_next():
     from music_cli.tui.app import MusicTUI
     from music_cli.tui.components import QueueList, ResultsTable

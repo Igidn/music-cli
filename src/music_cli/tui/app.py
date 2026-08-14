@@ -12,6 +12,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.message import Message
+from textual.theme import Theme
 from textual.timer import Timer
 from textual.widget import Widget
 from textual.widgets import Footer, Input, Label, Select
@@ -22,6 +23,7 @@ from music_cli.storage.state import (
     SETTING_AUTO_NEXT,
     SETTING_LOOP,
     SETTING_MUTED,
+    SETTING_THEME,
     SETTING_VOLUME,
     PlayedTrack,
     PlayHistoryStore,
@@ -52,6 +54,37 @@ SEARCH_FILTERS: list[tuple[str, SearchFilter | None]] = [
     ("Artists", "artists"),
     ("Playlists", "playlists"),
 ]
+
+# The app's original palette, as a switchable Textual theme (the default).
+# Other themes come from Textual's built-ins via Ctrl+P → "Theme".
+MUSIC_CLI_THEME = Theme(
+    name="music-cli",
+    primary="#a78bfa",
+    secondary="#67e8f9",
+    accent="#a78bfa",
+    foreground="#e2e8f0",
+    background="#0d1117",
+    surface="#141a24",
+    warning="#fbbf24",
+    error="#f87171",
+    dark=True,
+    variables={
+        "border": "#2a3242",
+        "border-blurred": "#232b3a",
+        "text-muted": "#8a93a6",
+        "accent-lighten-1": "#c4b5fd",
+        # boost is transparent in most themes; surface-lighten-1 is what
+        # theme.tcss uses for raised surfaces.
+        "surface-lighten-1": "#1c2432",
+        "scrollbar": "#3a4358",
+        "scrollbar-hover": "#5b6580",
+        "scrollbar-active": "#a78bfa",
+        "scrollbar-background": "#141a24",
+        "scrollbar-background-hover": "#1c2432",
+        "scrollbar-background-active": "#1c2432",
+        "scrollbar-corner-color": "#0d1117",
+    },
+)
 
 
 class TrackEnded(Message):
@@ -139,6 +172,17 @@ class MusicTUI(App[None]):
         self._last_video_id: str = ""
         self._auto_next = True
         self._loop_enabled = False
+        self.register_theme(MUSIC_CLI_THEME)
+        saved_theme = self._settings_store.get(SETTING_THEME)
+        self.theme = (
+            saved_theme
+            if saved_theme in self.available_themes
+            else MUSIC_CLI_THEME.name
+        )
+
+    def watch_theme(self, theme_name: str) -> None:
+        """Persist the palette-chosen theme (Ctrl+P → Theme) across restarts."""
+        self._settings_store.set(SETTING_THEME, theme_name)
 
     def on_mount(self) -> None:
         self.set_interval(0.5, self._tick)

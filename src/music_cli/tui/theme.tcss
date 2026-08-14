@@ -1,26 +1,8 @@
-$bg: #0d1117;
-$surface: #141a24;
-$surface-2: #1c2432;
-$border: #2a3242;
-$border-soft: #232b3a;
-$text: #e2e8f0;
-$text-dim: #8a93a6;
-$accent: #a78bfa;
-$accent-soft: #c4b5fd;
-$cyan: #67e8f9;
-$amber: #fbbf24;
-$danger: #f87171;
-
-$scrollbar-background: #141a24;
-$scrollbar-background-hover: #1c2432;
-$scrollbar-background-active: #1c2432;
-$scrollbar: #3a4358;
-$scrollbar-active: #a78bfa;
-$scrollbar-hover: #5b6580;
-$scrollbar-corner-color: #0d1117;
+/* Colors come from the active Textual theme (Ctrl+P → Theme); the default
+   "music-cli" theme is registered in app.py and matches the original palette. */
 
 Screen {
-    background: $bg;
+    background: $background;
     color: $text;
 }
 
@@ -42,20 +24,20 @@ TopBar {
 #brand {
     width: 1fr;
     content-align: left middle;
-    color: $accent-soft;
+    color: $accent-lighten-1;
     text-style: bold;
 }
 
 #tagline {
     width: 1fr;
     content-align: left middle;
-    color: $text-dim;
+    color: $text-muted;
 }
 
 #queue-count {
     width: auto;
     content-align: right middle;
-    color: $text-dim;
+    color: $text-muted;
 }
 
 #body {
@@ -72,8 +54,8 @@ TopBar {
 
 #playlist-pane {
     width: 30;
-    border-top: solid $border-soft;
-    border-right: solid $border-soft;
+    border-top: solid $border-blurred;
+    border-right: solid $border-blurred;
     border-title-color: $accent;
     border-title-style: bold;
     margin: 0 1 0 0;
@@ -97,18 +79,18 @@ LibraryTree > .tree--guides-hover {
 }
 
 LibraryTree > .tree--highlight {
-    background: $surface-2;
+    background: $surface-lighten-1;
 }
 
 LibraryTree:focus > .tree--cursor {
     background: $accent;
-    color: #0d1117;
+    color: auto;
     text-style: bold;
 }
 
 HistoryList {
     height: 8;
-    border-top: solid $border-soft;
+    border-top: solid $border-blurred;
     border-title-color: $accent;
     border-title-style: bold;
     background: $surface;
@@ -125,11 +107,11 @@ HistoryList > ListItem.-highlight {
 }
 
 HistoryList > ListItem.-highlight .queue-title {
-    color: #0d1117;
+    color: auto;
 }
 
 HistoryList > ListItem.-highlight .queue-subtitle {
-    color: #1c2432;
+    color: auto;
 }
 
 #search-box {
@@ -140,7 +122,7 @@ HistoryList > ListItem.-highlight .queue-subtitle {
 }
 
 #search-box:focus-within {
-    background: $surface-2;
+    background: $surface-lighten-1;
 }
 
 #search-input {
@@ -152,7 +134,7 @@ HistoryList > ListItem.-highlight .queue-subtitle {
 }
 
 #search-input .input--placeholder {
-    color: $text-dim;
+    color: $text-muted;
 }
 
 #search-input:focus {
@@ -164,14 +146,14 @@ HistoryList > ListItem.-highlight .queue-subtitle {
     width: 14;
     height: 1;
     margin-left: 1;
-    background: $surface-2;
+    background: $surface-lighten-1;
 }
 
 ResultsTable {
     height: 1fr;
     margin: 1 2;
-    border-top: solid $border-soft;
-    background: $bg;
+    border-top: solid $border-blurred;
+    background: $background;
 }
 
 ResultsTable:focus {
@@ -179,8 +161,8 @@ ResultsTable:focus {
 }
 
 ResultsTable > .datatable--header {
-    background: $surface-2;
-    color: $text-dim;
+    background: $surface-lighten-1;
+    color: $text-muted;
     text-style: bold;
 }
 
@@ -190,17 +172,17 @@ ResultsTable > .datatable--odd-row {
 
 ResultsTable > .datatable--cursor {
     background: $accent;
-    color: #0d1117;
+    color: auto;
     text-style: bold;
 }
 
 ResultsTable > .datatable--even-row {
-    background: $bg;
+    background: $background;
 }
 
 QueueList {
-    border-top: solid $border-soft;
-    border-left: solid $border-soft;
+    border-top: solid $border-blurred;
+    border-left: solid $border-blurred;
     border-title-color: $accent;
     border-title-style: bold;
     margin: 0 0 0 1;
@@ -223,11 +205,11 @@ QueueList > ListItem.-highlight {
 }
 
 QueueList > ListItem.-highlight .queue-title {
-    color: #0d1117;
+    color: auto;
 }
 
 QueueList > ListItem.-highlight .queue-subtitle {
-    color: #1c2432;
+    color: auto;
 }
 
 .queue-title {
@@ -241,25 +223,25 @@ QueueList > ListItem.-highlight .queue-subtitle {
     height: 1;
     text-wrap: nowrap;
     text-overflow: ellipsis;
-    color: $text-dim;
+    color: $text-muted;
 }
 
 .queue-empty {
-    color: $text-dim;
+    color: $text-muted;
     text-style: italic;
 }
 
 NowPlaying {
     height: 11;
     background: $surface;
-    border-top: solid $border-soft;
+    border-top: solid $border-blurred;
     padding: 0 2;
 }
 
 /* Playlist management modal screens: centered dialog over a dimmed main TUI */
 ModalScreen {
     align: center middle;
-    background: $bg 60%;
+    background: $background 60%;
 }
 
 #add-playlist-modal,
@@ -278,25 +260,25 @@ ModalScreen {
 
 #name-modal-title,
 #confirm-modal-message {
-    color: $accent-soft;
+    color: $accent-lighten-1;
     text-style: bold;
     margin-bottom: 1;
 }
 
 #add-playlist-modal-title {
     height: 1;
-    color: $text-dim;
+    color: $text-muted;
     text-wrap: nowrap;
     text-overflow: ellipsis;
     margin-bottom: 1;
 }
 
 #add-playlist-modal-hint {
-    color: $text-dim;
+    color: $text-muted;
 }
 
 #add-playlist-modal-empty {
-    color: $text-dim;
+    color: $text-muted;
     margin-bottom: 1;
 }
 
@@ -315,18 +297,18 @@ ModalScreen {
 
 #add-playlist-modal-select > .option-list--option-highlighted {
     background: $accent;
-    color: #0d1117;
+    color: auto;
     text-style: bold;
 }
 
 #add-playlist-modal-select > .option-list--option-hover {
-    background: $surface-2;
+    background: $surface-lighten-1;
 }
 
 #add-playlist-modal-select > .selection-list--button,
 #add-playlist-modal-select > .selection-list--button-highlighted {
     background: $surface;
-    color: $text-dim;
+    color: $text-muted;
 }
 
 #add-playlist-modal-select > .selection-list--button-selected,
@@ -353,7 +335,7 @@ ModalScreen {
     min-width: 10;
     border: none;
     background: transparent;
-    color: $text-dim;
+    color: $text-muted;
     margin-left: 2;
 }
 
@@ -364,18 +346,18 @@ ModalScreen {
 
 #name-modal-buttons #name-modal-save {
     background: $accent;
-    color: #0d1117;
+    color: auto;
     text-style: bold;
 }
 
 #confirm-modal-buttons #confirm-modal-yes {
-    background: $danger;
-    color: #0d1117;
+    background: $error;
+    color: auto;
     text-style: bold;
 }
 
 #name-modal-buttons #name-modal-save:hover {
-    background: $accent-soft;
+    background: $accent-lighten-1;
 }
 
 #np-head {
@@ -388,15 +370,15 @@ ModalScreen {
     width: 4;
     content-align: center middle;
     text-style: bold;
-    color: $text-dim;
+    color: $text-muted;
 }
 
 #now-playing.has-track #np-icon {
-    color: $accent-soft;
+    color: $accent-lighten-1;
 }
 
 #now-playing.paused #np-icon {
-    color: $amber;
+    color: $warning;
 }
 
 #np-meta {
@@ -414,13 +396,13 @@ ModalScreen {
     height: 1;
     text-wrap: nowrap;
     text-overflow: ellipsis;
-    color: $text-dim;
+    color: $text-muted;
 }
 
 #np-time {
     width: auto;
     content-align: right middle;
-    color: $text-dim;
+    color: $text-muted;
 }
 
 #np-progress {
@@ -440,36 +422,36 @@ ModalScreen {
 
 #np-status {
     width: 1fr;
-    color: $text-dim;
+    color: $text-muted;
 }
 
 #np-volume {
     width: auto;
     margin-right: 1;
-    color: $text-dim;
+    color: $text-muted;
 }
 
 #np-loop,
 #np-auto {
     width: auto;
     margin-right: 1;
-    color: $text-dim;
+    color: $text-muted;
     text-style: bold;
 }
 
 #np-loop.on,
 #np-auto.on {
-    color: $accent-soft;
+    color: $accent-lighten-1;
 }
 
 Footer {
-    background: $surface-2;
+    background: $surface-lighten-1;
 }
 
 FooterKey {
-    color: $accent-soft;
+    color: $accent-lighten-1;
 }
 
 FooterLabel {
-    color: $text-dim;
+    color: $text-muted;
 }
