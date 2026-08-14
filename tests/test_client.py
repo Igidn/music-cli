@@ -9,6 +9,7 @@ from music_cli.client import MusicClient
 from music_cli.core.errors import PlayerError
 from music_cli.storage.cache import AudioCache, TrackMeta
 from music_cli.yt.extract import PlaylistTrack, StreamExtractor, StreamInfo
+from music_cli.yt.search import parse_artists
 
 
 def make_result(video_id="abc", title="Some Song", artists=("Some Artist",)):
@@ -292,3 +293,14 @@ class TestCacheIntegration:
         seed_cache(client, video_id="xyz")
         assert client.prefetch("xyz") is True
         assert client.extractor.resolved == []
+
+    def test_parse_artists_dedupes_repeats_in_order(self):
+        info = {
+            "artists": [
+                {"name": "A"},
+                {"name": "B"},
+                {"name": "B"},
+                {"name": "A"},
+            ]
+        }
+        assert parse_artists(info) == ["A", "B"]

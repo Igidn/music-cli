@@ -49,7 +49,8 @@ def parse_artists(info: dict[str, Any]) -> list[str]:
     raw = info.get("artists")
     if isinstance(raw, list):
         names = [a.get("name") if isinstance(a, dict) else a for a in raw]
-        if artists := [n for n in names if n]:
+        # yt-dlp sometimes repeats an artist within `artists`; dedupe in order.
+        if artists := list(dict.fromkeys(n for n in names if n)):
             return artists
     for key in ("author", "creator", "uploader"):
         val = info.get(key)
