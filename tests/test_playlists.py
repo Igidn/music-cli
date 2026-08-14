@@ -7,8 +7,9 @@ import re
 import pytest
 import requests
 
-from music_cli.player import Cookies, PlayerError
-from music_cli.playlists import (
+from music_cli.core.errors import PlayerError
+from music_cli.yt.cookies import Cookies
+from music_cli.yt.playlists import (
     Library,
     LibraryPlaylist,
     _browser_auth,

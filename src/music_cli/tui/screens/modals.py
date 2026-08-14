@@ -11,7 +11,7 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, SelectionList
 
-from music_cli.playlists import LibraryPlaylist
+from music_cli.yt.playlists import LibraryPlaylist
 
 
 class AddToPlaylistScreen(ModalScreen[set[str] | None]):

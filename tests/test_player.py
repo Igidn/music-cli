@@ -11,17 +11,19 @@ from AVFoundation import (
     CMTimeMakeWithSeconds,
 )
 
-from music_cli.cache import AudioCache, TrackMeta
-from music_cli.player import (
+from music_cli.core.errors import PlayerError
+from music_cli.player.audio import (
     AVFoundationPlayer,
-    Cookies,
     LocalFile,
-    PlayerError,
+    _default_fetch_stream,
+)
+from music_cli.storage.cache import AudioCache, TrackMeta
+from music_cli.yt.cookies import Cookies
+from music_cli.yt.extract import (
     PlaylistTrack,
     StreamExtractor,
     StreamInfo,
     WatchPlaylist,
-    _default_fetch_stream,
     parse_watch_track,
 )
 

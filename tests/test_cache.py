@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from music_cli.cache import (
+from music_cli.storage.cache import (
     AudioCache,
     CachedTrack,
     DownloadResult,

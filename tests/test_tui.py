@@ -10,9 +10,9 @@ import asyncio
 import threading
 
 from music_cli.client import MusicClient
-from music_cli.player import PlaylistTrack, StreamInfo
-from music_cli.playlists import LibraryPlaylist
-from music_cli.search import SearchResult
+from music_cli.yt.extract import PlaylistTrack, StreamInfo
+from music_cli.yt.playlists import LibraryPlaylist
+from music_cli.yt.search import SearchResult
 
 
 def make_result(i, video_id):

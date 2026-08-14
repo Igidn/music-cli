@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from music_cli.state import (
+from music_cli.storage.state import (
     STATE_DB_FILENAME,
     PlayedTrack,
     PlayHistoryStore,
@@ -12,7 +12,7 @@ from music_cli.state import (
 
 class TestPlayHistoryStore:
     def test_defaults_to_config_dir(self):
-        from music_cli.login import config_dir
+        from music_cli.core.paths import config_dir
 
         assert PlayHistoryStore().path == config_dir() / STATE_DB_FILENAME
 
@@ -87,7 +87,7 @@ class TestPlayHistoryStore:
 
 class TestSettingsStore:
     def test_defaults_to_config_dir(self):
-        from music_cli.login import config_dir
+        from music_cli.core.paths import config_dir
 
         assert SettingsStore().path == config_dir() / STATE_DB_FILENAME
 

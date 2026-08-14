@@ -8,7 +8,7 @@ from textual.containers import Horizontal, Vertical
 from textual.widget import Widget
 from textual.widgets import ProgressBar, Static
 
-from ...search import format_duration
+from ...yt.search import format_duration
 from .waveform import Waveform
 
 BAR_GRADIENT = Gradient((0.0, "#8b5cf6"), (0.6, "#a78bfa"), (1.0, "#67e8f9"))

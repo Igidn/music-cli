@@ -7,18 +7,13 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from .cache import AudioCache, DownloadResult, TrackMeta
-from .player import (
-    AVFoundationPlayer,
-    Cookies,
-    PlayerError,
-    PlaylistTrack,
-    StreamExtractor,
-    StreamInfo,
-    WatchPlaylist,
-)
-from .playlists import Library
-from .search import SearchFilter, SearchResult, YTmusicSearch
+from .core.errors import PlayerError
+from .player.audio import AVFoundationPlayer
+from .storage.cache import AudioCache, DownloadResult, TrackMeta
+from .yt.cookies import Cookies
+from .yt.extract import PlaylistTrack, StreamExtractor, StreamInfo, WatchPlaylist
+from .yt.playlists import Library
+from .yt.search import SearchFilter, SearchResult, YTmusicSearch
 
 PLAY_START_TIMEOUT = 6.0
 PRIMARY_PLAY_ATTEMPTS = 2

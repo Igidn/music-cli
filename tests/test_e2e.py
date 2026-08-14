@@ -18,15 +18,11 @@ import time
 
 import pytest
 
-from music_cli.cache import AudioCache
 from music_cli.client import MusicClient
-from music_cli.player import (
-    AVFoundationPlayer,
-    Cookies,
-    PlaylistTrack,
-    StreamExtractor,
-    WatchPlaylist,
-)
+from music_cli.player.audio import AVFoundationPlayer
+from music_cli.storage.cache import AudioCache
+from music_cli.yt.cookies import Cookies
+from music_cli.yt.extract import PlaylistTrack, StreamExtractor, WatchPlaylist
 
 KNOWN_VIDEO = "dQw4w9WgXcQ"  # Rick Astley - Never Gonna Give You Up
 

@@ -9,7 +9,7 @@ from rich.text import Text
 from textual.binding import Binding
 from textual.widgets import DataTable, Input
 
-from music_cli.search import SearchResult
+from music_cli.yt.search import SearchResult
 
 from .messages import AddToPlaylistRequested
 

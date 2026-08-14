@@ -10,8 +10,8 @@ from textual.message import Message
 from textual.widgets import Tree
 from textual.widgets._tree import TreeNode
 
-from music_cli.player import PlaylistTrack
-from music_cli.playlists import LibraryPlaylist
+from music_cli.yt.extract import PlaylistTrack
+from music_cli.yt.playlists import LibraryPlaylist
 
 from .messages import AddToPlaylistRequested
 

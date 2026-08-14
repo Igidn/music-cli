@@ -23,8 +23,10 @@ from dataclasses import dataclass
 from http.cookiejar import Cookie, MozillaCookieJar
 from pathlib import Path
 
-from .paths import config_dir
-from .player import Cookies, PlayerError
+from ..core.errors import PlayerError
+from ..core.paths import config_dir
+from .cookies import Cookies, _account_session, _browser_auth
+from .playlists import Library
 
 SIGNIN_URL = "https://music.youtube.com/"
 
@@ -280,8 +282,6 @@ def _verify_library(cookie_path: Path) -> tuple[str, int]:
     is a fragile fixed path that blows up on unexpected response shapes);
     it returns the account name only when the cookies truly authenticate.
     """
-    from .playlists import Library, _account_session, _browser_auth
-
     cookies = Cookies.from_file(str(cookie_path))
     try:
         session = _account_session(cookies)

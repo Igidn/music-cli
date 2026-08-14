@@ -7,7 +7,7 @@ from typing import ClassVar
 from textual.binding import Binding
 from textual.widgets import Label, ListItem, ListView, Select
 
-from music_cli.player import PlaylistTrack
+from music_cli.yt.extract import PlaylistTrack
 
 from .messages import AddToPlaylistRequested
 

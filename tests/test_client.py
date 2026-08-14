@@ -5,13 +5,14 @@ from pathlib import Path
 
 import pytest
 
-from music_cli.cache import AudioCache, TrackMeta
 from music_cli.client import MusicClient
-from music_cli.player import PlayerError, PlaylistTrack, StreamExtractor, StreamInfo
+from music_cli.core.errors import PlayerError
+from music_cli.storage.cache import AudioCache, TrackMeta
+from music_cli.yt.extract import PlaylistTrack, StreamExtractor, StreamInfo
 
 
 def make_result(video_id="abc", title="Some Song", artists=("Some Artist",)):
-    from music_cli.search import SearchResult
+    from music_cli.yt.search import SearchResult
 
     return SearchResult(
         result_type="song",

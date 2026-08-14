@@ -23,7 +23,7 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
-from .db import open_db_with_recovery
+from ..core.db import open_db_with_recovery
 
 CACHE_VERSION = 2
 DEFAULT_MAX_SIZE = 2 * 1024**3

@@ -3,70 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-import requests
-from yt_dlp.cookies import extract_cookies_from_browser
 from ytmusicapi import YTMusic
 
-from .player import USER_AGENT, Cookies, PlayerError, PlaylistTrack, parse_watch_track
-
-ORIGIN = "https://music.youtube.com"
-
-
-def _browser_auth(session: requests.Session) -> dict[str, str]:
-    """ytmusicapi browser-auth headers built from the account cookie session.
-
-    Library endpoints require the signed-in account: the cookie header plus
-    an origin lets ytmusicapi treat the client as browser-authenticated.
-    Only YouTube-scoped cookies are sent — that is exactly what a browser
-    sends to music.youtube.com, and it keeps the SAPISID extraction
-    unambiguous. The authorization header carries a real SAPISIDHASH (the
-    web app computes the same value): YouTube ignores a placeholder here
-    and answers every authenticated endpoint as anonymous.
-    """
-    from ytmusicapi.helpers import get_authorization
-
-    youtube_cookies = []
-    sapisid = None
-    for cookie in session.cookies:
-        if str(cookie.domain).endswith(".youtube.com"):
-            youtube_cookies.append(cookie)
-            if cookie.name in ("SAPISID", "__Secure-3PAPISID") and sapisid is None:
-                sapisid = cookie.value
-    cookie_header = "; ".join(
-        f"{cookie.name}={cookie.value}" for cookie in youtube_cookies
-    )
-    return {
-        "cookie": cookie_header,
-        "origin": ORIGIN,
-        "authorization": get_authorization(f"{sapisid} {ORIGIN}"),
-        "x-goog-authuser": "0",
-        "x-origin": ORIGIN,
-    }
-
-
-def _account_session(cookies: Cookies) -> requests.Session:
-    """A session carrying the *full* YouTube cookie set.
-
-    Library endpoints need every auth cookie (SAPISID, SID, __Secure-3PSID,
-    …), not just the streaming subset a hand-written cookie file often holds,
-    so browser cookies are extracted with yt-dlp when no file is given.
-    """
-    if cookies.cookiefile:
-        return cookies.requests_session()  # type: ignore[return-value]
-    browser, *rest = cookies.cookiesfrombrowser or (None,)
-    profile, keyring, container = (*rest, None, None, None)[:3]
-    try:
-        jar = extract_cookies_from_browser(
-            browser, profile, keyring=keyring, container=container
-        )
-    except Exception as error:
-        raise PlayerError(
-            f"Could not extract YouTube cookies from {browser}: {error}"
-        ) from error
-    session = requests.Session()
-    session.cookies = jar
-    session.headers.update({"User-Agent": USER_AGENT})
-    return session
+from ..core.errors import PlayerError
+from .cookies import Cookies, _account_session, _browser_auth
+from .extract import PlaylistTrack, parse_watch_track
 
 
 @dataclass(frozen=True)

@@ -20,8 +20,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from .db import open_db_with_recovery
-from .paths import config_dir
+from ..core.db import open_db_with_recovery
+from ..core.paths import config_dir
 
 STATE_DB_FILENAME = "music-cli.db"
 

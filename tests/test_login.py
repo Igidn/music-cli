@@ -10,8 +10,9 @@ from http.cookiejar import MozillaCookieJar
 
 import pytest
 
-from music_cli import login
-from music_cli.login import (
+from music_cli.core.errors import PlayerError
+from music_cli.yt import login
+from music_cli.yt.login import (
     LoginResult,
     auth_cookies_present,
     browser_login,
@@ -19,7 +20,6 @@ from music_cli.login import (
     save_cookie_file,
     to_netscape_cookie,
 )
-from music_cli.player import PlayerError
 
 SIGNED_IN_COOKIES = [
     {"name": "SAPISID", "value": "abc/xyz", "domain": ".youtube.com", "path": "/"},
@@ -347,8 +347,6 @@ def _account_menu_payload(account_name):
 
 
 def _verify_setup(tmp_path, monkeypatch, payload):
-    from music_cli import playlists as playlists_module
-
     monkeypatch.setenv("MUSIC_CLI_CONFIG_DIR", str(tmp_path))
     cookie_path = tmp_path / "cookies.txt"
     save_cookie_file(SIGNED_IN_COOKIES, cookie_path)
@@ -361,9 +359,9 @@ def _verify_setup(tmp_path, monkeypatch, payload):
         def playlists(self, limit=25):
             return ["p1", "p2", "p3"]
 
-    monkeypatch.setattr(playlists_module, "_account_session", lambda cookies: session)
-    monkeypatch.setattr(playlists_module, "_browser_auth", lambda s: {"auth": "signed"})
-    monkeypatch.setattr(playlists_module, "Library", _FakeApi)
+    monkeypatch.setattr(login, "_account_session", lambda cookies: session)
+    monkeypatch.setattr(login, "_browser_auth", lambda s: {"auth": "signed"})
+    monkeypatch.setattr(login, "Library", _FakeApi)
     return cookie_path, session
 
 

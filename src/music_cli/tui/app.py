@@ -17,10 +17,7 @@ from textual.widgets import Footer, Input, Label, Select
 from textual.worker import Worker, WorkerState
 
 from music_cli.client import MusicClient
-from music_cli.player import PlaylistTrack, StreamInfo
-from music_cli.playlists import LibraryPlaylist
-from music_cli.search import SearchFilter, SearchResult
-from music_cli.state import (
+from music_cli.storage.state import (
     SETTING_AUTO_NEXT,
     SETTING_LOOP,
     SETTING_MUTED,
@@ -29,6 +26,9 @@ from music_cli.state import (
     PlayHistoryStore,
     SettingsStore,
 )
+from music_cli.yt.extract import PlaylistTrack, StreamInfo
+from music_cli.yt.playlists import LibraryPlaylist
+from music_cli.yt.search import SearchFilter, SearchResult
 
 from .components import (
     AddToPlaylistRequested,

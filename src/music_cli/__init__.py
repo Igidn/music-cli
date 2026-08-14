@@ -7,10 +7,11 @@ import os
 import sys
 from pathlib import Path
 
-from .cache import AudioCache
 from .client import MusicClient
-from .login import default_cookie_path
-from .player import Cookies, PlayerError
+from .core.errors import PlayerError
+from .storage.cache import AudioCache
+from .yt.cookies import Cookies
+from .yt.login import default_cookie_path
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -102,7 +103,7 @@ def main() -> None:
 
 def run_login(filepath: str | None) -> None:
     """CLI entry for 'music-cli login': browser sign-in with progress prints."""
-    from .login import browser_login
+    from .yt.login import browser_login
 
     output = Path(filepath) if filepath else default_cookie_path()
     try:
