@@ -274,8 +274,9 @@ class TestTuiIntegration:
         import asyncio
 
         from music_cli.client import MusicClient
-        from music_cli.tui.app import MusicTUI, QueueList, ResultsTable
-        from music_cli.tui.now_playing import NowPlaying
+        from music_cli.tui.app import MusicTUI
+        from music_cli.tui.components import QueueList, ResultsTable
+        from music_cli.tui.components.now_playing import NowPlaying
 
         async def scenario():
             client = MusicClient(cookies=cookies)

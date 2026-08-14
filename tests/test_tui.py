@@ -189,7 +189,8 @@ def _run(coro):
 
 
 def test_arrow_key_pane_navigation():
-    from music_cli.tui.app import MusicTUI, QueueList, ResultsTable
+    from music_cli.tui.app import MusicTUI
+    from music_cli.tui.components import QueueList, ResultsTable
 
     async def scenario():
         client = make_client()
@@ -274,8 +275,9 @@ def test_arrow_key_pane_navigation():
 
 
 def test_tui_search_play_queue_and_next():
-    from music_cli.tui.app import MusicTUI, QueueList, ResultsTable
-    from music_cli.tui.now_playing import NowPlaying
+    from music_cli.tui.app import MusicTUI
+    from music_cli.tui.components import QueueList, ResultsTable
+    from music_cli.tui.components.now_playing import NowPlaying
 
     async def scenario():
         client = make_client()
@@ -314,8 +316,9 @@ def test_tui_search_play_queue_and_next():
 
 
 def test_tui_search_empty_and_track_end():
-    from music_cli.tui.app import MusicTUI, ResultsTable
-    from music_cli.tui.now_playing import NowPlaying
+    from music_cli.tui.app import MusicTUI
+    from music_cli.tui.components import ResultsTable
+    from music_cli.tui.components.now_playing import NowPlaying
 
     async def scenario():
         client = make_client()
@@ -404,7 +407,7 @@ def test_tui_persists_and_restores_player_settings():
 
 def test_tui_auto_next_toggle_stops_at_track_end():
     from music_cli.tui.app import MusicTUI
-    from music_cli.tui.now_playing import NowPlaying
+    from music_cli.tui.components.now_playing import NowPlaying
 
     async def scenario():
         client = make_client()
@@ -460,7 +463,7 @@ def test_tui_loop_toggle():
 
 def test_tui_mode_indicators():
     from music_cli.tui.app import MusicTUI
-    from music_cli.tui.now_playing import NowPlaying
+    from music_cli.tui.components.now_playing import NowPlaying
 
     async def scenario():
         client = make_client()
@@ -487,7 +490,7 @@ def test_tui_mode_indicators():
 
 def test_tui_wires_player_eof_and_auto_advances():
     from music_cli.tui.app import MusicTUI
-    from music_cli.tui.now_playing import NowPlaying
+    from music_cli.tui.components.now_playing import NowPlaying
 
     async def scenario():
         client = make_client()
@@ -523,7 +526,7 @@ class CountingExtractor(FakeExtractor):
 
 def test_tui_double_click_plays_once():
     from music_cli.tui.app import MusicTUI
-    from music_cli.tui.now_playing import NowPlaying
+    from music_cli.tui.components.now_playing import NowPlaying
 
     async def scenario():
         client = make_client()
@@ -545,7 +548,8 @@ def test_tui_double_click_plays_once():
 
 
 def test_tui_queue_double_select_plays_once():
-    from music_cli.tui.app import MusicTUI, QueueList
+    from music_cli.tui.app import MusicTUI
+    from music_cli.tui.components import QueueList
 
     async def scenario():
         client = make_client()
@@ -573,7 +577,8 @@ def test_tui_queue_double_select_plays_once():
 
 
 def test_tui_queue_click_after_refresh_keeps_track_identity():
-    from music_cli.tui.app import MusicTUI, QueueList
+    from music_cli.tui.app import MusicTUI
+    from music_cli.tui.components import QueueList
 
     async def scenario():
         client = make_client()
@@ -602,7 +607,8 @@ def test_tui_queue_click_after_refresh_keeps_track_identity():
 
 
 def test_library_tree_renders_playlists():
-    from music_cli.tui.app import LibraryTree, MusicTUI
+    from music_cli.tui.app import MusicTUI
+    from music_cli.tui.components import LibraryTree
 
     async def scenario():
         client = make_client()
@@ -621,7 +627,8 @@ def test_library_tree_renders_playlists():
 
 
 def test_library_tree_sign_in_notice_when_unauthenticated():
-    from music_cli.tui.app import LibraryTree, MusicTUI
+    from music_cli.tui.app import MusicTUI
+    from music_cli.tui.components import LibraryTree
 
     async def scenario():
         client = make_client()
@@ -636,7 +643,8 @@ def test_library_tree_sign_in_notice_when_unauthenticated():
 
 
 def test_library_tree_expand_loads_tracks():
-    from music_cli.tui.app import LibraryTree, MusicTUI
+    from music_cli.tui.app import MusicTUI
+    from music_cli.tui.components import LibraryTree
 
     async def scenario():
         client = make_client()
@@ -668,8 +676,9 @@ def test_library_tree_expand_loads_tracks():
 
 
 def test_library_tree_activates_track_plays_and_queues_playlist():
-    from music_cli.tui.app import LibraryTree, MusicTUI
-    from music_cli.tui.now_playing import NowPlaying
+    from music_cli.tui.app import MusicTUI
+    from music_cli.tui.components import LibraryTree
+    from music_cli.tui.components.now_playing import NowPlaying
 
     async def scenario():
         client = make_client()
@@ -698,7 +707,8 @@ def test_library_tree_activates_track_plays_and_queues_playlist():
 
 
 def test_narrow_layout_hides_side_panes():
-    from music_cli.tui.app import LibraryTree, MusicTUI, ResultsTable
+    from music_cli.tui.app import MusicTUI
+    from music_cli.tui.components import LibraryTree, ResultsTable
 
     async def scenario():
         client = make_client()
@@ -736,7 +746,8 @@ def test_narrow_layout_hides_side_panes():
 
 
 def test_search_edges_jump_to_side_panes():
-    from music_cli.tui.app import LibraryTree, MusicTUI, QueueList, ResultsTable
+    from music_cli.tui.app import MusicTUI
+    from music_cli.tui.components import LibraryTree, QueueList, ResultsTable
 
     async def scenario():
         client = make_client()
@@ -773,7 +784,7 @@ def test_search_edges_jump_to_side_panes():
 
 def test_tui_saves_last_played_track_and_resumes_it():
     from music_cli.tui.app import MusicTUI
-    from music_cli.tui.now_playing import NowPlaying
+    from music_cli.tui.components.now_playing import NowPlaying
 
     async def scenario():
         client = make_client()
@@ -805,7 +816,7 @@ def test_tui_saves_last_played_track_and_resumes_it():
 
 def test_tui_without_saved_track_stays_idle_on_mount():
     from music_cli.tui.app import MusicTUI
-    from music_cli.tui.now_playing import NowPlaying
+    from music_cli.tui.components.now_playing import NowPlaying
 
     async def scenario():
         client = make_client()
@@ -822,7 +833,8 @@ def test_tui_without_saved_track_stays_idle_on_mount():
 
 
 def test_tui_saves_track_played_from_queue():
-    from music_cli.tui.app import MusicTUI, QueueList
+    from music_cli.tui.app import MusicTUI
+    from music_cli.tui.components import QueueList
 
     async def scenario():
         client = make_client()
@@ -871,8 +883,8 @@ def test_tui_does_not_save_when_playback_fails():
 
 def test_waveform_widget_tracks_playback_state():
     from music_cli.tui.app import MusicTUI
-    from music_cli.tui.now_playing import NowPlaying
-    from music_cli.tui.waveform import Waveform
+    from music_cli.tui.components.now_playing import NowPlaying
+    from music_cli.tui.components.waveform import Waveform
 
     async def scenario():
         client = make_client()
@@ -917,8 +929,9 @@ def test_waveform_widget_tracks_playback_state():
 def test_add_to_playlist_from_results():
     from textual.widgets import SelectionList
 
-    from music_cli.tui.app import MusicTUI, ResultsTable
-    from music_cli.tui.modals import AddToPlaylistScreen
+    from music_cli.tui.app import MusicTUI
+    from music_cli.tui.components import ResultsTable
+    from music_cli.tui.screens.modals import AddToPlaylistScreen
 
     async def scenario():
         client = make_client()
@@ -947,8 +960,9 @@ def test_add_to_playlist_from_results():
 def test_add_to_playlist_from_queue():
     from textual.widgets import SelectionList
 
-    from music_cli.tui.app import MusicTUI, QueueList
-    from music_cli.tui.modals import AddToPlaylistScreen
+    from music_cli.tui.app import MusicTUI
+    from music_cli.tui.components import QueueList
+    from music_cli.tui.screens.modals import AddToPlaylistScreen
 
     async def scenario():
         client = make_client()
@@ -974,8 +988,9 @@ def test_add_to_playlist_from_queue():
 def test_remove_track_from_playlist_tree():
     from textual.widgets import Button
 
-    from music_cli.tui.app import LibraryTree, MusicTUI
-    from music_cli.tui.modals import ConfirmScreen
+    from music_cli.tui.app import MusicTUI
+    from music_cli.tui.components import LibraryTree
+    from music_cli.tui.screens.modals import ConfirmScreen
 
     async def scenario():
         client = make_client()
@@ -1004,8 +1019,9 @@ def test_remove_track_from_playlist_tree():
 def test_create_playlist_from_tree():
     from textual.widgets import Button, Input
 
-    from music_cli.tui.app import LibraryTree, MusicTUI
-    from music_cli.tui.modals import PlaylistNameScreen
+    from music_cli.tui.app import MusicTUI
+    from music_cli.tui.components import LibraryTree
+    from music_cli.tui.screens.modals import PlaylistNameScreen
 
     async def scenario():
         client = make_client()
@@ -1031,8 +1047,9 @@ def test_create_playlist_from_tree():
 def test_rename_playlist_from_tree():
     from textual.widgets import Button, Input
 
-    from music_cli.tui.app import LibraryTree, MusicTUI
-    from music_cli.tui.modals import PlaylistNameScreen
+    from music_cli.tui.app import MusicTUI
+    from music_cli.tui.components import LibraryTree
+    from music_cli.tui.screens.modals import PlaylistNameScreen
 
     async def scenario():
         client = make_client()
@@ -1058,7 +1075,8 @@ def test_rename_playlist_from_tree():
 
 
 def test_playlist_keybinds_show_only_with_selection():
-    from music_cli.tui.app import LibraryTree, MusicTUI, ResultsTable
+    from music_cli.tui.app import MusicTUI
+    from music_cli.tui.components import LibraryTree, ResultsTable
 
     async def scenario():
         client = make_client()
@@ -1100,7 +1118,8 @@ def test_playlist_keybinds_show_only_with_selection():
 
 
 def test_playlist_keybinds_hidden_when_unauthenticated():
-    from music_cli.tui.app import LibraryTree, MusicTUI, ResultsTable
+    from music_cli.tui.app import MusicTUI
+    from music_cli.tui.components import LibraryTree, ResultsTable
 
     async def scenario():
         client = make_client()

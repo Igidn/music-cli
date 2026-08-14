@@ -1,32 +1,19 @@
-"""Textual TUI for music-cli: search, queue and playback control."""
+"""Textual TUI orchestrator for music-cli: threading, state and playback control."""
 
 from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, ClassVar, Literal
+from typing import ClassVar, Literal
 
-from rich.cells import cell_len, set_cell_size
-from rich.text import Text
 from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.message import Message
 from textual.timer import Timer
-from textual.widget import Widget
-from textual.widgets import (
-    DataTable,
-    Footer,
-    Input,
-    Label,
-    ListItem,
-    ListView,
-    Select,
-    Tree,
-)
-from textual.widgets._tree import TreeNode
+from textual.widgets import Footer, Input, Label, Select
 from textual.worker import Worker, WorkerState
 
 from music_cli.client import MusicClient
@@ -43,8 +30,17 @@ from music_cli.state import (
     SettingsStore,
 )
 
-from .modals import AddToPlaylistScreen, ConfirmScreen, PlaylistNameScreen
-from .now_playing import NowPlaying
+from .components import (
+    AddToPlaylistRequested,
+    FilterSelect,
+    LibraryTree,
+    NowPlaying,
+    QueueList,
+    ResultsTable,
+    SearchInput,
+    TopBar,
+)
+from .screens.modals import AddToPlaylistScreen, ConfirmScreen, PlaylistNameScreen
 
 SEARCH_FILTERS: list[tuple[str, SearchFilter | None]] = [
     ("All results", None),
@@ -55,35 +51,9 @@ SEARCH_FILTERS: list[tuple[str, SearchFilter | None]] = [
     ("Playlists", "playlists"),
 ]
 
-TYPE_COLORS = {
-    "SONG": "#a78bfa",
-    "VIDEO": "#67e8f9",
-    "ALBUM": "#fbbf24",
-    "ARTIST": "#f472b6",
-    "PLAYLIST": "#34d399",
-    "PROFILE": "#94a3b8",
-    "PODCAST": "#fb923c",
-    "EPISODE": "#fb923c",
-}
-
 
 class TrackEnded(Message):
     """Posted on the app thread when the player reports end-of-file."""
-
-
-class AddToPlaylistRequested(Message):
-    """A song is selected in the focused pane and the user pressed `s`.
-
-    Posted by whichever pane holds the selected song (search results,
-    up-next queue or the library tree) so the app can open the same
-    playlist picker for all three.
-    """
-
-    def __init__(self, video_id: str, title: str, artists: tuple[str, ...]) -> None:
-        self.video_id = video_id
-        self.title = title
-        self.artists = artists
-        super().__init__()
 
 
 @dataclass
@@ -95,438 +65,6 @@ class _PlayRequest:
     resolve: Callable[[], StreamInfo]
     kind: Literal["result", "queue", "playlist"]
     on_fail: Callable[[], None] = lambda: None
-
-
-class TopBar(Widget):
-    """Slim header with the brand, tagline and queue count."""
-
-    def compose(self) -> ComposeResult:
-        yield Label("♪ music-cli", id="brand")
-        yield Label("", id="queue-count")
-
-
-class LibraryTree(Tree[dict[str, Any] | None], inherit_bindings=False):
-    """Library playlists sidebar, rendered as a tree.
-
-    Playlists are branch nodes; activating one lazily fetches its tracks and
-    renders them as leaf nodes. Activating a track plays it and queues the
-    rest of the playlist. Left/right are left to the app for pane navigation.
-    """
-
-    BINDINGS: ClassVar = [
-        Binding("enter", "activate", "Open", show=False),
-        Binding("up", "cursor_up", "Cursor up", show=False),
-        Binding("down", "cursor_down", "Cursor down", show=False),
-        Binding("pageup", "page_up", "Page up", show=False),
-        Binding("pagedown", "page_down", "Page down", show=False),
-        Binding("home", "scroll_home", "Home", show=False),
-        Binding("end", "scroll_end", "End", show=False),
-        Binding("s", "add_to_playlist", "Add to playlist"),
-        Binding("d", "remove_from_playlist", "Remove from playlist"),
-        Binding("c", "create_playlist", "Create playlist"),
-        Binding("r", "rename_playlist", "Rename playlist"),
-    ]
-
-    class PlaylistExpandRequested(Message):
-        """A playlist node was activated before its tracks were loaded."""
-
-        def __init__(self, playlist_id: str, node: TreeNode) -> None:
-            self.playlist_id = playlist_id
-            self.node = node
-            super().__init__()
-
-        @property
-        def control(self) -> LibraryTree:
-            return self.node.tree
-
-    class TrackActivated(Message):
-        """A track leaf was activated and should be played."""
-
-        def __init__(
-            self,
-            playlist_id: str,
-            index: int,
-            track: PlaylistTrack,
-        ) -> None:
-            self.playlist_id = playlist_id
-            self.index = index
-            self.track = track
-            super().__init__()
-
-    class TrackRemoveRequested(Message):
-        """The user pressed `d` with a track leaf selected."""
-
-        def __init__(self, playlist_id: str, track: PlaylistTrack) -> None:
-            self.playlist_id = playlist_id
-            self.track = track
-            super().__init__()
-
-    class CreatePlaylistRequested(Message):
-        """The user pressed `c` while the library tree is focused."""
-
-    class RenamePlaylistRequested(Message):
-        """The user pressed `r` with a playlist node selected."""
-
-        def __init__(self, playlist_id: str, title: str) -> None:
-            self.playlist_id = playlist_id
-            self.title = title
-            super().__init__()
-
-    def on_mount(self) -> None:
-        self.border_title = " PLAYLISTS "
-        self.show_root = False
-        self.root.add_leaf("Loading library…")
-
-    def set_playlists(self, playlists: list[LibraryPlaylist]) -> None:
-        self.root.remove_children()
-        if not playlists:
-            self.root.add_leaf("No playlists in your library")
-            return
-        for playlist in playlists:
-            self.root.add(
-                self._playlist_label(playlist.title, playlist.track_count),
-                data={
-                    "kind": "playlist",
-                    "playlist_id": playlist.playlist_id,
-                    "title": playlist.title,
-                    "track_count": playlist.track_count,
-                    "loaded": False,
-                },
-                allow_expand=True,
-            )
-        self.refresh_bindings()
-
-    def set_unavailable(self, message: str) -> None:
-        """Replace the tree contents with a non-interactive notice."""
-        self.root.remove_children()
-        self.root.add_leaf(message)
-        self.refresh_bindings()
-
-    def show_tracks(self, playlist_id: str, tracks: list[PlaylistTrack]) -> None:
-        """Fill ``playlist_id``'s node with its tracks and expand it."""
-        node = self._find_playlist(playlist_id)
-        if node is None:
-            return
-        node.data["loaded"] = True
-        node.data["loading"] = False
-        node.remove_children()
-        node.label = self._playlist_label(node.data["title"], node.data["track_count"])
-        if not tracks:
-            node.allow_expand = False
-            node.add_leaf("Empty playlist")
-            return
-        for index, track in enumerate(tracks):
-            node.add_leaf(
-                self._track_label(track),
-                data={
-                    "kind": "track",
-                    "playlist_id": playlist_id,
-                    "index": index,
-                    "track": track,
-                },
-            )
-        node.expand()
-        self.refresh_bindings()
-
-    def fail_playlist(self, playlist_id: str) -> None:
-        node = self._find_playlist(playlist_id)
-        if node is None:
-            return
-        node.data["loading"] = False
-        node.remove_children()
-        node.add_leaf("Couldn't load this playlist")
-        node.collapse()
-        self.refresh_bindings()
-
-    def action_activate(self) -> None:
-        """Expand/play the cursor node: branch toggles, leaf track plays."""
-        node = self.cursor_node
-        data = node.data if node is not None else None
-        if not isinstance(data, dict):
-            return
-        if data["kind"] == "track":
-            self.post_message(
-                self.TrackActivated(data["playlist_id"], data["index"], data["track"])
-            )
-        elif not data["loaded"] and not data.get("loading"):
-            data["loading"] = True
-            self.post_message(self.PlaylistExpandRequested(data["playlist_id"], node))
-        else:
-            node.toggle()
-
-    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
-        """Only show playlist-management keybinds for the relevant cursor node."""
-        kind = self._cursor_kind()
-        if action == "create_playlist":
-            # Also visible on the empty-library leaf, so a fresh account
-            # can create its first playlist.
-            return self.app.client.library.authenticated and kind != "track"
-        if action in ("add_to_playlist", "remove_from_playlist"):
-            return self.app.client.library.authenticated and kind == "track"
-        if action == "rename_playlist":
-            return self.app.client.library.authenticated and kind == "playlist"
-        return super().check_action(action, parameters)
-
-    def action_add_to_playlist(self) -> None:
-        data = self._cursor_data()
-        if data is not None and data.get("kind") == "track":
-            track = data["track"]
-            self.post_message(
-                AddToPlaylistRequested(
-                    track.video_id, track.title, tuple(track.artists)
-                )
-            )
-
-    def action_remove_from_playlist(self) -> None:
-        data = self._cursor_data()
-        if data is not None and data.get("kind") == "track":
-            self.post_message(
-                self.TrackRemoveRequested(data["playlist_id"], data["track"])
-            )
-
-    def action_create_playlist(self) -> None:
-        self.post_message(self.CreatePlaylistRequested())
-
-    def action_rename_playlist(self) -> None:
-        data = self._cursor_data()
-        if data is not None and data.get("kind") == "playlist":
-            self.post_message(
-                self.RenamePlaylistRequested(data["playlist_id"], data["title"])
-            )
-
-    def on_tree_node_highlighted(self, event: Tree.NodeHighlighted) -> None:
-        self.refresh_bindings()
-
-    def _cursor_data(self) -> dict[str, Any] | None:
-        node = self.cursor_node
-        data = node.data if node is not None else None
-        return data if isinstance(data, dict) else None
-
-    def _cursor_kind(self) -> str | None:
-        data = self._cursor_data()
-        return data.get("kind") if data is not None else None
-
-    def _find_playlist(self, playlist_id: str) -> TreeNode | None:
-        for node in self.root.children:
-            data = node.data
-            if (
-                isinstance(data, dict)
-                and data.get("kind") == "playlist"
-                and data.get("playlist_id") == playlist_id
-            ):
-                return node
-        return None
-
-    @staticmethod
-    def _playlist_label(title: str, track_count: str) -> Text:
-        label = Text.assemble(Text(f"♪ {title}", style="bold"))
-        if track_count:
-            label.append_text(Text(f"  {track_count}", style="grey58"))
-        return label
-
-    @staticmethod
-    def _track_label(track: PlaylistTrack) -> Text:
-        artists = " • ".join(track.artists) or "Unknown artist"
-        return Text.assemble(
-            Text(f"♪ {track.title}"),
-            Text(f"  {artists}", style="grey58"),
-        )
-
-
-class ResultsTable(DataTable, inherit_bindings=False):
-    """Search results table with per-row search-result lookup."""
-
-    BINDINGS: ClassVar = [
-        Binding("enter", "select_cursor", "Select", show=False),
-        Binding("up", "cursor_up", "Cursor up", show=False),
-        Binding("down", "cursor_down", "Cursor down", show=False),
-        Binding("pageup", "page_up", "Page up", show=False),
-        Binding("pagedown", "page_down", "Page down", show=False),
-        Binding("home", "scroll_home", "Home", show=False),
-        Binding("end", "scroll_end", "End", show=False),
-        Binding("ctrl+home", "scroll_top", "Top", show=False),
-        Binding("ctrl+end", "scroll_bottom", "Bottom", show=False),
-        Binding("s", "add_to_playlist", "Add to playlist"),
-    ]
-
-    def __init__(self, *args, **kwargs) -> None:
-        super().__init__(*args, **kwargs)
-        self._results: dict[str, SearchResult] = {}
-
-    def action_cursor_up(self) -> None:
-        if not self.row_count or self.cursor_coordinate.row == 0:
-            self.app.query_one("#search-input", Input).focus()
-        else:
-            super().action_cursor_up()
-
-    def on_mount(self) -> None:
-        self.add_column("", key="type", width=10)
-        self.add_column("Title", key="title", width=34)
-        self.add_column("Artist", key="artist", width=13)
-        self.add_column("Album", key="album", width=8)
-        self.add_column("Time", key="duration", width=7)
-
-    def set_results(self, results: list[SearchResult]) -> None:
-        self.clear()
-        self._results.clear()
-        for result in results:
-            key = result.video_id or result.browse_id
-            if not key:
-                continue
-            artists = ", ".join(result.artists)
-            self.add_row(
-                Text(
-                    f" {result.type_label}",
-                    style=TYPE_COLORS.get(result.type_label, "grey58"),
-                ),
-                self._fit(result.title, "title"),
-                self._fit(artists, "artist"),
-                self._fit(result.album or "", "album"),
-                self._fit(result.duration or "", "duration"),
-                key=key,
-            )
-            self._results[key] = result
-        self.refresh_bindings()
-
-    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
-        if action == "add_to_playlist":
-            return (
-                self.app.client.library.authenticated
-                and self.selected_result() is not None
-            )
-        return super().check_action(action, parameters)
-
-    def action_add_to_playlist(self) -> None:
-        result = self.selected_result()
-        if result is not None:
-            self.post_message(
-                AddToPlaylistRequested(
-                    result.video_id, result.title, tuple(result.artists)
-                )
-            )
-
-    def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
-        self.refresh_bindings()
-
-    def _fit(self, value: str, column_key: str) -> str:
-        """Truncate a cell value to its column width, appending '...' when cut off."""
-        column = self.columns[column_key]
-        max_width = column.get_render_width(self) - 2 * self.cell_padding
-        if cell_len(value) <= max_width:
-            return value
-        return set_cell_size(value, max_width - 3) + "... "
-
-    def selected_result(self) -> SearchResult | None:
-        if self.row_count == 0:
-            return None
-        coordinate = self.coordinate_to_cell_key(self.cursor_coordinate)
-        return self._results.get(str(coordinate.row_key.value))
-
-
-class QueueList(ListView):
-    """Up-next queue; each item is one row of the queue."""
-
-    BINDINGS: ClassVar = [Binding("s", "add_to_playlist", "Add to playlist")]
-
-    def __init__(self, *args, **kwargs) -> None:
-        super().__init__(*args, **kwargs)
-        self._tracks: list[PlaylistTrack] = []
-
-    def on_mount(self) -> None:
-        self.border_title = " UP NEXT "
-
-    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
-        if action == "add_to_playlist":
-            return (
-                self.app.client.library.authenticated
-                and self.track_at(self.index) is not None
-            )
-        return super().check_action(action, parameters)
-
-    def action_add_to_playlist(self) -> None:
-        track = self.track_at(self.index)
-        if track is not None:
-            self.post_message(
-                AddToPlaylistRequested(
-                    track.video_id, track.title, tuple(track.artists)
-                )
-            )
-
-    def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
-        self.refresh_bindings()
-
-    def action_cursor_up(self) -> None:
-        if self.index in (None, 0):
-            self.app.query_one("#filter-select", Select).focus()
-        else:
-            super().action_cursor_up()
-
-    def set_tracks(self, tracks: list[PlaylistTrack]) -> None:
-        self._tracks = list(tracks)
-        self.clear()
-        if not tracks:
-            self.index = None
-            self.append(
-                ListItem(
-                    Label(
-                        "Queue is empty — play a song to start autoplay",
-                        classes="queue-empty",
-                    )
-                )
-            )
-            return
-        for track in tracks:
-            self.append(self._item(track))
-        self.index = 0
-        self.refresh_bindings()
-
-    def track_at(self, index: int | None) -> PlaylistTrack | None:
-        """The track the user sees at ``index``, independent of queue mutations.
-
-        The queue is popped as soon as a track is picked, so the list widget
-        (rebuilt only on refresh) is the source of truth for what the user
-        actually clicked; this is what makes rapid double clicks collapse into
-        one request instead of picking whatever slid into the row.
-        """
-        if index is None or not 0 <= index < len(self._tracks):
-            return None
-        return self._tracks[index]
-
-    @staticmethod
-    def _item(track: PlaylistTrack) -> ListItem:
-        subtitle = " • ".join(track.artists)
-        if track.duration:
-            subtitle = f"{subtitle} · {track.duration}" if subtitle else track.duration
-        if not subtitle:
-            subtitle = "Unknown artist"
-        return ListItem(
-            Label(track.title, classes="queue-title"),
-            Label(subtitle, classes="queue-subtitle"),
-        )
-
-
-class SearchInput(Input):
-    """Search box; left/right move the cursor, or jump panes at the edges."""
-
-    def action_cursor_left(self, select: bool = False) -> None:
-        if not select and self.cursor_position == 0:
-            self.app.action_pane_left()
-        else:
-            super().action_cursor_left(select)
-
-    def action_cursor_right(self, select: bool = False) -> None:
-        if not select and self.cursor_at_end and not self._suggestion:
-            self.app.action_pane_right()
-        else:
-            super().action_cursor_right(select)
-
-
-class FilterSelect(Select, inherit_bindings=False):
-    """Search filter dropdown; enter/space opens it, arrows navigate panes."""
-
-    BINDINGS: ClassVar = [
-        Binding("enter,space", "show_overlay", "Show menu", show=False)
-    ]
 
 
 class MusicTUI(App[None]):
