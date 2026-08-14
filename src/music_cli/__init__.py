@@ -59,6 +59,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="where to save the cookies (default: $MUSIC_CLI_COOKIE_FILE "
         "or ~/.config/music-cli/cookies.txt)",
     )
+    from .cli import register_subcommands
+
+    register_subcommands(subparsers)
     return parser
 
 
@@ -91,6 +94,10 @@ def main() -> None:
         AudioCache().clear()
         print("music-cli: audio cache cleared")
         return
+    if args.command is not None:
+        from .cli import run
+
+        sys.exit(run(args))
     try:
         client = build_client(args)
     except PlayerError as error:
