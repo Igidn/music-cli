@@ -113,6 +113,8 @@ class MusicClient:
         """
         if self.current is not None and self.current.video_id == video_id:
             return
+        self.player.stop()
+        self.player.pump()
         with self._play_lock:
             if video_id in self._in_flight:
                 return
