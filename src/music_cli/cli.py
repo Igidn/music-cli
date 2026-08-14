@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from typing import Any
 
 from rich.console import Console
@@ -196,7 +197,9 @@ def _send(
 
 
 def _print_json(value: Any) -> None:
-    print(json.dumps(value))
+    sys.stdout.buffer.write(
+        json.dumps(value, ensure_ascii=False).encode("utf-8") + b"\n"
+    )
 
 
 def _onoff(value: Any) -> str:
