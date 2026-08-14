@@ -2,6 +2,10 @@
 
 Runs the Textual app through ``run_test``; sync test wrappers call the
 async scenario with ``asyncio.run`` so no async pytest plugin is needed.
+
+Playback is driven through a ``FakeDaemon`` standing in for the IPC control +
+events sockets: every action is asserted as the request the TUI sends, and
+pushed status dicts are injected by calling the render handler directly.
 """
 
 from __future__ import annotations
@@ -10,11 +14,55 @@ import asyncio
 import os
 import tempfile
 import threading
+from pathlib import Path
 
+import music_cli.ipc as ipc
 from music_cli.client import MusicClient
 from music_cli.yt.extract import PlaylistTrack, StreamInfo
 from music_cli.yt.playlists import LibraryPlaylist
 from music_cli.yt.search import SearchResult
+
+STATUS = {
+    "state": "playing",
+    "track": {
+        "video_id": "abc",
+        "title": "Some Song",
+        "artists": ["Some Artist"],
+        "duration": 201.0,
+    },
+    "position": 72.0,
+    "duration": 201.0,
+    "volume": 80,
+    "muted": False,
+    "loop": False,
+    "auto_next": True,
+    "queue": [
+        {
+            "video_id": "q1",
+            "title": "Next One",
+            "artists": ["Artist B"],
+            "duration": "2:01",
+        },
+        {
+            "video_id": "q2",
+            "title": "Later One",
+            "artists": ["Artist C"],
+            "duration": None,
+        },
+    ],
+}
+
+IDLE_STATUS = {
+    "state": "stopped",
+    "track": None,
+    "position": 0.0,
+    "duration": None,
+    "volume": 80,
+    "muted": False,
+    "loop": False,
+    "auto_next": True,
+    "queue": [],
+}
 
 
 def make_result(i, video_id):
@@ -108,6 +156,50 @@ class FakeLibrary:
         self.remove_calls.append((playlist_id, video_id))
 
 
+class FakeDaemon:
+    """Stands in for ipc.send_request; records requests and answers canned."""
+
+    def __init__(self, status=None):
+        self.requests = []
+        self.status = dict(status) if status is not None else dict(STATUS)
+        self.ok = True
+        self.error = "boom"
+
+    def respond(self, request, timeout=30.0):
+        self.requests.append(request)
+        if not self.ok:
+            return {"ok": False, "error": self.error}
+        cmd = request["cmd"]
+        if cmd == "volume":
+            delta = request.get("delta", 0)
+            return {
+                "ok": True,
+                "data": {"volume": (self.status["volume"] or 0) + delta},
+            }
+        if cmd in ("mute", "loop", "auto_next"):
+            return {"ok": True, "data": {cmd: not self.status.get(cmd, False)}}
+        if cmd == "status":
+            return {"ok": True, "data": self.status}
+        # play / toggle / next / seek / stop all hand back the full status.
+        return {"ok": True, "data": self.status}
+
+
+def make_client() -> MusicClient:
+    client = MusicClient.__new__(MusicClient)
+    client.search_api = FakeSearch()
+    client.extractor = FakeExtractor()
+    client.watch = FakeWatch()
+    client.library = FakeLibrary()
+    client.queue = []
+    client.current = None
+    client._playlist = []
+    client.cache = None
+    client.player = FakePlayer()
+    client._in_flight = set()
+    client._play_lock = threading.Lock()
+    return client
+
+
 class FakePlayer:
     def __init__(self):
         self.played = []
@@ -161,9 +253,6 @@ class FakePlayer:
     def toggle(self):
         self.pause = not self.pause
 
-    def seek_relative(self, delta):
-        self.playback_time += delta
-
     def close(self):
         pass
 
@@ -171,29 +260,43 @@ class FakePlayer:
         pass
 
 
-def make_client() -> MusicClient:
-    client = MusicClient.__new__(MusicClient)
-    client.search_api = FakeSearch()
-    client.extractor = FakeExtractor()
-    client.watch = FakeWatch()
-    client.library = FakeLibrary()
-    client.queue = []
-    client.current = None
-    client._playlist = []
-    client.cache = None
-    client.player = FakePlayer()
-    client._in_flight = set()
-    client._play_lock = threading.Lock()
-    return client
+def install_daemon(monkeypatch, status=None):
+    """Point the TUI at a fake control+events socket so tests run headless."""
+    fake = FakeDaemon(status)
+    # events_socket_path yields a socket that can never connect: the events
+    # worker just backs off and drains until the app closes. The engine shard
+    # provides these functions, so add them onto the module for the tests.
+    monkeypatch.setattr(ipc, "events_socket_path", _unused_socket_path, raising=False)
+    monkeypatch.setattr(
+        ipc, "ensure_daemon", lambda cookies=None, volume=None: None, raising=False
+    )
+    monkeypatch.setattr(ipc, "send_request", fake.respond)
+    return fake
+
+
+def _unused_socket_path() -> Path:
+    return Path(tempfile.mkdtemp()) / "no-daemon.sock"
 
 
 def _run(coro):
     return asyncio.run(coro)
 
 
-def test_arrow_key_pane_navigation():
+async def _settle(pilot, n=6):
+    for _ in range(n):
+        await pilot.pause()
+
+
+def _push(app, status):
+    """Inject a status dict exactly as the events worker would."""
+    app._render_status(status)
+
+
+def test_arrow_key_pane_navigation(monkeypatch):
     from music_cli.tui.app import MusicTUI
     from music_cli.tui.components import QueueList, ResultsTable
+
+    install_daemon(monkeypatch)
 
     async def scenario():
         client = make_client()
@@ -273,10 +376,12 @@ def test_arrow_key_pane_navigation():
     _run(scenario())
 
 
-def test_theme_switch_restyles_and_persists():
+def test_theme_switch_restyles_and_persists(monkeypatch):
     """Switching themes (Ctrl+P → Theme) recolors the UI and is saved."""
     from music_cli.storage.state import SETTING_THEME
     from music_cli.tui.app import MUSIC_CLI_THEME, MusicTUI
+
+    install_daemon(monkeypatch)
 
     async def scenario():
         app = MusicTUI(make_client())
@@ -293,9 +398,11 @@ def test_theme_switch_restyles_and_persists():
     _run(scenario())
 
 
-def test_theme_restored_from_settings():
+def test_theme_restored_from_settings(monkeypatch):
     """A theme saved by a previous run wins over the built-in default."""
     from music_cli.tui.app import MusicTUI
+
+    install_daemon(monkeypatch)
 
     async def scenario():
         app = MusicTUI(make_client())
@@ -307,271 +414,8 @@ def test_theme_restored_from_settings():
     _run(scenario())
 
 
-def test_tui_search_play_queue_and_next():
-    from music_cli.tui.app import MusicTUI
-    from music_cli.tui.components import QueueList, ResultsTable
-    from music_cli.tui.components.now_playing import NowPlaying
-
-    async def scenario():
-        client = make_client()
-        app = MusicTUI(client)
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-
-            search = app.query_one("#search-input")
-            search.value = "midnight city"
-            await pilot.pause(0.6)
-            results = app.query_one(ResultsTable)
-            assert len(results._results) == 3
-            assert results._results["v1"].title == "Song 1"
-
-            app.play_result(results._results["v1"])
-            await pilot.pause()
-            await pilot.pause()
-            np = app.query_one(NowPlaying)
-            assert str(np.query_one("#np-title").content) == "Stream of v1"
-            assert client.player.played
-
-            await pilot.pause(0.6)
-            queue_list = app.query_one(QueueList)
-            assert len(queue_list.children) == 2
-
-            app.action_next_track()
-            await pilot.pause()
-            await pilot.pause()
-            assert client.player.played[-1].video_id == "t1"
-
-            client.player.playback_time = 5.0
-            await pilot.pause(0.6)
-            assert str(app.query_one("#np-time").content) == "0:05 / 3:33"
-
-    _run(scenario())
-
-
-def test_tui_search_empty_and_track_end():
-    from music_cli.tui.app import MusicTUI
-    from music_cli.tui.components import ResultsTable
-    from music_cli.tui.components.now_playing import NowPlaying
-
-    async def scenario():
-        client = make_client()
-        app = MusicTUI(client)
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-
-            search = app.query_one("#search-input")
-            search.value = ""
-            await pilot.pause(0.6)
-            assert app.query_one(ResultsTable).row_count == 0
-
-            search.value = "coldplay"
-            await pilot.pause(0.6)
-            assert app.query_one(ResultsTable).row_count == 3
-
-            app.client.player.played.append("x")
-            client.current = FakeExtractor().resolve("v1")
-            client.queue = []
-            app._last_video_id = "v1"
-            app.on_track_ended()
-            await pilot.pause()
-            await pilot.pause(0.6)
-            assert app.client.player.played[-1] == "x"
-            assert (
-                str(app.query_one(NowPlaying).query_one("#np-status").content)
-                == "End of station"
-            )
-
-    _run(scenario())
-
-
-def test_transport_actions():
-    from music_cli.tui.app import MusicTUI
-
-    async def scenario():
-        client = make_client()
-        app = MusicTUI(client)
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            client.current = FakeExtractor().resolve("v1")
-            app.action_toggle_playback()
-            assert client.player.pause is True
-            app.action_toggle_playback()
-            assert client.player.pause is False
-            app.action_seek_forward()
-            assert client.player.playback_time == 5.0
-            app.action_volume_up()
-            assert client.player.volume == 85
-            app.action_toggle_mute()
-            assert client.player.muted is True
-
-    _run(scenario())
-
-
-def test_tui_persists_and_restores_player_settings():
-    from music_cli.tui.app import MusicTUI
-
-    async def scenario():
-        client = make_client()
-        app = MusicTUI(client)
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            app.action_volume_up()
-            app.action_volume_up()
-            app.action_toggle_mute()
-            app.action_toggle_loop()
-            app.action_toggle_auto_next()
-            await pilot.pause()
-            assert client.player.volume == 90
-            assert client.player.muted is True
-            assert client.player.loop is True
-            assert app._auto_next is False
-
-        resumed_client = make_client()
-        resumed = MusicTUI(resumed_client)
-        async with resumed.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            assert resumed_client.player.volume == 90
-            assert resumed_client.player.muted is True
-            assert resumed_client.player.loop is True
-            assert resumed._auto_next is False
-
-    _run(scenario())
-
-
-def test_tui_auto_next_toggle_stops_at_track_end():
-    from music_cli.tui.app import MusicTUI
-    from music_cli.tui.components.now_playing import NowPlaying
-
-    async def scenario():
-        client = make_client()
-        client.queue = [
-            PlaylistTrack(video_id="t1", title="Up next", artists=["B"]),
-        ]
-        app = MusicTUI(client)
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            assert app._auto_next is True
-
-            app.action_toggle_auto_next()
-            assert app._auto_next is False
-
-            client.current = FakeExtractor().resolve("v1")
-            app.on_track_ended()
-            await pilot.pause()
-            assert client.current is None
-            assert not client.player.played
-            assert "auto next is off" in str(
-                app.query_one(NowPlaying).query_one("#np-status").content
-            )
-
-            app.action_toggle_auto_next()
-            assert app._auto_next is True
-            app.on_track_ended()
-            await pilot.pause()
-            assert client.player.played[-1].video_id == "t1"
-
-    _run(scenario())
-
-
-def test_tui_loop_toggle():
-    from music_cli.tui.app import MusicTUI
-
-    async def scenario():
-        client = make_client()
-        app = MusicTUI(client)
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            assert app._loop_enabled is False
-
-            app.action_toggle_loop()
-            assert app._loop_enabled is True
-            assert client.player.loop is True
-
-            app.action_toggle_loop()
-            assert app._loop_enabled is False
-            assert client.player.loop is False
-
-    _run(scenario())
-
-
-def test_tui_auto_next_loops_exhausted_playlist():
-    from music_cli.tui.app import MusicTUI
-    from music_cli.yt.extract import PlaylistTrack
-
-    async def scenario():
-        client = make_client()
-        client._playlist = [
-            PlaylistTrack(video_id="p1t1", title="One", artists=["A"]),
-            PlaylistTrack(video_id="p1t2", title="Two", artists=["A"]),
-        ]
-        client.queue = []
-        app = MusicTUI(client)
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-
-            app.action_next_track()
-            await pilot.pause()
-            assert client.player.played[-1].video_id == "p1t1"
-            assert len(client.queue) == 1
-            assert client.queue[0].video_id == "p1t2"
-
-    _run(scenario())
-
-
-def test_tui_mode_indicators():
-    from music_cli.tui.app import MusicTUI
-    from music_cli.tui.components.now_playing import NowPlaying
-
-    async def scenario():
-        client = make_client()
-        app = MusicTUI(client)
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause(0.6)
-            np = app.query_one(NowPlaying)
-            loop = np.query_one("#np-loop")
-            auto = np.query_one("#np-auto")
-            assert loop.has_class("off") and not loop.has_class("on")
-            assert auto.has_class("on") and not auto.has_class("off")
-
-            app.action_toggle_loop()
-            app.action_toggle_auto_next()
-            assert loop.has_class("on")
-            assert auto.has_class("off")
-
-            await pilot.pause(0.6)
-            assert loop.has_class("on")
-            assert auto.has_class("off")
-
-    _run(scenario())
-
-
-def test_tui_wires_player_eof_and_auto_advances():
-    from music_cli.tui.app import MusicTUI
-    from music_cli.tui.components.now_playing import NowPlaying
-
-    async def scenario():
-        client = make_client()
-        client.queue = [
-            PlaylistTrack(video_id="t1", title="Up next", artists=["B"]),
-        ]
-        app = MusicTUI(client)
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            assert client.player.on_track_end == app._on_player_eof
-
-            client.current = FakeExtractor().resolve("v1")
-            client.player.on_track_end()
-            await pilot.pause()
-            await pilot.pause()
-            assert client.player.played[-1].video_id == "t1"
-            np = app.query_one(NowPlaying)
-            assert str(np.query_one("#np-title").content) == "Stream of t1"
-
-    _run(scenario())
-
-
 class CountingExtractor(FakeExtractor):
-    """Fake extractor that counts how many resolutions actually happen."""
+    """Spawned via MusicClient to count resolutions that would have happened."""
 
     def __init__(self):
         self.resolves = 0
@@ -581,91 +425,419 @@ class CountingExtractor(FakeExtractor):
         return super().resolve(video_id)
 
 
-def test_tui_double_click_plays_once():
+def _push_playing(app, track_id="abc", title="Some Song", paused=False):
+    status = dict(STATUS)
+    status["track"] = {
+        "video_id": track_id,
+        "title": title,
+        "artists": ["Some Artist"],
+        "duration": 201.0,
+    }
+    status["state"] = "paused" if paused else "playing"
+    _push(app, status)
+
+
+async def _run_action(pilot, fn):
+    fn()
+    await _settle(pilot)
+
+
+def test_search_select_sends_play_request(monkeypatch):
     from music_cli.tui.app import MusicTUI
-    from music_cli.tui.components.now_playing import NowPlaying
+    from music_cli.tui.components import NowPlaying, ResultsTable
+
+    fake = install_daemon(monkeypatch)
 
     async def scenario():
-        client = make_client()
-        client.extractor = CountingExtractor()
-        app = MusicTUI(client)
+        app = MusicTUI(make_client())
         async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            result = make_result(0, "v1")
-            app.play_result(result)
-            app.play_result(result)
-            await pilot.pause()
-            await pilot.pause()
-            assert client.extractor.resolves == 1
-            assert len(client.player.played) == 1
+            await _settle(pilot)
+            search = app.query_one("#search-input")
+            search.value = "midnight city"
+            await pilot.pause(0.6)
+            results = app.query_one(ResultsTable)
+            app.play_result(results._results["v1"])
+            await _settle(pilot)
+
+            plays = [r for r in fake.requests if r["cmd"] == "play"]
+            assert len(plays) == 1
+            assert plays[0]["video_id"] == "v1"
+            assert plays[0]["title"] == "Song 1"
+
+            _push_playing(app, track_id="v1", title="Stream of v1")
             np = app.query_one(NowPlaying)
             assert str(np.query_one("#np-title").content) == "Stream of v1"
 
     _run(scenario())
 
 
-def test_tui_queue_double_select_plays_once():
+def test_queue_select_sends_queue_index(monkeypatch):
     from music_cli.tui.app import MusicTUI
     from music_cli.tui.components import QueueList
 
-    async def scenario():
-        client = make_client()
-        client.extractor = CountingExtractor()
-        client.queue = [
-            PlaylistTrack(video_id="t1", title="One", artists=["A"]),
-            PlaylistTrack(video_id="t2", title="Two", artists=["B"]),
-            PlaylistTrack(video_id="t3", title="Three", artists=["C"]),
-        ]
-        app = MusicTUI(client)
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            queue = app.query_one(QueueList)
-            queue.set_tracks(client.queue)
-            selected = QueueList.Selected(queue, queue.children[0], index=0)
-            app._on_queue_selected(selected)
-            app._on_queue_selected(selected)
-            await pilot.pause()
-            await pilot.pause()
-            assert client.extractor.resolves == 1
-            assert len(client.player.played) == 1
-            assert [t.video_id for t in client.queue] == ["t2", "t3"]
-
-    _run(scenario())
-
-
-def test_tui_queue_click_after_refresh_keeps_track_identity():
-    from music_cli.tui.app import MusicTUI
-    from music_cli.tui.components import QueueList
+    fake = install_daemon(monkeypatch)
 
     async def scenario():
-        client = make_client()
-        client.extractor = CountingExtractor()
-        client.queue = [
-            PlaylistTrack(video_id="t1", title="One", artists=["A"]),
-            PlaylistTrack(video_id="t2", title="Two", artists=["B"]),
-        ]
-        app = MusicTUI(client)
+        app = MusicTUI(make_client())
         async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
+            await _settle(pilot)
+            # Render a queue from a pushed status, then select row 1.
+            _push(app, STATUS)
             queue = app.query_one(QueueList)
-            queue.set_tracks(client.queue)
-            assert queue.track_at(0).video_id == "t1"
-            assert queue.track_at(5) is None
+            queue.focus()
+            await pilot.pause()
             app._on_queue_selected(
                 QueueList.Selected(queue, queue.children[1], index=1)
             )
-            await pilot.pause()
-            await pilot.pause()
-            assert client.extractor.resolves == 1
-            assert client.player.played[0].video_id == "t2"
-            assert [t.video_id for t in client.queue] == ["t1"]
+            await _settle(pilot)
+
+            plays = [r for r in fake.requests if r["cmd"] == "play"]
+            assert len(plays) == 1
+            assert plays[0]["queue_index"] == 1
 
     _run(scenario())
 
 
-def test_library_tree_renders_playlists():
+def test_library_track_activates_sends_playlist_play(monkeypatch):
     from music_cli.tui.app import MusicTUI
     from music_cli.tui.components import LibraryTree
+
+    fake = install_daemon(monkeypatch)
+
+    async def scenario():
+        app = MusicTUI(make_client())
+        async with app.run_test(size=(120, 40)) as pilot:
+            for _ in range(10):
+                await pilot.pause()
+            tree = app.query_one(LibraryTree)
+            tree.focus()
+            await pilot.press("down")
+            await pilot.press("enter")
+            for _ in range(10):
+                await pilot.pause()
+            await pilot.press("down")
+            await pilot.press("enter")
+            for _ in range(10):
+                await pilot.pause()
+
+            plays = [r for r in fake.requests if r["cmd"] == "play"]
+            assert len(plays) == 1
+            assert plays[0]["playlist_id"] == "p1"
+            assert plays[0]["playlist_index"] == 0
+
+    _run(scenario())
+
+
+def test_history_select_sends_play_request(monkeypatch):
+    from music_cli.storage.state import PlayHistoryStore
+    from music_cli.tui.app import MusicTUI
+    from music_cli.tui.components import HistoryList
+
+    fake = install_daemon(monkeypatch)
+
+    async def scenario():
+        store = PlayHistoryStore(os.path.join(tempfile.mkdtemp(), "h.db"))
+        from music_cli.storage.state import PlayedTrack
+
+        store.record(PlayedTrack("h1", "History One", ("A",)))
+        store.record(PlayedTrack("h2", "History Two", ("B",)))
+        app = MusicTUI(make_client(), history_store=store)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _settle(pilot, 8)
+            history = app.query_one(HistoryList)
+            history.focus()
+            history.index = 0
+            await _settle(pilot)
+            app._on_history_selected(HistoryList.Selected(history, None, index=0))
+            await _settle(pilot)
+
+            plays = [r for r in fake.requests if r["cmd"] == "play"]
+            assert len(plays) == 1
+            assert plays[0]["video_id"] == "h2"
+
+    _run(scenario())
+
+
+def test_transport_actions_send_ipc(monkeypatch):
+    from music_cli.tui.app import MusicTUI
+
+    fake = install_daemon(monkeypatch)
+
+    async def scenario():
+        app = MusicTUI(make_client())
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _settle(pilot)
+            cmds = []
+            before = len(fake.requests)
+            app.action_toggle_playback()
+            app.action_seek_forward()
+            app.action_seek_back()
+            app.action_volume_up()
+            app.action_toggle_mute()
+            await _settle(pilot)
+            new = fake.requests[before:]
+            cmds = [r["cmd"] for r in new]
+            assert "toggle" in cmds
+            assert {"cmd": "seek", "offset": 5} in new
+            assert {"cmd": "seek", "offset": -5} in new
+            volume = [r for r in new if r["cmd"] == "volume"]
+            assert volume == [{"cmd": "volume", "delta": 5}]
+            mute = [r for r in new if r["cmd"] == "mute"]
+            assert mute == [{"cmd": "mute", "state": "toggle"}]
+
+    _run(scenario())
+
+
+def test_next_guard_collapses_double_press(monkeypatch):
+    from music_cli.tui.app import MusicTUI
+
+    fake = install_daemon(monkeypatch)
+
+    async def scenario():
+        app = MusicTUI(make_client())
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _settle(pilot)
+            app.action_next_track()
+            app.action_next_track()  # in flight -> dropped
+            await _settle(pilot)
+            assert [r["cmd"] for r in fake.requests].count("next") == 1
+
+    _run(scenario())
+
+
+def test_double_click_plays_once(monkeypatch):
+    from music_cli.tui.app import MusicTUI
+
+    fake = install_daemon(monkeypatch)
+
+    async def scenario():
+        app = MusicTUI(make_client())
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _settle(pilot)
+            result = make_result(0, "v1")
+            app.play_result(result)
+            app.play_result(result)  # same video, in flight -> dropped
+            await _settle(pilot)
+            plays = [r for r in fake.requests if r["cmd"] == "play"]
+            assert len(plays) == 1
+
+    _run(scenario())
+
+
+def test_pushed_status_updates_now_playing_and_queue(monkeypatch):
+    from music_cli.tui.app import MusicTUI
+    from music_cli.tui.components import NowPlaying, QueueList
+
+    install_daemon(monkeypatch)
+
+    async def scenario():
+        app = MusicTUI(make_client())
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _settle(pilot)
+            app._render_status(IDLE_STATUS)
+            np = app.query_one(NowPlaying)
+            assert str(np.query_one("#np-title").content) == "Nothing playing"
+
+            _push(app, STATUS)
+            assert str(np.query_one("#np-title").content) == "Some Song"
+            assert str(np.query_one("#np-subtitle").content) == "Some Artist"
+            queue = app.query_one(QueueList)
+            assert queue.track_at(0).video_id == "q1"
+            assert str(app.query_one("#queue-count").content) == "2 up next"
+            assert str(np.query_one("#np-time").content) == "1:12 / 3:21"
+
+    _run(scenario())
+
+
+def test_progress_position_from_status_event(monkeypatch):
+    from music_cli.tui.app import MusicTUI
+    from music_cli.tui.components import NowPlaying
+
+    install_daemon(monkeypatch)
+
+    async def scenario():
+        app = MusicTUI(make_client())
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _settle(pilot)
+            status = dict(STATUS)
+            status["position"] = 5.0
+            _push(app, status)
+            np = app.query_one(NowPlaying)
+            assert str(np.query_one("#np-time").content) == "0:05 / 3:21"
+
+    _run(scenario())
+
+
+def test_track_change_refreshes_history(monkeypatch):
+    from music_cli.storage.state import PlayHistoryStore
+    from music_cli.tui.app import MusicTUI
+    from music_cli.tui.components import HistoryList
+
+    install_daemon(monkeypatch)
+
+    async def scenario():
+        store = PlayHistoryStore(os.path.join(tempfile.mkdtemp(), "h.db"))
+        from music_cli.storage.state import PlayedTrack
+
+        app = MusicTUI(make_client(), history_store=store)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _settle(pilot, 8)
+            history = app.query_one(HistoryList)
+            assert history.index is None
+
+            # A pushed track with a fresh id triggers a re-read of the store.
+            store.record(PlayedTrack("new1", "New Track", ("N",)))
+            _push_playing(app, track_id="new1", title="New Track")
+            await _settle(pilot)
+            assert history.track_at(0).video_id == "new1"
+
+            # The same track id again does not re-render history.
+            store.record(PlayedTrack("other", "Other", ("O",)))
+            _push_playing(app, track_id="new1", title="New Track")
+            await _settle(pilot)
+            assert history.track_at(0).video_id == "new1"
+
+    _run(scenario())
+
+
+def test_mode_toogles_send_ipc(monkeypatch):
+    from music_cli.tui.app import MusicTUI
+    from music_cli.tui.components.now_playing import NowPlaying
+
+    fake = install_daemon(monkeypatch)
+
+    async def scenario():
+        app = MusicTUI(make_client())
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _settle(pilot)
+            np = app.query_one(NowPlaying)
+
+            status = dict(STATUS)
+            status["loop"] = True
+            status["auto_next"] = False
+            _push(app, status)
+            assert np.query_one("#np-loop").has_class("on")
+            assert np.query_one("#np-auto").has_class("off")
+
+            app.action_toggle_loop()
+            app.action_toggle_auto_next()
+            app.action_toggle_mute()
+            await _settle(pilot)
+            toggles = [
+                r
+                for r in fake.requests
+                if r["cmd"] in ("loop", "auto_next", "mute")
+                and r.get("state") == "toggle"
+            ]
+            assert {r["cmd"] for r in toggles} == {"loop", "auto_next", "mute"}
+
+    _run(scenario())
+
+
+def test_volume_mute_reflect_pushed_status(monkeypatch):
+    from music_cli.tui.app import MusicTUI
+    from music_cli.tui.components.now_playing import NowPlaying
+
+    install_daemon(monkeypatch)
+
+    async def scenario():
+        app = MusicTUI(make_client())
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _settle(pilot)
+            np = app.query_one(NowPlaying)
+            status = dict(STATUS)
+            status["volume"] = 45
+            status["muted"] = True
+            _push(app, status)
+            assert str(np.query_one("#np-volume").content) == "Vol 45% · muted"
+
+    _run(scenario())
+
+
+def test_mount_render_nothing_playing_when_daemon_idle(monkeypatch):
+    from music_cli.storage.state import PlayHistoryStore
+    from music_cli.tui.app import MusicTUI
+    from music_cli.tui.components.now_playing import NowPlaying
+
+    install_daemon(monkeypatch, status=IDLE_STATUS)
+
+    async def scenario():
+        store = PlayHistoryStore(os.path.join(tempfile.mkdtemp(), "h.db"))
+        app = MusicTUI(make_client(), history_store=store)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _settle(pilot, 10)
+            np = app.query_one(NowPlaying)
+            assert str(np.query_one("#np-title").content) == "Nothing playing"
+
+    _run(scenario())
+
+
+def test_mount_shows_last_history_paused_when_idle(monkeypatch):
+    from music_cli.storage.state import PlayedTrack, PlayHistoryStore
+    from music_cli.tui.app import MusicTUI
+    from music_cli.tui.components.now_playing import NowPlaying
+
+    install_daemon(monkeypatch, status=IDLE_STATUS)
+
+    async def scenario():
+        store = PlayHistoryStore(os.path.join(tempfile.mkdtemp(), "h.db"))
+        store.record(PlayedTrack("last1", "Last One", ("L",), duration=180.0))
+        app = MusicTUI(make_client(), history_store=store)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _settle(pilot, 10)
+            np = app.query_one(NowPlaying)
+            assert str(np.query_one("#np-title").content) == "Last One"
+
+    _run(scenario())
+
+
+def test_playback_failure_reported_and_history_untouched(monkeypatch):
+    from music_cli.storage.state import PlayHistoryStore
+    from music_cli.tui.app import MusicTUI
+    from music_cli.tui.components.now_playing import NowPlaying
+
+    fake = install_daemon(monkeypatch)
+    fake.ok = False
+
+    async def scenario():
+        store = PlayHistoryStore(os.path.join(tempfile.mkdtemp(), "h.db"))
+        app = MusicTUI(make_client(), history_store=store)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _settle(pilot)
+            app.play_result(make_result(0, "v1"))
+            await _settle(pilot)
+            assert store.most_recent() is None
+            assert (
+                str(app.query_one(NowPlaying).query_one("#np-status").content)
+                == "Playback failed"
+            )
+
+    _run(scenario())
+
+
+def test_volume_up_sends_delta_5(monkeypatch):
+    from music_cli.tui.app import MusicTUI
+
+    fake = install_daemon(monkeypatch)
+
+    async def scenario():
+        app = MusicTUI(make_client())
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _settle(pilot)
+            before = len(fake.requests)
+            app.action_volume_up()
+            await _settle(pilot)
+            new = fake.requests[before:]
+            assert {"cmd": "volume", "delta": 5} in new
+
+    _run(scenario())
+
+
+def test_library_tree_renders_playlists(monkeypatch):
+    from music_cli.tui.app import MusicTUI
+    from music_cli.tui.components import LibraryTree
+
+    install_daemon(monkeypatch)
 
     async def scenario():
         client = make_client()
@@ -683,9 +855,11 @@ def test_library_tree_renders_playlists():
     _run(scenario())
 
 
-def test_library_tree_sign_in_notice_when_unauthenticated():
+def test_library_tree_sign_in_notice_when_unauthenticated(monkeypatch):
     from music_cli.tui.app import MusicTUI
     from music_cli.tui.components import LibraryTree
+
+    install_daemon(monkeypatch)
 
     async def scenario():
         client = make_client()
@@ -699,9 +873,11 @@ def test_library_tree_sign_in_notice_when_unauthenticated():
     _run(scenario())
 
 
-def test_library_tree_expand_loads_tracks():
+def test_library_tree_expand_loads_tracks(monkeypatch):
     from music_cli.tui.app import MusicTUI
     from music_cli.tui.components import LibraryTree
+
+    install_daemon(monkeypatch)
 
     async def scenario():
         client = make_client()
@@ -732,40 +908,11 @@ def test_library_tree_expand_loads_tracks():
     _run(scenario())
 
 
-def test_library_tree_activates_track_plays_and_queues_playlist():
-    from music_cli.tui.app import MusicTUI
-    from music_cli.tui.components import LibraryTree
-    from music_cli.tui.components.now_playing import NowPlaying
-
-    async def scenario():
-        client = make_client()
-        client.extractor = CountingExtractor()
-        app = MusicTUI(client)
-        async with app.run_test(size=(120, 40)) as pilot:
-            for _ in range(10):
-                await pilot.pause()
-            tree = app.query_one(LibraryTree)
-            tree.focus()
-            await pilot.press("down")
-            await pilot.press("enter")
-            for _ in range(10):
-                await pilot.pause()
-            await pilot.press("down")
-            await pilot.press("enter")
-            for _ in range(10):
-                await pilot.pause()
-
-            assert client.player.played[-1].video_id == "p1t1"
-            assert [track.video_id for track in client.queue] == ["p1t2"]
-            np = app.query_one(NowPlaying)
-            assert str(np.query_one("#np-title").content) == "Stream of p1t1"
-
-    _run(scenario())
-
-
-def test_narrow_layout_hides_side_panes():
+def test_narrow_layout_hides_side_panes(monkeypatch):
     from music_cli.tui.app import MusicTUI
     from music_cli.tui.components import ResultsTable
+
+    install_daemon(monkeypatch)
 
     async def scenario():
         client = make_client()
@@ -802,9 +949,11 @@ def test_narrow_layout_hides_side_panes():
     _run(scenario())
 
 
-def test_search_edges_jump_to_side_panes():
+def test_search_edges_jump_to_side_panes(monkeypatch):
     from music_cli.tui.app import MusicTUI
     from music_cli.tui.components import LibraryTree, QueueList, ResultsTable
+
+    install_daemon(monkeypatch)
 
     async def scenario():
         client = make_client()
@@ -839,110 +988,12 @@ def test_search_edges_jump_to_side_panes():
     _run(scenario())
 
 
-def test_tui_saves_last_played_track_and_resumes_it():
-    from music_cli.tui.app import MusicTUI
-    from music_cli.tui.components.now_playing import NowPlaying
-
-    async def scenario():
-        client = make_client()
-        app = MusicTUI(client)
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            app.play_result(make_result(0, "v1"))
-            await pilot.pause()
-            await pilot.pause()
-            await pilot.pause()
-
-            saved = app._history_store.most_recent()
-            assert saved is not None
-            assert saved.video_id == "v1"
-            assert saved.title == "Stream of v1"
-            assert saved.artists == ("Streamed Artist",)
-
-        resumed_client = make_client()
-        resumed = MusicTUI(resumed_client)
-        async with resumed.run_test(size=(120, 40)) as pilot:
-            for _ in range(10):
-                await pilot.pause()
-            assert not resumed_client.player.played
-            np = resumed.query_one(NowPlaying)
-            assert str(np.query_one("#np-title").content) == "Stream of v1"
-            assert str(np.query_one("#np-subtitle").content) == "Streamed Artist"
-
-    _run(scenario())
-
-
-def test_tui_without_saved_track_stays_idle_on_mount():
-    from music_cli.tui.app import MusicTUI
-    from music_cli.tui.components.now_playing import NowPlaying
-
-    async def scenario():
-        client = make_client()
-        app = MusicTUI(client)
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            await pilot.pause()
-            assert not client.player.played
-            assert app.query_one(NowPlaying).query_one("#np-title").content == (
-                "Nothing playing"
-            )
-
-    _run(scenario())
-
-
-def test_tui_saves_track_played_from_queue():
-    from music_cli.tui.app import MusicTUI
-    from music_cli.tui.components import QueueList
-
-    async def scenario():
-        client = make_client()
-        client.queue = [
-            PlaylistTrack(video_id="t1", title="One", artists=["A"]),
-        ]
-        app = MusicTUI(client)
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            queue = app.query_one(QueueList)
-            queue.set_tracks(client.queue)
-            app._on_queue_selected(
-                QueueList.Selected(queue, queue.children[0], index=0)
-            )
-            await pilot.pause()
-            await pilot.pause()
-            await pilot.pause()
-            saved = app._history_store.most_recent()
-            assert saved is not None
-            assert saved.video_id == "t1"
-
-    _run(scenario())
-
-
-def test_tui_does_not_save_when_playback_fails():
-    from music_cli.tui.app import MusicTUI
-
-    class FailingExtractor:
-        def resolve(self, video_id):
-            raise RuntimeError("boom")
-
-    async def scenario():
-        client = make_client()
-        client.extractor = FailingExtractor()
-        app = MusicTUI(client)
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            app.play_result(make_result(0, "v1"))
-            await pilot.pause()
-            await pilot.pause()
-            await pilot.pause()
-            assert app._history_store.most_recent() is None
-
-    _run(scenario())
-
-
-def test_waveform_widget_tracks_playback_state():
+def test_waveform_widget_tracks_playback_state(monkeypatch):
     from music_cli.tui.app import MusicTUI
     from music_cli.tui.components.now_playing import NowPlaying
     from music_cli.tui.components.waveform import Waveform
+
+    install_daemon(monkeypatch)
 
     async def scenario():
         client = make_client()
@@ -964,15 +1015,14 @@ def test_waveform_widget_tracks_playback_state():
             assert any(block in animated.plain for block in "▂▃▄▅▆▇█")
 
             # Pausing freezes the animation; resuming advances it again.
-            client.current = FakeExtractor().resolve("v1")
-            app.action_toggle_playback()
+            np.set_paused(True)
             await pilot.pause(0.7)
             assert waveform._paused
             frozen_time = waveform._time
             await pilot.pause(0.3)
             assert waveform._time == frozen_time
 
-            app.action_toggle_playback()
+            np.set_paused(False)
             await pilot.pause(0.7)
             assert not waveform._paused
             assert waveform._time > frozen_time
@@ -984,12 +1034,14 @@ def test_waveform_widget_tracks_playback_state():
     _run(scenario())
 
 
-def test_add_to_playlist_from_results():
+def test_add_to_playlist_from_results(monkeypatch):
     from textual.widgets import SelectionList
 
     from music_cli.tui.app import MusicTUI
     from music_cli.tui.components import ResultsTable
     from music_cli.tui.screens.modals import AddToPlaylistScreen
+
+    install_daemon(monkeypatch)
 
     async def scenario():
         client = make_client()
@@ -1015,12 +1067,14 @@ def test_add_to_playlist_from_results():
     _run(scenario())
 
 
-def test_add_to_playlist_from_queue():
+def test_add_to_playlist_from_queue(monkeypatch):
     from textual.widgets import SelectionList
 
     from music_cli.tui.app import MusicTUI
     from music_cli.tui.components import QueueList
     from music_cli.tui.screens.modals import AddToPlaylistScreen
+
+    install_daemon(monkeypatch)
 
     async def scenario():
         client = make_client()
@@ -1043,12 +1097,14 @@ def test_add_to_playlist_from_queue():
     _run(scenario())
 
 
-def test_remove_track_from_playlist_tree():
+def test_remove_track_from_playlist_tree(monkeypatch):
     from textual.widgets import Button
 
     from music_cli.tui.app import MusicTUI
     from music_cli.tui.components import LibraryTree
     from music_cli.tui.screens.modals import ConfirmScreen
+
+    install_daemon(monkeypatch)
 
     async def scenario():
         client = make_client()
@@ -1074,12 +1130,14 @@ def test_remove_track_from_playlist_tree():
     _run(scenario())
 
 
-def test_create_playlist_from_tree():
+def test_create_playlist_from_tree(monkeypatch):
     from textual.widgets import Button, Input
 
     from music_cli.tui.app import MusicTUI
     from music_cli.tui.components import LibraryTree
     from music_cli.tui.screens.modals import PlaylistNameScreen
+
+    install_daemon(monkeypatch)
 
     async def scenario():
         client = make_client()
@@ -1102,12 +1160,14 @@ def test_create_playlist_from_tree():
     _run(scenario())
 
 
-def test_rename_playlist_from_tree():
+def test_rename_playlist_from_tree(monkeypatch):
     from textual.widgets import Button, Input
 
     from music_cli.tui.app import MusicTUI
     from music_cli.tui.components import LibraryTree
     from music_cli.tui.screens.modals import PlaylistNameScreen
+
+    install_daemon(monkeypatch)
 
     async def scenario():
         client = make_client()
@@ -1132,9 +1192,11 @@ def test_rename_playlist_from_tree():
     _run(scenario())
 
 
-def test_playlist_keybinds_show_only_with_selection():
+def test_playlist_keybinds_show_only_with_selection(monkeypatch):
     from music_cli.tui.app import MusicTUI
     from music_cli.tui.components import LibraryTree, ResultsTable
+
+    install_daemon(monkeypatch)
 
     async def scenario():
         client = make_client()
@@ -1175,9 +1237,11 @@ def test_playlist_keybinds_show_only_with_selection():
     _run(scenario())
 
 
-def test_playlist_keybinds_hidden_when_unauthenticated():
+def test_playlist_keybinds_hidden_when_unauthenticated(monkeypatch):
     from music_cli.tui.app import MusicTUI
     from music_cli.tui.components import LibraryTree, ResultsTable
+
+    install_daemon(monkeypatch)
 
     async def scenario():
         client = make_client()
@@ -1204,57 +1268,55 @@ def test_playlist_keybinds_hidden_when_unauthenticated():
     _run(scenario())
 
 
-def test_history_panel_renders_dedups_and_plays():
-    from music_cli.storage.state import PlayHistoryStore
+def test_history_panel_renders_and_plays(monkeypatch):
+    from music_cli.storage.state import PlayedTrack, PlayHistoryStore
     from music_cli.tui.app import MusicTUI
-    from music_cli.tui.components import HistoryList, LibraryTree, ResultsTable
+    from music_cli.tui.components import HistoryList
+
+    fake = install_daemon(monkeypatch)
 
     async def scenario():
         client = make_client()
-        app = MusicTUI(
-            client,
-            history_store=PlayHistoryStore(os.path.join(tempfile.mkdtemp(), "h.db")),
-        )
+        store = PlayHistoryStore(os.path.join(tempfile.mkdtemp(), "h.db"))
+        for i in ("v0", "v1", "v2"):
+            store.record(PlayedTrack(i, f"Track {i}", (f"A{i}",)))
+        app = MusicTUI(client, history_store=store)
         async with app.run_test(size=(120, 40)) as pilot:
-            for _ in range(10):
-                await pilot.pause()
+            await _settle(pilot, 8)
             history = app.query_one(HistoryList)
-            assert history.index is None  # empty until something is played
+            # Newest first from the store (dedup is a store concern).
+            assert history.track_at(0).video_id == "v2"
+            assert history._tracks[0].video_id == "v2"
 
-            search = app.query_one("#search-input")
-            search.value = "songs"
-            await pilot.pause(0.6)
-            results = app.query_one(ResultsTable)
-
-            # Play three distinct results, then repeat the first -> deduped, moved to top.
-            for i in ("v0", "v1", "v2"):
-                app.play_result(results._results[i])
-                await pilot.pause()
-                await pilot.pause()
-            app.play_result(results._results["v0"])
-            await pilot.pause()
-            await pilot.pause()
-
-            assert len(history._tracks) == 3
-            assert history._tracks[0].video_id == "v0"
-            assert history.track_at(0).video_id == "v0"
-
-            # Arrow down from the bottom of the playlist tree enters history.
-            tree = app.query_one(LibraryTree)
-            tree.focus()
-            tree.move_cursor_to_line(tree.last_line)
-            await pilot.pause()
-            await pilot.press("down")
-            assert app.focused is history
-
-            # Selecting a history row replays it (newest-first: row 1 = v2).
-            selected = history.track_at(1).video_id
-            app.query_one(HistoryList).focus()
+            # Selecting a history row replays it (newest-first: row 1 = v1).
+            history.focus()
             history.index = 1
+            app._on_history_selected(HistoryList.Selected(history, None, index=1))
+            await _settle(pilot)
+            plays = [r for r in fake.requests if r["cmd"] == "play"]
+            assert plays
+            assert plays[-1]["video_id"] == "v1"
+
+    _run(scenario())
+
+
+def test_search_empty_clears_results(monkeypatch):
+    from music_cli.tui.app import MusicTUI
+    from music_cli.tui.components import ResultsTable
+
+    install_daemon(monkeypatch)
+
+    async def scenario():
+        app = MusicTUI(make_client())
+        async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            await pilot.press("enter")
-            await pilot.pause()
-            await pilot.pause()
-            assert selected in [p.video_id for p in client.player.played[-3:]]
+            search = app.query_one("#search-input")
+            search.value = ""
+            await pilot.pause(0.6)
+            assert app.query_one(ResultsTable).row_count == 0
+
+            search.value = "coldplay"
+            await pilot.pause(0.6)
+            assert app.query_one(ResultsTable).row_count == 3
 
     _run(scenario())
