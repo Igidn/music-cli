@@ -254,9 +254,12 @@ def _serve(
     last_heartbeat = time.monotonic()
     last_activity = time.monotonic()
     while not stop.is_set():
+        # Only poll a subscriber for writability when it has pending bytes:
+        # a connected socket is always writable, so selecting on it turns the
+        # 20ms poll into a busy loop (100% CPU) for as long as a TUI is attached.
         readable, writable, _ = select.select(
             [server, event_server, *subscribers],
-            list(subscribers),
+            [sock for sock, buffer in subscribers.items() if buffer],
             [],
             0.02,
         )
