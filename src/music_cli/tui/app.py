@@ -448,8 +448,6 @@ class MusicTUI(App[None]):
             if response.get("ok"):
                 status = response["data"]
                 self._render_status(status)
-                if status.get("track") is None:
-                    self._show_last_track_paused()
                 return
             self.set_status(f"Daemon unavailable: {response.get('error')}")
         else:
@@ -463,6 +461,8 @@ class MusicTUI(App[None]):
                 track.title, " • ".join(track.artists), track.duration
             )
             self.query_one(NowPlaying).set_paused(True)
+        else:
+            self.query_one(NowPlaying).clear_track()
 
     def _on_rpc_finished(self, worker: Worker[dict]) -> None:
         # Any IPC finishing clears the in-flight guards; the daemon also
@@ -523,7 +523,7 @@ class MusicTUI(App[None]):
         track = status.get("track")
         self._current_video_id = track["video_id"] if track else None
         if track is None:
-            now_playing.clear_track()
+            self._show_last_track_paused()
         else:
             now_playing.set_track(
                 track["title"],
