@@ -226,7 +226,16 @@ class MusicTUI(App[None]):
             )
         self._apply_saved_settings()
         self._refresh_history()
-        self._resume_last_track()
+        self._show_last_track_paused()
+
+    def _show_last_track_paused(self) -> None:
+        """Show the most recently played track, without playing it."""
+        track = self._history_store.most_recent()
+        if track is not None:
+            self.query_one(NowPlaying).set_track(
+                track.title, " • ".join(track.artists), track.duration
+            )
+            self.query_one(NowPlaying).set_paused(True)
 
     def _apply_saved_settings(self) -> None:
         """Restore persisted player preferences; saved settings always win."""
@@ -236,12 +245,6 @@ class MusicTUI(App[None]):
         self._loop_enabled = self._settings_store.get_bool(SETTING_LOOP)
         self.client.loop = self._loop_enabled
         self._auto_next = self._settings_store.get_bool(SETTING_AUTO_NEXT, True)
-
-    def _resume_last_track(self) -> None:
-        """Auto-play the most recently played track from history, if any."""
-        track = self._history_store.most_recent()
-        if track is not None:
-            self.play_video(track.video_id, track.title, " • ".join(track.artists))
 
     def on_unmount(self) -> None:
         if self._search_timer is not None:

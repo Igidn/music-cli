@@ -864,9 +864,10 @@ def test_tui_saves_last_played_track_and_resumes_it():
         async with resumed.run_test(size=(120, 40)) as pilot:
             for _ in range(10):
                 await pilot.pause()
-            assert resumed_client.player.played[-1].video_id == "v1"
+            assert not resumed_client.player.played
             np = resumed.query_one(NowPlaying)
             assert str(np.query_one("#np-title").content) == "Stream of v1"
+            assert str(np.query_one("#np-subtitle").content) == "Streamed Artist"
 
     _run(scenario())
 
