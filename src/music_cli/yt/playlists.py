@@ -90,7 +90,16 @@ class Library:
         self._client().edit_playlist(playlist_id, title=title)
 
     def add_tracks(self, playlist_id: str, video_ids: list[str]) -> None:
-        """Append ``video_ids`` to ``playlist_id``."""
+        """Append ``video_ids`` to ``playlist_id``.
+
+        Liked Music (``LM``) is not a normal playlist: tracks get in by
+        "liking" them, and ``add_playlist_items`` rejects it with a 400.
+        """
+        liked = playlist_id[2:] if playlist_id.startswith("VL") else playlist_id
+        if liked == "LM":
+            for video_id in video_ids:
+                self._client().rate_song(video_id, "LIKE")
+            return
         self._client().add_playlist_items(playlist_id, video_ids)
 
     def remove_track(self, playlist_id: str, video_id: str) -> None:

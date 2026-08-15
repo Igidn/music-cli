@@ -29,6 +29,7 @@ class FakeApi:
         self.edit_calls = []
         self.add_calls = []
         self.remove_calls = []
+        self.rate_calls = []
 
     def get_library_playlists(self, limit=None):
         self.playlist_calls.append(limit)
@@ -56,6 +57,9 @@ class FakeApi:
         self, playlistId, videoIds=None, source_playlist=None, duplicates=False
     ):
         self.add_calls.append((playlistId, videoIds))
+
+    def rate_song(self, videoId, rating):
+        self.rate_calls.append((videoId, rating))
 
     def remove_playlist_items(self, playlistId, videos):
         self.remove_calls.append((playlistId, videos))
@@ -164,6 +168,13 @@ def test_library_add_tracks():
     api = FakeApi([], [])
     Library(api=api).add_tracks("PL1", ["t1", "t2"])
     assert api.add_calls == [("PL1", ["t1", "t2"])]
+
+
+def test_library_add_tracks_to_liked_music_rates_song():
+    api = FakeApi([], [])
+    Library(api=api).add_tracks("LM", ["t1", "t2"])
+    assert api.add_calls == []
+    assert api.rate_calls == [("t1", "LIKE"), ("t2", "LIKE")]
 
 
 def test_library_remove_track_removes_every_occurrence():
