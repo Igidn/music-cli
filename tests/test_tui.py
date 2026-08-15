@@ -79,6 +79,20 @@ def make_result(i, video_id):
     )
 
 
+def make_album_result(browse_id="MPREb_album"):
+    return SearchResult(
+        result_type="album",
+        title="Some Album",
+        artists=["Some Artist"],
+        album="Some Album",
+        duration="",
+        video_id="",
+        browse_id=browse_id,
+        year="2024",
+        raw={},
+    )
+
+
 class FakeSearch:
     def __init__(self):
         self.queries = []
@@ -477,6 +491,28 @@ def test_search_select_sends_play_request(monkeypatch):
             _push_playing(app, track_id="v1", title="Stream of v1")
             np = app.query_one(NowPlaying)
             assert str(np.query_one("#np-title").content) == "Stream of v1"
+
+    _run(scenario())
+
+
+def test_album_result_sends_album_play_request(monkeypatch):
+    from music_cli.tui.app import MusicTUI
+
+    fake = install_daemon(monkeypatch)
+
+    async def scenario():
+        app = MusicTUI(make_client())
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _settle(pilot)
+            app.play_result(make_album_result("MPREb_album"))
+            await _settle(pilot)
+
+            plays = [r for r in fake.requests if r["cmd"] == "play"]
+            assert len(plays) == 1
+            # An album row must never be sent as an empty video_id play,
+            # which the daemon rejects with "a video id is required".
+            assert "video_id" not in plays[0]
+            assert plays[0]["album_id"] == "MPREb_album"
 
     _run(scenario())
 

@@ -78,6 +78,22 @@ class Library:
         tracks = [parse_watch_track(item) for item in data.get("tracks", [])]
         return [track for track in tracks if track.video_id]
 
+    def album_tracks(self, browse_id: str) -> list[PlaylistTrack]:
+        """Every playable track in the album with ``browse_id``.
+
+        Album rows carry a browse id instead of a video id, so playing an
+        album starts here. Tracks the API marks unavailable (no video id)
+        are skipped. ``get_album`` reports durations under ``duration``
+        rather than the watch playlist's ``length``, so it is remapped for
+        the shared track parser.
+        """
+        data = self._client().get_album(browseId=browse_id)
+        tracks = [
+            parse_watch_track({**item, "length": item.get("duration") or ""})
+            for item in data.get("tracks", [])
+        ]
+        return [track for track in tracks if track.video_id]
+
     def create_playlist(self, title: str) -> str:
         """Create a new private playlist and return its id."""
         result = self._client().create_playlist(title, "", privacy_status="PRIVATE")

@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     from .session import PlaybackSession
 
 _STATE_VALUES = ("on", "off", "toggle")
-_PLAY_TARGETS = ("query", "video_id", "playlist_id", "queue_index")
+_PLAY_TARGETS = ("query", "video_id", "playlist_id", "album_id", "queue_index")
 #: Seconds a stopped, un-subscribed daemon lingers before exiting itself.
 IDLE_TIMEOUT = 30.0
 #: Cap per-subscriber bytes buffered awaiting a writable socket.
@@ -93,7 +93,7 @@ def _play(session: PlaybackSession, request: dict) -> dict:
             "ok": False,
             "error": (
                 "play requires exactly one of: query, video_id, playlist_id,"
-                " queue_index"
+                " album_id, queue_index"
             ),
         }
     # Launch flags first: they must shape playback before the track starts.
@@ -110,6 +110,8 @@ def _play(session: PlaybackSession, request: dict) -> dict:
         session.play_video(request["video_id"], request.get("title", ""))
     elif target == "playlist_id":
         session.play_playlist(request["playlist_id"], request.get("playlist_index", 0))
+    elif target == "album_id":
+        session.play_album(request["album_id"], request.get("album_index", 0))
     else:
         session.play_queue_track(request["queue_index"])
     return {"ok": True, "data": session.status()}

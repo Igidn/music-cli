@@ -63,6 +63,9 @@ class FakeSession:
     def play_playlist(self, playlist_id, start_index=0):
         self._record("play_playlist", playlist_id, start_index)
 
+    def play_album(self, album_id, start_index=0):
+        self._record("play_album", album_id, start_index)
+
     def play_queue_track(self, index):
         self._record("play_queue_track", index)
 
@@ -147,6 +150,14 @@ def test_play_by_playlist_id(session):
     response = handle_request(session, {"cmd": "play", "playlist_id": "PL123"})
     assert response["ok"] is True
     assert session.calls == [("play_playlist", ("PL123", 0), {})]
+
+
+def test_play_by_album_id(session):
+    response = handle_request(
+        session, {"cmd": "play", "album_id": "MPREb_123", "album_index": 2}
+    )
+    assert response["ok"] is True
+    assert session.calls == [("play_album", ("MPREb_123", 2), {})]
 
 
 def test_play_flags_applied_before_play(session):

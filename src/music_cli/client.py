@@ -239,8 +239,24 @@ class MusicClient:
         continues the playlist in order.
         """
         tracks = self.library.tracks(playlist_id)
+        return self._play_tracklist(tracks, start_index, "Playlist is empty")
+
+    def play_album(self, album_id: str, start_index: int = 0) -> StreamInfo:
+        """Play ``album_id`` from ``start_index``, queueing the remainder.
+
+        Album search results have no video id, only a browse id; the track
+        list is fetched first and then played like a playlist, so auto-next
+        continues the album in order.
+        """
+        tracks = self.library.album_tracks(album_id)
+        return self._play_tracklist(tracks, start_index, "Album is empty")
+
+    def _play_tracklist(
+        self, tracks: list[PlaylistTrack], start_index: int, empty_error: str
+    ) -> StreamInfo:
+        """Play ``tracks`` from ``start_index``; the rest become up-next."""
         if not tracks:
-            raise PlayerError("Playlist is empty")
+            raise PlayerError(empty_error)
         if not 0 <= start_index < len(tracks):
             start_index = 0
         self._playlist = tracks

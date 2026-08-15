@@ -144,6 +144,9 @@ class FakeLibrary:
     def tracks(self, playlist_id):
         return self._tracks
 
+    def album_tracks(self, browse_id):
+        return self._tracks
+
 
 @pytest.fixture
 def client(tmp_path):
@@ -245,6 +248,18 @@ class TestPlay:
         assert stream.video_id == "p1"
         assert [t.video_id for t in client.queue] == ["p2"]
         assert history.most_recent().video_id == "p1"
+
+    def test_play_album_plays_first_and_queues_rest(self, client, session, history):
+        client.library = FakeLibrary([make_track("a1"), make_track("a2")])
+        stream = session.play_album("MPREb_x")
+        assert stream.video_id == "a1"
+        assert [t.video_id for t in client.queue] == ["a2"]
+        assert history.most_recent().video_id == "a1"
+
+    def test_play_album_empty_raises(self, client, session):
+        client.library = FakeLibrary([])
+        with pytest.raises(PlayerError, match="Album is empty"):
+            session.play_album("MPREb_x")
 
     def test_resume_last_returns_none_on_empty_history(self, session):
         assert session.resume_last() is None

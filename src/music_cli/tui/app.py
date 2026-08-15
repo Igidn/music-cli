@@ -625,12 +625,35 @@ class MusicTUI(App[None]):
             self.play_result(result)
 
     def play_result(self, result: SearchResult) -> None:
-        self._start_play(
-            result.video_id,
-            result.title,
-            result.subtitle,
-            {"cmd": "play", "video_id": result.video_id, "title": result.title},
-        )
+        if result.video_id:
+            self._start_play(
+                result.video_id,
+                result.title,
+                result.subtitle,
+                {"cmd": "play", "video_id": result.video_id, "title": result.title},
+            )
+        elif result.result_type == "album" and result.browse_id:
+            # Album rows carry a browse id, not a video id: the daemon
+            # fetches the album's track list and queues the remainder.
+            self._start_play(
+                result.browse_id,
+                result.title,
+                result.subtitle,
+                {"cmd": "play", "album_id": result.browse_id},
+            )
+        elif result.result_type == "playlist" and result.browse_id:
+            self._start_play(
+                result.browse_id,
+                result.title,
+                result.subtitle,
+                {"cmd": "play", "playlist_id": result.browse_id},
+            )
+        else:
+            self.notify(
+                f"{result.type_label} results can't be played directly",
+                title="Playback",
+                severity="warning",
+            )
 
     def play_video(self, video_id: str, title: str, subtitle: str = "") -> None:
         """Play a bare video id (used to resume the last played track)."""

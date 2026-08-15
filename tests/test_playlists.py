@@ -20,11 +20,13 @@ SAPISIDHASH = re.compile(r"SAPISIDHASH \d+_[0-9a-f]{40}")
 
 
 class FakeApi:
-    def __init__(self, playlists, tracks):
+    def __init__(self, playlists, tracks, album_tracks=()):
         self._playlists = playlists
         self._tracks = tracks
+        self._album_tracks = list(album_tracks)
         self.playlist_calls = []
         self.track_calls = []
+        self.album_calls = []
         self.create_calls = []
         self.edit_calls = []
         self.add_calls = []
@@ -38,6 +40,10 @@ class FakeApi:
     def get_playlist(self, playlistId, limit=None, related=False, suggestions_limit=0):
         self.track_calls.append(playlistId)
         return {"tracks": self._tracks}
+
+    def get_album(self, browseId):
+        self.album_calls.append(browseId)
+        return {"tracks": self._album_tracks}
 
     def create_playlist(
         self,
@@ -162,6 +168,30 @@ def test_library_rename_playlist():
     api = FakeApi([], [])
     Library(api=api).rename_playlist("PL1", "Renamed")
     assert api.edit_calls == [("PL1", "Renamed")]
+
+
+def test_library_album_tracks_parses_and_skips_unavailable():
+    # get_album rows report durations under `duration`, not `length`.
+    api = FakeApi(
+        [],
+        [],
+        [
+            {
+                "videoId": "a1",
+                "title": "Alpha",
+                "artists": [{"name": "Artist A"}],
+                "duration": "2:34",
+            },
+            {"title": "Unavailable"},  # no video id
+        ],
+    )
+    tracks = Library(api=api).album_tracks("MPREb_x")
+    assert api.album_calls == ["MPREb_x"]
+    assert len(tracks) == 1
+    assert tracks[0].video_id == "a1"
+    assert tracks[0].title == "Alpha"
+    assert tracks[0].artists == ["Artist A"]
+    assert tracks[0].duration == "2:34"
 
 
 def test_library_add_tracks():

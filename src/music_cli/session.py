@@ -94,6 +94,12 @@ class PlaybackSession:
         self.record(stream)
         return stream
 
+    def play_album(self, album_id: str, start_index: int = 0) -> StreamInfo:
+        """Play an album from ``start_index``; the client queues the remainder."""
+        stream = self.client.play_album(album_id, start_index)
+        self.record(stream)
+        return stream
+
     def stop(self) -> None:
         """Stop playback and drop the queue/current track.
 

@@ -92,6 +92,16 @@ class FakeSearch:
         return self._results
 
 
+class FakeLibrary:
+    def __init__(self, tracks=()):
+        self._tracks = list(tracks)
+        self.album_calls = []
+
+    def album_tracks(self, album_id):
+        self.album_calls.append(album_id)
+        return self._tracks
+
+
 @pytest.fixture
 def client(tmp_path):
     c = MusicClient.__new__(MusicClient)
@@ -270,6 +280,25 @@ class TestCacheIntegration:
         assert client.extractor.resolved == ["abc"]
         assert stream.video_id == "abc"
         assert client.current.video_id == "abc"
+
+    def test_play_album_plays_first_and_queues_rest(self, client):
+        client.library = FakeLibrary([make_track("a1"), make_track("a2")])
+        stream = client.play_album("MPREb_x")
+        assert stream.video_id == "a1"
+        assert client.extractor.resolved == ["a1"]
+        assert [t.video_id for t in client.queue] == ["a2"]
+        assert client.library.album_calls == ["MPREb_x"]
+
+    def test_play_album_empty_raises(self, client):
+        client.library = FakeLibrary([])
+        with pytest.raises(PlayerError, match="Album is empty"):
+            client.play_album("MPREb_x")
+
+    def test_play_album_out_of_range_index_starts_at_zero(self, client):
+        client.library = FakeLibrary([make_track("a1"), make_track("a2")])
+        stream = client.play_album("MPREb_x", 99)
+        assert stream.video_id == "a1"
+        assert [t.video_id for t in client.queue] == ["a2"]
 
     def test_playback_started_false_when_loaded_but_paused(self, client):
         """A loaded item with the player still paused is not playback.
