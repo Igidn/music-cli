@@ -8,6 +8,8 @@ follows the player around.
 
 from __future__ import annotations
 
+import threading
+
 from .client import MusicClient
 from .core.errors import PlayerError
 from .storage.state import (
@@ -72,14 +74,14 @@ class PlaybackSession:
         if result is None:
             raise PlayerError(f"No playable results for {query!r}")
         stream = self.client.play_result(result)
-        self.record(stream)
         self._load_up_next(stream.video_id)
+        self.record(stream)
         return stream
 
     def play_video(self, video_id: str, title: str = "") -> StreamInfo:
         stream = self.client.play_video(video_id, title)
-        self.record(stream)
         self._load_up_next(video_id)
+        self.record(stream)
         return stream
 
     def play_queue_track(self, index: int) -> StreamInfo:
@@ -128,6 +130,22 @@ class PlaybackSession:
             )
         )
         self.last_video_id = stream.video_id
+        self._prefetch_next()
+
+    def _prefetch_next(self) -> None:
+        """Download the next up-next track ahead of auto-advance, if used.
+
+        Only the immediate N+1 track (``queue[0]``) is fetched, never the
+        whole queue, and only while auto-next is on. Runs in a background
+        thread so the download never blocks playback. Best-effort:
+        :meth:`client.prefetch` swallows failures.
+        """
+        if not self.auto_next or not self.client.queue:
+            return
+        target = self.client.queue[0].video_id
+        threading.Thread(
+            target=self.client.prefetch, args=(target,), daemon=True, name="prefetch"
+        ).start()
 
     def _load_up_next(self, video_id: str) -> None:
         """Refresh the up-next queue; a fetch failure just leaves it empty."""

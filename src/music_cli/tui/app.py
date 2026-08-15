@@ -122,6 +122,14 @@ MUSIC_CLI_THEME = Theme(
 
 _EVENTS_RECONNECT_SECS = 2.0
 _DEFAULT_SOCKET_TIMEOUT = 0.5
+# Playback downloads finish before the daemon answers its play/next request, and
+# the daemon serves requests single-threaded (frozen during the download). The
+# per-request IPC timeout must wait out a slow download or the TUI would flash
+# "Playback failed" while the daemon is still fetching. Tracks on a slow link
+# take minutes, so stay generous.
+_PLAY_RPC_TIMEOUT = 600.0
+# After this long with a play still in flight, hint that it is a slow download.
+_SLOW_DOWNLOAD_HINT_SECS = 15.0
 
 
 class MusicTUI(App[None]):
@@ -156,8 +164,8 @@ class MusicTUI(App[None]):
     BINDINGS: ClassVar[list[Binding]] = [
         Binding("slash", "focus_search", "Search"),
         Binding("space", "toggle_playback", "Play/Pause"),
-        Binding("ctrl+right", "seek_forward", "Seek +5s"),
-        Binding("ctrl+left", "seek_back", "Seek -5s"),
+        Binding("alt+right", "seek_forward", "Seek +5s", key_display="alt+→"),
+        Binding("alt+left", "seek_back", "Seek -5s", key_display="alt+←"),
         Binding("n", "next_track", "Next"),
         Binding("a", "toggle_auto_next", "Auto next"),
         Binding("l", "toggle_loop", "Loop"),
@@ -433,8 +441,8 @@ class MusicTUI(App[None]):
     # ------------------------------------------------------------------
 
     @work(thread=True, exit_on_error=False)
-    def rpc_worker(self, request: object) -> dict:
-        return ipc.send_request(request)
+    def rpc_worker(self, request: object, timeout: float = 30.0) -> dict:
+        return ipc.send_request(request, timeout=timeout)
 
     @work(thread=True, exit_on_error=False)
     def state_worker(self, request: object) -> dict:
@@ -714,7 +722,20 @@ class MusicTUI(App[None]):
         self._pending_play = video_id
         self.query_one(NowPlaying).set_track(title, subtitle)
         self.set_status("Resolving stream…")
-        self.rpc_worker(request)
+        # A download on a slow connection can take minutes; match the IPC timeout
+        # to it and hint the cause, so it reads as a slow fetch rather than a
+        # hang that "Playback failed" would mislabel.
+        self.set_timer(
+            _SLOW_DOWNLOAD_HINT_SECS, lambda: self._hint_slow_download(video_id)
+        )
+        self.rpc_worker(request, timeout=_PLAY_RPC_TIMEOUT)
+
+    def _hint_slow_download(self, video_id: str) -> None:
+        """Nudge the status line when a play is still downloading after a while."""
+        if self._pending_play == video_id:
+            self.set_status(
+                "Downloading… may take a while on a slow connection"
+            )
 
     def _refresh_history(self) -> None:
         self.query_one(HistoryList).set_tracks(self._history_store.recent(15))
@@ -895,7 +916,7 @@ class MusicTUI(App[None]):
             return
         self._next_pending = True
         self.set_status("Resolving stream…")
-        self.rpc_worker({"cmd": "next"})
+        self.rpc_worker({"cmd": "next"}, timeout=_PLAY_RPC_TIMEOUT)
 
     def action_toggle_auto_next(self) -> None:
         self.state_worker({"cmd": "auto_next", "state": "toggle"})

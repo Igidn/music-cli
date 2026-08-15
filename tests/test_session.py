@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import threading
+import time
+from pathlib import Path
 
 import pytest
 
@@ -48,6 +50,11 @@ class FakeExtractor:
         return StreamInfo(
             video_id=video_id, title=f"Stream {video_id}", stream_url="https://u"
         )
+
+    def download(self, video_id, target):
+        path = Path(f"{target}.m4a")
+        path.write_bytes(b"audio")
+        return str(path)
 
 
 class FakePlayer:
@@ -328,6 +335,37 @@ class TestNextTrack:
         client.queue = [make_track("t1")]
         session.on_track_end()
         assert client.player.played[-1].video_id == "t1"
+
+
+def _wait_cached(cache, video_id, timeout=2.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if cache.path_for(video_id) is not None:
+            return True
+        time.sleep(0.02)
+    return False
+
+
+class TestPrefetchNext:
+    def test_prefetches_only_next_up_track(self, client, session):
+        client.queue = [make_track("next1"), make_track("next2")]
+        session.record(
+            StreamInfo(video_id="cur", title="Cur", stream_url="u")
+        )
+        assert _wait_cached(client.cache, "next1")
+        assert client.cache.path_for("next2") is None
+
+    def test_skipped_when_auto_next_off(self, client, session):
+        session.set_auto_next("off")
+        client.queue = [make_track("t1")]
+        session.record(StreamInfo(video_id="cur", title="Cur", stream_url="u"))
+        time.sleep(0.1)
+        assert client.cache.path_for("t1") is None
+
+    def test_skipped_when_queue_empty(self, client, session):
+        client.queue = []
+        session.record(StreamInfo(video_id="cur", title="Cur", stream_url="u"))
+        assert client.cache.path_for("cur") is None
 
 
 class TestControls:
