@@ -437,6 +437,8 @@ ModalScreen {
     margin-right: 5;
     color: $text-muted;
     text-overflow: ellipsis;
+    text-style: italic;
+    opacity: 0.4;
 }
 
 Screen.-narrow #np-lyric {
