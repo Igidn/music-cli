@@ -75,7 +75,7 @@ class ResultsTable(DataTable, inherit_bindings=False):
                 self._fit(result.title, "title"),
                 self._fit(artists, "artist"),
                 self._fit(result.album or "", "album"),
-                self._fit(result.duration or "", "duration"),
+                self._fit(result.duration or "--:--", "duration"),
                 key=key,
             )
             self._results[key] = result

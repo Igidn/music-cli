@@ -9,7 +9,7 @@ from music_cli.client import MusicClient
 from music_cli.core.errors import PlayerError
 from music_cli.storage.cache import AudioCache, TrackMeta
 from music_cli.yt.extract import PlaylistTrack, StreamExtractor, StreamInfo
-from music_cli.yt.search import parse_artists
+from music_cli.yt.search import parse_artists, parse_search_result
 
 
 def make_result(video_id="abc", title="Some Song", artists=("Some Artist",)):
@@ -313,3 +313,33 @@ class TestCacheIntegration:
             ]
         }
         assert parse_artists(info) == ["A", "B"]
+
+    def test_parse_artists_reads_singular_artist_key(self):
+        # Artist-filtered ytmusicapi rows carry the name as a plain string.
+        assert parse_artists({"artist": "Tame Impala"}) == ["Tame Impala"]
+        assert parse_artists({"artist": {"name": "Tame Impala"}}) == ["Tame Impala"]
+
+    def test_parse_search_result_uses_artist_key_for_artist_rows(self):
+        # ytmusicapi artist rows have no `title`; without a fallback the
+        # results table showed "Unknown" with an empty Artist column.
+        result = parse_search_result(
+            {
+                "resultType": "artist",
+                "artist": "Tame Impala",
+                "browseId": "UCGz-eguN8tcic5kUG4s1ZgA",
+            }
+        )
+        assert result.title == "Tame Impala"
+        assert result.artists == ["Tame Impala"]
+
+    def test_parse_search_result_titles_artist_top_result_from_artists(self):
+        # Unfiltered search's top artist row: `title` missing but `artists`
+        # is parsed by ytmusicapi.
+        result = parse_search_result(
+            {
+                "resultType": "artist",
+                "artists": [{"name": "Radiohead", "id": "UCq0Ow..."}],
+            }
+        )
+        assert result.title == "Radiohead"
+        assert result.artists == ["Radiohead"]

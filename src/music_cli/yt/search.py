@@ -44,13 +44,27 @@ def format_duration(raw: Any) -> str:
     return f"{minutes}:{secs:02d}"
 
 
-def parse_artists(info: dict[str, Any]) -> list[str]:
-    """Artist names from list-of-dicts (ytmusicapi) or list-of-str (yt-dlp)."""
-    raw = info.get("artists")
+def _artist_names(raw: Any) -> list[str]:
+    """Normalise a ytmusicapi `artist(s)`-style value (str/dict/list) to names."""
+    if isinstance(raw, str):
+        return [raw] if raw else []
+    if isinstance(raw, dict):
+        return [raw["name"]] if raw.get("name") else []
     if isinstance(raw, list):
         names = [a.get("name") if isinstance(a, dict) else a for a in raw]
         # yt-dlp sometimes repeats an artist within `artists`; dedupe in order.
-        if artists := list(dict.fromkeys(n for n in names if n)):
+        return list(dict.fromkeys(n for n in names if n))
+    return []
+
+
+def parse_artists(info: dict[str, Any]) -> list[str]:
+    """Artist names from list-of-dicts (ytmusicapi) or list-of-str (yt-dlp).
+
+    Artist-type search results carry the name under the singular ``artist``
+    key (a plain string from ytmusicapi), so that key is checked too.
+    """
+    for key in ("artists", "artist"):
+        if artists := _artist_names(info.get(key)):
             return artists
     for key in ("author", "creator", "uploader"):
         val = info.get(key)
@@ -75,10 +89,17 @@ def parse_search_result(result: dict[str, Any]) -> SearchResult:
     if not duration:
         duration = format_duration(result.get("duration_seconds"))
     year = result.get("year")
+    artists = parse_artists(result)
+    # Artist-type rows come back from ytmusicapi with no `title`; the name
+    # lives under `artist` (filtered search) or as the first parsed artist
+    # (unfiltered search's top result). Without this the row shows "Unknown".
+    title = result.get("title")
+    if not title and result.get("resultType") == "artist":
+        title = artists[0] if artists else None
     return SearchResult(
         result_type=result.get("resultType", "unknown"),
-        title=result.get("title") or "Unknown",
-        artists=parse_artists(result),
+        title=title or "Unknown",
+        artists=artists,
         album=_parse_album(result),
         duration=duration,
         video_id=result.get("videoId") or "",
