@@ -99,6 +99,12 @@ class FakePlayer:
     def pump(self):
         pass
 
+    def stop(self):
+        self.paused = True
+        self.playing = False
+        self.position = 0.0
+        self.duration = None
+
     def close(self):
         pass
 

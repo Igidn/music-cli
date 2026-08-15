@@ -1,88 +1,49 @@
-# music-cli
+<h2 align="center">music-cli</h2>
 
-Ad-free YouTube Music player for the terminal.
+<p align="center">An ad-free YouTube Music player for the terminal, built for macOS (for now).</p>
 
-## Install
+No YouTube Premium needed. music-cli pulls streams straight from YouTube Music and plays them. <br>
 
-```sh
-uv tool install music-cli   # or: pip install music-cli
-```
+music-cli got both TUI and CLI; both of them are in sync, allowing agent control (you can run CLI without the TUI and keeping it run in the background).
 
-Requires Python 3.14+ and macOS (playback uses AVFoundation).
+## Installation
 
-## Sign in
-
-Run `music-cli login` to sign in. A browser window opens on
-music.youtube.com, you sign in with your Google account, and the window
-closes itself. The account cookies are saved to
-`~/.config/music-cli/cookies.txt` and unlock:
-
-- your library playlists (sidebar)
-- account-aware stream extraction
-
-No Google OAuth client setup required. Re-run `music-cli login` when the
-cookies expire. Without a sign-in, the TUI runs anonymously and the
-playlist panel shows the login command.
-
-The browser is downloaded once on the first sign-in (~150 MB).
-
-### Alternatives
-
-- `--cookies FILE` / `$MUSIC_CLI_COOKIE_FILE` — use a cookie file you
-  exported yourself (Netscape format).
-
-## Usage
+Requires Python 3.14 or newer and macOS.
 
 ```sh
-music-cli                 # start the TUI
-music-cli login           # browser sign-in
-music-cli --clear-cache   # delete the audio download cache
+cd &&
+git clone https://github.com/Igidn/music-cli.git &&
+cd music-cli/ && 
+uv tool install --python 3.14 .
 ```
 
-The last track you played is remembered and resumes automatically the next
-time you start the TUI. Player preferences (volume, muted, loop) are
-persisted too — once you've changed them, they win over `--volume`.
+Playwright ships with it (for sign in)
 
-### Keys
+Login to youtube music using:
 
-| Key | Action |
+```sh
+music-cli login
+```
+
+run `music-cli --help` to get started
+
+## Commands
+
+| Command | Description |
 | --- | --- |
-| `/` | search |
-| `enter` | play / open playlist |
-| `space` | play / pause |
-| `n` | next |
-| `a` | toggle auto-next |
-| `l` | toggle loop |
-| `ctrl+left/right` | seek |
-| `+` / `-` | volume |
-| `m` | mute |
-| `q` | quit |
+| `play` | Play a query, video, or playlist |
+| `pause` / `resume` / `toggle` | Transport control |
+| `next` / `stop` | Skip ahead / halt playback |
+| `seek +30` / `seek 120` | Skip forward or jump to a position |
+| `volume 50` / `volume +10` | Set or adjust the volume |
+| `mute on` / `loop off` / `auto-next on` | Toggle settings |
+| `status` / `queue` | Current track and up-next list |
+| `search "..."` | Search YouTube Music |
+| `playlists ...` | List, play, and edit playlists |
+| `history` | Recently played tracks |
 
-With a song selected (search results, up next or a playlist's tracks) `s`
-opens a picker to add it to playlists. In the playlists panel, `c` creates a
-playlist, `r` renames the selected playlist and `d` removes the selected song
-from its playlist. These keys appear in the footer only when they apply.
+Most list and query commands print human-readable tables; add `--json` for machine output.
 
-## CLI
+## License
 
-Playback commands talk to a background daemon over a control socket. The
-daemon is not an always-on service: any `music-cli` command that touches
-playback (or opening the TUI) starts it on demand, and it exits automatically
-after roughly 30 seconds of idle. `status`, `queue`, `search`,
-`playlists` and `history` accept `--json` for machine-readable output.
-
-```sh
-music-cli play "never gonna give you up"   # search and play
-music-cli play --video-id dQw4w9WgXcQ      # play a video id
-music-cli play --playlist PL... [--loop] [--no-auto-next] [--volume 65]
-music-cli pause|resume|toggle|next|stop    # transport; stop halts playback
-                                           # and the daemon exits on its own
-music-cli seek +30 | seek -10 | seek 90    # forward / back / absolute
-music-cli volume 65 | volume +5            # absolute / relative
-music-cli mute on|off|toggle               # also: loop, auto-next
-music-cli status                           # what is playing
-music-cli queue                            # the up-next queue
-music-cli search QUERY [--limit N] [--filter songs|videos|albums|artists|playlists]
-music-cli playlists list                   # also: tracks/create/rename/add/remove
-music-cli history [--limit N]              # recently played tracks
-```
+MIT. See [LICENSE](LICENSE).
