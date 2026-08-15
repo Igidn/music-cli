@@ -35,6 +35,7 @@ from music_cli.storage.state import (
     SettingsStore,
 )
 from music_cli.yt.extract import PlaylistTrack
+from music_cli.yt.lyrics import fetch_synced_lyrics
 from music_cli.yt.playlists import LibraryPlaylist
 from music_cli.yt.search import SearchFilter, SearchResult, format_duration
 
@@ -198,6 +199,7 @@ class MusicTUI(App[None]):
         self._muted = False
         self._queue_video_ids: tuple[str, ...] = ()
         self._history_track_id: str | None = None
+        self._lyrics_video_id: str | None = None
         # A raw socket for daemon push events; None until we've connected.
         self._events_socket: socket.socket | None = None
         self._events_thread: threading.Thread | None = None
@@ -404,6 +406,7 @@ class MusicTUI(App[None]):
             "rpc_worker": self._on_rpc_finished,
             "state_worker": self._on_state_finished,
             "init_status_worker": self._on_init_status_finished,
+            "lyric_worker": self._on_lyric_fetched,
             "library_worker": self._on_library_fetched,
             "playlist_tracks_worker": self._on_playlist_tracks_fetched,
             "playlist_mutation_worker": self._on_playlist_mutation_finished,
@@ -438,6 +441,16 @@ class MusicTUI(App[None]):
         return ipc.send_request(request)
 
     @work(thread=True, exit_on_error=False)
+    def lyric_worker(
+        self,
+        video_id: str,
+        title: str,
+        artists: tuple[str, ...],
+        duration: float | None,
+    ) -> list[tuple[float, str]]:
+        return fetch_synced_lyrics(title, artists, duration or None)
+
+    @work(thread=True, exit_on_error=False)
     def init_status_worker(self) -> dict:
         try:
             ipc.ensure_daemon(self._cookies)
@@ -458,6 +471,12 @@ class MusicTUI(App[None]):
             self.set_status(f"Daemon unavailable: {response.get('error')}")
         else:
             self.set_status("Daemon unavailable")
+
+    def _on_lyric_fetched(
+        self, worker: Worker[list[tuple[float, str]]]
+    ) -> None:
+        if worker.state is WorkerState.SUCCESS:
+            self.query_one(NowPlaying).set_lyrics(worker.result or [])
 
     def _show_last_track_paused(self) -> None:
         """Show the most recently played track, without playing it."""
@@ -549,6 +568,14 @@ class MusicTUI(App[None]):
                 if track["video_id"] != self._history_track_id:
                     self._history_track_id = track["video_id"]
                     self._refresh_history()
+                if track["video_id"] != self._lyrics_video_id:
+                    self._lyrics_video_id = track["video_id"]
+                    self.lyric_worker(
+                        track["video_id"],
+                        track["title"],
+                        tuple(track.get("artists") or []),
+                        track.get("duration"),
+                    )
         state = status.get("state")
         if state == "stopped" or track is None:
             self.set_status("Ready")

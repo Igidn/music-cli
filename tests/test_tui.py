@@ -1213,6 +1213,70 @@ def test_waveform_widget_tracks_playback_state(monkeypatch):
     _run(scenario())
 
 
+def test_lyrics_survive_status_heartbeats(monkeypatch):
+    """A heartbeat re-set_track for the same track must not wipe lyrics.
+
+    The lyric worker finishes after the first status push; the next heartbeat
+    used to reset _lyrics to [] and the bar showed "♪ ♪ ♪" forever.
+    """
+    from music_cli.tui.app import MusicTUI
+    from music_cli.tui.components.now_playing import NowPlaying
+
+    install_daemon(monkeypatch)
+
+    def status_for(position):
+        return {
+            "state": "playing",
+            "track": {
+                "video_id": "abc",
+                "title": "Some Song",
+                "artists": ["Some Artist"],
+                "duration": 200.0,
+            },
+            "position": position,
+            "duration": 200.0,
+            "volume": 80,
+            "muted": False,
+            "loop": False,
+            "auto_next": True,
+            "queue": [],
+        }
+
+    async def scenario():
+        app = MusicTUI(make_client())
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _settle(pilot, 6)
+            _push(app, status_for(1.0))
+            await _settle(pilot)
+            np = app.query_one(NowPlaying)
+            # Lyric worker finishes and hands over the synced lines.
+            np.set_lyrics([(0.0, "first line"), (5.0, "second line")])
+            np.set_progress(6.0, 200.0)
+            lyric = lambda: str(np.query_one("#np-lyric").content)
+            assert lyric() == "second line"
+            # Next heartbeat for the same track: lyrics must survive.
+            _push(app, status_for(7.0))
+            await _settle(pilot)
+            assert lyric() == "second line"
+            # A genuinely different track still resets.
+            _push(
+                app,
+                {
+                    **status_for(0.0),
+                    "track": {
+                        "video_id": "xyz",
+                        "title": "Other Song",
+                        "artists": ["Other Artist"],
+                        "duration": 100.0,
+                    },
+                },
+            )
+            await _settle(pilot)
+            assert lyric() == "♪ ♪ ♪"
+
+    _run(scenario())
+
+
 def test_add_to_playlist_from_results(monkeypatch):
     from textual.widgets import SelectionList
 
@@ -1499,3 +1563,15 @@ def test_search_empty_clears_results(monkeypatch):
             assert app.query_one(ResultsTable).row_count == 3
 
     _run(scenario())
+
+
+def test_parse_lrc_synced_lines():
+    from music_cli.yt.lyrics import parse_lrc
+
+    lrc = "[00:05.50]first\n[00:12]second line\nnot timed\n[01:02.3]later"
+    assert parse_lrc(lrc) == [
+        (5.0, "first"),
+        (12.0, "second line"),
+        (62.0, "later"),
+    ]
+    assert parse_lrc("no timestamps here") == []

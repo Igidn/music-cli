@@ -31,6 +31,9 @@ class NowPlaying(Widget):
         self._duration: float = 0.0
         self._position: float = 0.0
         self._waveform_started = False
+        self._lyrics: list[tuple[float, str]] = []
+        self._lyric_index = 0
+        self._track_key: tuple[str, str] | None = None
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="np-head"):
@@ -41,6 +44,7 @@ class NowPlaying(Widget):
                     "Type to search, or press / to focus the search box",
                     id="np-subtitle",
                 )
+            yield Static("♪ ♪ ♪", id="np-lyric")
             yield Static("Loop", id="np-loop", classes="off")
             yield Static("Auto", id="np-auto", classes="off")
             yield Static("", id="np-volume")
@@ -69,13 +73,21 @@ class NowPlaying(Widget):
         self.query_one("#np-title", Static).update(title)
         self.query_one("#np-subtitle", Static).update(subtitle)
         self._has_track = True
-        self._waveform_started = False
         if duration:
             self._duration = float(duration)
-        waveform = self.query_one(Waveform)
-        waveform.set_seed(f"{title} — {subtitle}")
-        waveform.set_active(False)
-        waveform.set_paused(self._paused)
+        # Status pushes re-call set_track for the same track on every
+        # heartbeat; only reset the per-track state when it actually changes,
+        # otherwise lyrics fetched after the first push get wiped again.
+        if (title, subtitle) != self._track_key:
+            self._track_key = (title, subtitle)
+            self._waveform_started = False
+            self._lyrics = []
+            self._lyric_index = 0
+            self.query_one("#np-lyric", Static).update("♪ ♪ ♪")
+            waveform = self.query_one(Waveform)
+            waveform.set_seed(f"{title} — {subtitle}")
+            waveform.set_active(False)
+            waveform.set_paused(self._paused)
         self._render_icon()
         self._render_time()
 
@@ -85,12 +97,16 @@ class NowPlaying(Widget):
         self._duration = 0.0
         self._position = 0.0
         self._waveform_started = False
+        self._track_key = None
+        self._lyrics = []
+        self._lyric_index = 0
         self.query_one("#np-title", Static).update("Nothing playing")
         self.query_one("#np-subtitle", Static).update(
             "Type to search, or press / to focus the search box"
         )
         self.query_one("#np-progress", ProgressBar).update(progress=0, total=0)
         self.query_one("#np-time", Static).update("--:-- / --:--")
+        self.query_one("#np-lyric", Static).update("♪ ♪ ♪")
         self.query_one(Waveform).set_active(False)
         self._render_icon()
 
@@ -116,6 +132,12 @@ class NowPlaying(Widget):
                 total=self._duration,
             )
             self._render_time()
+            self._render_lyric()
+
+    def set_lyrics(self, lyrics: list[tuple[float, str]]) -> None:
+        self._lyrics = lyrics
+        self._lyric_index = 0
+        self._render_lyric()
 
     def set_status(self, text: str) -> None:
         self.query_one("#np-status", Static).update(text)
@@ -150,3 +172,18 @@ class NowPlaying(Widget):
         pos = format_duration(self._position) or "--:--"
         dur = format_duration(self._duration) or "--:--"
         self.query_one("#np-time", Static).update(f"{pos} / {dur}")
+
+    def _render_lyric(self) -> None:
+        lyric = self.query_one("#np-lyric", Static)
+        if not self._lyrics:
+            lyric.update("♪ ♪ ♪")
+            return
+        while (
+            self._lyric_index < len(self._lyrics)
+            and self._position >= self._lyrics[self._lyric_index][0]
+        ):
+            self._lyric_index += 1
+        if self._lyric_index:
+            lyric.update(self._lyrics[self._lyric_index - 1][1])
+        else:
+            lyric.update("♪ ♪ ♪")

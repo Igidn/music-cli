@@ -431,6 +431,18 @@ ModalScreen {
     color: $text-muted;
 }
 
+#np-lyric {
+    width: auto;
+    max-width: 24;
+    margin-right: 5;
+    color: $text-muted;
+    text-overflow: ellipsis;
+}
+
+Screen.-narrow #np-lyric {
+    display: none;
+}
+
 #np-loop,
 #np-auto {
     width: auto;
