@@ -86,6 +86,38 @@ class PlaybackSession:
         self.record(stream)
         return stream
 
+    def prepare_play(self, target: str, request: dict, progress=None) -> StreamInfo:
+        """Network-only resolve+download for the daemon's async play path.
+
+        Splits the slow network work (resolve, download into the cache) off the
+        daemon's single event loop. Call on a worker thread; hand the result to
+        :meth:`commit_play` on the main thread so AVFoundation playback starts
+        where it can pump the run loop.
+        """
+        if target == "video_id":
+            return self.client.prepare_playable(
+                request["video_id"], progress=progress
+            )
+        if target == "query":
+            result = next(
+                (r for r in self.client.search(request["query"]) if r.video_id), None
+            )
+            if result is None:
+                raise PlayerError(f"No playable results for {request['query']!r}")
+            return self.client.prepare_playable(result.video_id, progress=progress)
+        raise PlayerError(f"unsupported async play target: {target!r}")
+
+    def commit_play(self, stream: StreamInfo) -> None:
+        """Start playback of a prepared stream and apply session bookkeeping.
+
+        Main thread only: start the AV player, refresh the up-next queue and
+        record the play. Raises :class:`PlayerError` when playback doesn't start.
+        """
+        if not self.client.start_playable(stream):
+            raise PlayerError(f"Playback did not start for {stream.video_id}")
+        self._load_up_next(stream.video_id)
+        self.record(stream)
+
     def play_video(self, video_id: str, title: str = "") -> StreamInfo:
         stream = self.client.play_video(video_id, title)
         self._load_up_next(video_id)

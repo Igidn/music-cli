@@ -7,7 +7,7 @@ from collections import deque
 import pytest
 
 from music_cli.core.errors import PlayerError
-from music_cli.daemon import _download_hook, handle_request
+from music_cli.daemon import _download_hook, _is_async_play, handle_request
 
 
 class FakePlayer:
@@ -371,6 +371,15 @@ def test_download_hook_pushes_percent():
     hook = _download_hook(subscribers)
     hook({"status": "downloading", "downloaded_bytes": 500, "total_bytes": 1000})
     assert sub.lines == [b'{"event": "download", "percent": 50}\n']
+
+
+def test_is_async_play_routes_single_track_targets_only():
+    assert _is_async_play({"cmd": "play", "video_id": "v"}) is True
+    assert _is_async_play({"cmd": "play", "query": "q"}) is True
+    assert _is_async_play({"cmd": "play", "playlist_id": "PL"}) is False
+    assert _is_async_play({"cmd": "play", "album_id": "MPREb_x"}) is False
+    assert _is_async_play({"cmd": "play", "queue_index": 0}) is False
+    assert _is_async_play({"cmd": "play", "video_id": "v", "playlist_id": "PL"}) is False
 
 
 def test_download_hook_skips_unknown_total_and_other_statuses():

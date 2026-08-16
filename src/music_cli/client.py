@@ -210,6 +210,81 @@ class MusicClient:
             return False
         return path is not None
 
+    def prepare_playable(self, video_id: str, progress=None) -> StreamInfo:
+        """Resolve ``video_id`` and download it into the cache. Network only.
+
+        Returns a :class:`StreamInfo` whose audio is available locally (either
+        the cached entry, or a freshly downloaded one). Never touches the AV
+        player, so it is safe to run on a background thread while the serve
+        loop keeps servicing other requests. Raises :class:`PlayerError` when
+        no client can resolve and fetch the track.
+        """
+        last_error: PlayerError | None = None
+        for client_name in (None, *FALLBACK_PLAYER_CLIENTS):
+            try:
+                return self._resolve_download(video_id, client_name, progress)
+            except PlayerError as error:
+                last_error = error
+        raise last_error or PlayerError(f"Failed to play {video_id}")
+
+    def _resolve_download(
+        self, video_id: str, client_name: str | None, progress
+    ) -> StreamInfo:
+        """Resolve+download with one extractor; cached tracks need no network."""
+        if client_name is None and self.cache is not None:
+            cached = self.cache.lookup(video_id)
+            if cached is not None:
+                return StreamInfo(
+                    video_id=cached.video_id,
+                    title=cached.title,
+                    stream_url="",
+                    artists=list(cached.artists),
+                    duration=cached.duration,
+                    ext=cached.ext,
+                )
+        extractor = (
+            self.extractor
+            if client_name is None
+            else self._extractor_factory(self._cookies, player_client=client_name)
+        )
+        stream = extractor.resolve(video_id)
+        if self.cache is not None:
+            hook = progress or self._download_progress
+
+            def downloader(target: Path) -> DownloadResult:
+                filepath = extractor.download(
+                    video_id, str(target), progress_hook=hook
+                )
+                return DownloadResult(
+                    path=filepath,
+                    meta=TrackMeta(
+                        title=stream.title,
+                        artists=tuple(stream.artists),
+                        duration=stream.duration,
+                        ext=Path(filepath).suffix.lstrip("."),
+                    ),
+                )
+
+            if self.cache.get_or_download(video_id, downloader) is None:
+                raise PlayerError(f"Failed to download {video_id}")
+        return stream
+
+    def start_playable(self, stream: StreamInfo) -> bool:
+        """Start AV playback of a **prepared** local stream.
+
+        Must run on the daemon's main thread (it pumps the run loop). Returns
+        True when playback actually started; a broken cached file is dropped.
+        """
+        self.player.stop()
+        self.player.pump()
+        self.player.play(stream)
+        if self._playback_started():
+            self.current = stream
+            return True
+        if self.cache is not None and not stream.stream_url:
+            self.cache.discard(stream.video_id)
+        return False
+
     def _playback_started(self, timeout: float = PLAY_START_TIMEOUT) -> bool:
         """Whether playback is actually underway, failing fast on load errors.
 

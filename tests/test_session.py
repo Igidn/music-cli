@@ -51,7 +51,7 @@ class FakeExtractor:
             video_id=video_id, title=f"Stream {video_id}", stream_url="https://u"
         )
 
-    def download(self, video_id, target):
+    def download(self, video_id, target, progress_hook=None):
         path = Path(f"{target}.m4a")
         path.write_bytes(b"audio")
         return str(path)
@@ -170,6 +170,7 @@ def client(tmp_path):
     c._extractor_factory = StreamExtractor
     c._in_flight = set()
     c._play_lock = threading.Lock()
+    c._download_progress = None
     c.cache = AudioCache(directory=tmp_path / "cache")
     return c
 
@@ -278,6 +279,36 @@ class TestPlay:
         assert stream.video_id == "new"
         assert client.player.played[-1].video_id == "new"
         assert history.most_recent().played == 2
+
+
+class TestAsyncPlay:
+    def test_prepare_then_commit(self, client, session, history):
+        """prepare_play downloads into cache (no AV), commit_play starts playback
+        and records history -- the daemon's async play split."""
+        client.watch = FakeWatch([make_track("v1"), make_track("t1")])
+        stream = session.prepare_play("video_id", {"video_id": "v1", "title": "T"})
+        assert stream.video_id == "v1"
+        assert client.player.played == []  # not playing yet
+        assert client.cache.lookup("v1") is not None  # but cached
+        assert client.current is None
+
+        session.commit_play(stream)
+        assert client.player.played[-1].video_id == "v1"
+        assert client.current.video_id == "v1"
+        assert history.most_recent().video_id == "v1"
+        assert session.last_video_id == "v1"
+
+    def test_prepare_query_picks_first_playable(self, client, session):
+        client.search_api = FakeSearch(
+            [make_result(video_id="", title="Artist row"), make_result("vq")]
+        )
+        stream = session.prepare_play("query", {"query": "song"})
+        assert stream.video_id == "vq"
+        assert client.player.played == []
+
+    def test_prepare_unknown_target_fails(self, client, session):
+        with pytest.raises(PlayerError):
+            session.prepare_play("queue_index", {"queue_index": 0})
 
 
 class TestNextTrack:

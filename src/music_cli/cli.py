@@ -251,13 +251,26 @@ def _cmd_play(args: argparse.Namespace) -> int:
     if args.play_volume is not None:
         request["volume"] = args.play_volume
     _ensure_daemon(args)
-    # Stream resolution and a possible download happen before the daemon answers,
-    # so surface that with a spinner instead of silently blocking.
-    with _console.status("Resolving stream…", spinner="dots"):
-        data = _send(args, request, timeout=180.0)
-    if data is None:
+    # Stream resolution and a possible download happen asynchronously in the
+    # daemon; the IPC streams progress back so the client stays alive through
+    # a slow download and reports it live instead of blocking on a silent socket.
+    try:
+        with _console.status("Resolving stream…", spinner="dots") as status:
+            response = ipc.send_play_request(
+                request,
+                on_progress=lambda pct: status.update(
+                    "Downloading…" if pct is None else f"Downloading… {pct:.0f}%"
+                ),
+            )
+    except PlayerError as error:
+        _errors.print(f"music-cli: {error}", style="bold red")
         return 1
-    _console.print(_track_line(data))
+    if not response.get("ok"):
+        _errors.print(
+            f"music-cli: {response.get('error', 'unknown error')}", style="bold red"
+        )
+        return 1
+    _console.print(_track_line(response.get("data")))
     return 0
 
 

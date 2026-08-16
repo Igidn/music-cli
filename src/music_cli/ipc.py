@@ -20,6 +20,7 @@ import socket
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -74,6 +75,66 @@ def send_request(request: dict[str, Any], timeout: float = 30.0) -> dict[str, An
     with conn:
         send_message(conn, request)
         return recv_message(conn)
+
+
+def send_play_request(
+    request: dict[str, Any],
+    *,
+    timeout: float = 1200.0,
+    on_progress: Callable[[float | None], None] | None = None,
+) -> dict[str, Any]:
+    """Send a ``play`` request, streaming download progress back to the caller.
+
+    The daemon runs the (slow) download asynchronously and writes one
+    newline-terminated ``{"type": "progress", ...}`` line per progress tick
+    on the *same* connection, ending with the real ``ok``/``error`` response.
+    Each progress line keeps the socket alive, so a legitimately slow download
+    never trips a premature client timeout; ``on_progress(percent)`` is called
+    per tick (``None`` when the total size is unknown). Raises ``PlayerError``
+    only on a genuine protocol failure or a dead connection.
+    """
+    conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    conn.settimeout(timeout)
+    try:
+        conn.connect(str(socket_path()))
+    except OSError as error:
+        conn.close()
+        raise PlayerError(
+            "the daemon is not running — start it with 'music-cli play ...'"
+        ) from error
+    with conn:
+        send_message(conn, request)
+        return _read_play_lines(conn, on_progress)
+
+
+def _read_play_lines(conn: socket.socket, on_progress) -> dict[str, Any]:
+    """Read streamed lines off ``conn`` until the final response.
+
+    The daemon writes one newline-terminated JSON ``{"type": "progress"...}``
+    line per progress tick, ending with the real ``ok``/``error`` response. Lines
+    may arrive batched inside a single ``recv`` chunk, so the buffer is split on
+    ``\n`` and one line is decoded at a time. Returns the final response dict.
+    """
+    buffer = b""
+    while True:
+        if b"\n" in buffer:
+            raw, _, buffer = buffer.partition(b"\n")
+            message = json.loads(raw)
+            if message.get("type") == "progress":
+                percent = message.get("percent")
+                if on_progress is not None and isinstance(percent, (int, float)):
+                    on_progress(percent)
+                continue
+            return message
+        try:
+            chunk = conn.recv(65536)
+        except OSError as error:
+            conn.close()
+            raise PlayerError("timed out waiting for the daemon") from error
+        if not chunk:
+            conn.close()
+            raise PlayerError("the daemon closed the connection without a response")
+        buffer += chunk
 
 
 def send_message(conn: socket.socket, message: dict[str, Any]) -> None:

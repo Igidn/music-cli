@@ -328,6 +328,40 @@ class TestCacheIntegration:
         assert track.title == "Stream xyz"
         assert track.ext == "m4a"
 
+    def test_prepare_playable_downloads_then_start_plays(self, client):
+        """The async play split: prepare caches without touching the AV player;
+        start_playable starts playback on the main thread."""
+
+        class DownloadingExtractor(FakeExtractor):
+            def download(self, video_id, outtmpl, progress_hook=None):
+                path = f"{outtmpl}.m4a"
+                Path(path).write_bytes(b"audio")
+                return path
+
+        client.extractor = DownloadingExtractor()
+        stream = client.prepare_playable("abc")
+        # Prepared but not yet playing (no AV interaction), and now cached.
+        assert client.player.played == []
+        assert client.cache.lookup("abc") is not None
+        assert client.current is None
+        # Commit on the main thread actually starts playback.
+        assert client.start_playable(stream) is True
+        assert client.player.played[-1].video_id == "abc"
+        assert client.current.video_id == "abc"
+
+    def test_prepare_playable_reuses_cache_without_extraction(self, client):
+        class DownloadingExtractor(FakeExtractor):
+            def download(self, video_id, outtmpl, progress_hook=None):
+                path = f"{outtmpl}.m4a"
+                Path(path).write_bytes(b"audio")
+                return path
+
+        client.extractor = DownloadingExtractor()
+        first = client.prepare_playable("abc")
+        second = client.prepare_playable("abc")
+        assert client.extractor.resolved.count("abc") == 1  # no re-resolve
+        assert first.video_id == second.video_id == "abc"
+
     def test_prefetch_forwards_download_progress_hook(self, client):
         """Prefetch downloads stream progress to the TUI like playback does."""
         hooks = []

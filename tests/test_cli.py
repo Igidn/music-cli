@@ -65,6 +65,9 @@ class FakeDaemon:
             return {"ok": False, "error": self.error}
         return {"ok": True, "data": self.data}
 
+    def send_play(self, request, timeout=180.0, on_progress=None):
+        return self.send(request)
+
 
 @pytest.fixture
 def daemon(monkeypatch):
@@ -72,7 +75,8 @@ def daemon(monkeypatch):
     monkeypatch.setattr(
         ipc, "ensure_daemon", lambda cookies=None, volume=None: None, raising=False
     )
-    monkeypatch.setattr(ipc, "send_request", fake.send)
+    monkeypatch.setattr(ipc, "send_request", fake.send, raising=False)
+    monkeypatch.setattr(ipc, "send_play_request", fake.send_play, raising=False)
     return fake
 
 
@@ -247,7 +251,8 @@ class TestDaemonCommands:
             raising=False,
         )
         fake = FakeDaemon()
-        monkeypatch.setattr(ipc, "send_request", fake.send)
+        monkeypatch.setattr(ipc, "send_request", fake.send, raising=False)
+        monkeypatch.setattr(ipc, "send_play_request", fake.send_play, raising=False)
         assert cli.run(parse("play", "x")) == 0
         assert len(calls) == 1
 

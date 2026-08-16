@@ -281,6 +281,111 @@ def _download_hook(
     return hook
 
 
+class _AsyncPlay:
+    """A single-track ``play`` running in the background.
+
+    A worker thread does the network work (search, resolve, download into the
+    cache) so the serve loop keeps answering other requests; the ready file is
+    handed to the main thread, where AVFoundation playback actually starts.
+    Download progress is streamed to the client so its socket stays alive.
+    """
+
+    def __init__(self, conn: socket.socket, request: dict[str, Any]) -> None:
+        self.conn = conn
+        self.request = request
+        self.ready = threading.Event()
+        self.stream: Any = None
+        self.error: Exception | None = None
+
+    def progress(self, info: dict[str, Any]) -> None:
+        """yt-dlp progress hook: stream a progress line to the client."""
+        if info.get("status") != "downloading":
+            return
+        total = info.get("total_bytes") or info.get("total_bytes_estimate")
+        downloaded = info.get("downloaded_bytes") or 0
+        percent = round(downloaded / total * 100) if total else None
+        try:
+            payload = json.dumps({"type": "progress", "percent": percent}).encode()
+            self.conn.sendall(payload + b"\n")
+        except OSError:
+            pass  # client gave up; keep downloading so the track is still cached
+
+
+_ASYNC_PLAY_TARGETS = ("video_id", "query")
+
+
+def _is_async_play(request: dict[str, Any]) -> bool:
+    """Whether ``request`` can run on the async single-track play path."""
+    has_playlist = any(
+        k in request for k in ("playlist_id", "album_id", "queue_index")
+    )
+    return ("video_id" in request or "query" in request) and not has_playlist
+
+
+def _spawn_async_play(
+    session: "PlaybackSession", request: dict[str, Any], conn: socket.socket
+) -> _AsyncPlay:
+    """Apply launch flags and start the background resolve+download for a play."""
+    slot = _AsyncPlay(conn, request)
+    # Launch flags must shape playback before the track starts.
+    if "volume" in request:
+        session.set_volume(volume=request["volume"])
+    if "loop" in request:
+        session.set_loop("on" if request["loop"] else "off")
+    if "auto_next" in request:
+        session.set_auto_next("on" if request["auto_next"] else "off")
+    target = "video_id" if "video_id" in request else "query"
+    threading.Thread(
+        target=_async_play_worker,
+        args=(session, target, request, slot),
+        daemon=True,
+        name="play-prep",
+    ).start()
+    return slot
+
+
+def _async_play_worker(
+    session: "PlaybackSession",
+    target: str,
+    request: dict[str, Any],
+    slot: _AsyncPlay,
+) -> None:
+    """Thread body: network-only resolve+download; the serve loop starts playback."""
+    try:
+        slot.stream = session.prepare_play(target, request, progress=slot.progress)
+    except Exception as error:  # noqa: BLE001 — daemon boundary; report to client
+        slot.error = error
+    finally:
+        slot.ready.set()
+
+
+def _resolve_pending_plays(session, pending_plays: dict) -> None:
+    """Start playback for finished downloads and reply to their clients.
+
+    Runs on the main thread so AVFoundation playback can pump the run loop.
+    """
+    for conn, slot in list(pending_plays.items()):
+        if not slot.ready.is_set():
+            continue
+        if slot.error is not None:
+            response = {"ok": False, "error": str(slot.error)}
+        else:
+            try:
+                session.commit_play(slot.stream)
+                response = {"ok": True, "data": session.status()}
+            except PlayerError as error:
+                response = {"ok": False, "error": str(error)}
+        try:
+            ipc.send_message(slot.conn, response)
+        except OSError:
+            pass  # client disconnected mid-download; the track is cached regardless
+        try:
+            conn.close()
+        except OSError:
+            pass
+        del pending_plays[conn]
+
+
 def _serve(
     session: PlaybackSession,
     server: socket.socket,
@@ -297,6 +402,7 @@ def _serve(
     fresh ``position`` without polling.
     """
     subscribers: dict[socket.socket, deque[bytes]] = {}
+    pending_plays: dict[socket.socket, _AsyncPlay] = {}
     last_signature: tuple | None = None
     last_heartbeat = time.monotonic()
     last_activity = time.monotonic()
@@ -314,21 +420,31 @@ def _serve(
         for sock in readable:
             if sock is server:
                 conn, _ = server.accept()
-                with conn:
-                    try:
-                        request = ipc.recv_message(conn)
-                    except PlayerError:
-                        continue  # malformed request; keep serving
+                try:
+                    request = ipc.recv_message(conn)
+                except PlayerError:
+                    conn.close()
+                    continue  # malformed request; keep serving
+                cmd = request.get("cmd")
+                if cmd == "play" and _is_async_play(request):
+                    # Run the slow resolve+download off the event loop; the
+                    # response is streamed back when playback actually starts.
+                    pending_plays[conn] = _spawn_async_play(session, request, conn)
+                    eof.clear()  # supersede any pending track-end
+                    last_activity = time.monotonic()
+                    continue
+                try:
                     response = handle_request(session, request)
                     ipc.send_message(conn, response)
-                    # A play request replaces the current track; drop any
-                    # pending track-end from the track it superseded, or the
-                    # loop below would auto-advance straight past what the
-                    # user just asked to play (up-next flashes as current).
-                    if request.get("cmd") == "play" and response.get("ok"):
-                        eof.clear()
+                finally:
+                    conn.close()
+                # A play request replaces the current track; drop any pending
+                # track-end from the track it superseded, or the loop below
+                # would auto-advance straight past what the user just played.
+                if cmd == "play" and response.get("ok"):
+                    eof.clear()
                 last_activity = time.monotonic()
-                if request.get("cmd") == "quit":
+                if cmd == "quit":
                     return
             elif sock is event_server:
                 conn, _ = event_server.accept()
@@ -347,6 +463,8 @@ def _serve(
         for sock in writable:
             if sock in subscribers:
                 _flush_subscriber(sock, subscribers)
+        # Start playback for any finished background downloads (main thread).
+        _resolve_pending_plays(session, pending_plays)
         if eof.is_set():
             eof.clear()
             try:
@@ -362,7 +480,7 @@ def _serve(
         elif time.monotonic() - last_heartbeat >= _HEARTBEAT:
             last_heartbeat = time.monotonic()
             _push(subscribers, status)
-        if _idle(session, subscribers, last_activity, idle_timeout):
+        if _idle(session, subscribers, pending_plays, last_activity, idle_timeout):
             return
         session.client.player.pump()
 
@@ -423,13 +541,20 @@ def _drop_subscriber(conn: socket.socket, subscribers: dict) -> None:
 def _idle(
     session: PlaybackSession,
     subscribers: dict,
+    pending_plays: dict,
     last_activity: float,
     idle_timeout: float,
 ) -> bool:
-    """Whether to idle-exit: nothing playing, no subscribers, quiet for a while."""
+    """Whether to idle-exit: nothing playing, no subscribers, quiet for a while.
+
+    A background download in flight is still activity: let it finish and cache
+    the track before the daemon exits itself.
+    """
     if session.client.current is not None:
         return False
     if subscribers:
+        return False
+    if pending_plays:
         return False
     return time.monotonic() - last_activity > idle_timeout
 
