@@ -201,6 +201,9 @@ class MusicTUI(App[None]):
         self._current_video_id: str | None = None
         self._pending_play: str | None = None
         self._next_pending = False
+        # While a download is live the status line must keep showing it;
+        # the state heartbeat's "Playing" label must not clobber it.
+        self._download_status: str | None = None
         self._auto_next = True
         self._loop_enabled = False
         self._volume = 80
@@ -316,13 +319,20 @@ class MusicTUI(App[None]):
                     if status is not None:
                         self.call_from_thread(self._render_status, status)
                 elif event.get("event") == "download":
+                    if event.get("finished"):
+                        self._download_status = None
+                        continue
                     percent = event.get("percent")
-                    label = (
-                        f"Downloading… {percent}%"
+                    downloaded = event.get("downloaded")
+                    size = f" {_fmt_bytes(downloaded)}" if downloaded else ""
+                    self._download_status = (
+                        f"Downloading… {percent}%{size}"
                         if percent is not None
-                        else "Downloading…"
+                        else f"Downloading…{size}"
                     )
-                    self.call_from_thread(self.set_status, label)
+                    self.call_from_thread(
+                        self.set_status, self._download_status
+                    )
 
     def on_unmount(self) -> None:
         self._clear_events_socket()
@@ -593,10 +603,11 @@ class MusicTUI(App[None]):
                         track.get("duration"),
                     )
         state = status.get("state")
-        if state == "stopped" or track is None:
-            self.set_status("Ready")
-        else:
-            self.set_status("Playing" if state == "playing" else "Paused")
+        if self._download_status is None:
+            if state == "stopped" or track is None:
+                self.set_status("Ready")
+            else:
+                self.set_status("Playing" if state == "playing" else "Paused")
         now_playing.set_progress(
             status.get("position", 0.0), status.get("duration") or 0.0
         )
@@ -993,3 +1004,15 @@ class MusicTUI(App[None]):
 
     def set_status(self, text: str) -> None:
         self.query_one(NowPlaying).set_status(text)
+
+
+def _fmt_bytes(n: int) -> str:
+    """Pretty-print a byte count ("900 B", "3.4 MB")."""
+    size = float(n)
+    for unit in ("B", "KB", "MB", "GB"):
+        if unit == "B":
+            return f"{int(size)} B" if size >= 1 else ""
+        if size < 1024:
+            return f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} TB"

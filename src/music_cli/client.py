@@ -191,7 +191,9 @@ class MusicClient:
 
         def downloader(target: Path) -> DownloadResult:
             stream = self.extractor.resolve(video_id)
-            filepath = self.extractor.download(video_id, str(target))
+            filepath = self.extractor.download(
+                video_id, str(target), progress_hook=self._download_progress
+            )
             return DownloadResult(
                 path=filepath,
                 meta=TrackMeta(

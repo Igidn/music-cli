@@ -113,6 +113,7 @@ def client(tmp_path):
     c._extractor_factory = StreamExtractor
     c._in_flight = set()
     c._play_lock = threading.Lock()
+    c._download_progress = None
     c.cache = AudioCache(directory=tmp_path / "cache")
     return c
 
@@ -315,7 +316,7 @@ class TestCacheIntegration:
 
     def test_prefetch_populates_cache(self, client):
         class DownloadingExtractor(FakeExtractor):
-            def download(self, video_id, outtmpl):
+            def download(self, video_id, outtmpl, progress_hook=None):
                 path = f"{outtmpl}.m4a"
                 Path(path).write_bytes(b"audio")
                 return path
@@ -326,6 +327,23 @@ class TestCacheIntegration:
         assert track is not None
         assert track.title == "Stream xyz"
         assert track.ext == "m4a"
+
+    def test_prefetch_forwards_download_progress_hook(self, client):
+        """Prefetch downloads stream progress to the TUI like playback does."""
+        hooks = []
+
+        class RecordingExtractor(FakeExtractor):
+            def download(self, video_id, outtmpl, progress_hook=None):
+                hooks.append(progress_hook)
+                path = f"{outtmpl}.m4a"
+                Path(path).write_bytes(b"audio")
+                return path
+
+        hook = lambda progress: None  # noqa: E731
+        client.extractor = RecordingExtractor()
+        client.download_progress = hook
+        assert client.prefetch("xyz") is True
+        assert hooks == [hook]
 
     def test_prefetch_is_noop_when_already_cached(self, client):
         seed_cache(client, video_id="xyz")

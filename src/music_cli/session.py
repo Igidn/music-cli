@@ -26,6 +26,14 @@ from .yt.extract import PlaylistTrack, StreamInfo
 _ON_OFF = ("on", "off", "toggle")
 
 
+def _load_up_next_safe(client: MusicClient, video_id: str) -> None:
+    """Thread body for the up-next refresh; failures just leave it empty."""
+    try:
+        client.load_queue(video_id)
+    except PlayerError:
+        pass
+
+
 class PlaybackSession:
     """Playback operations on top of ``MusicClient``, with state persisted.
 
@@ -148,11 +156,19 @@ class PlaybackSession:
         ).start()
 
     def _load_up_next(self, video_id: str) -> None:
-        """Refresh the up-next queue; a fetch failure just leaves it empty."""
-        try:
-            self.client.load_queue(video_id)
-        except PlayerError:
-            pass
+        """Refresh the up-next queue off the daemon thread.
+
+        ``load_queue`` is a slow network call; running it inline on the daemon's
+        single event loop would stall every other request (a cached play, status,
+        next) behind it for the whole fetch. Spawn it instead, exactly like
+        :meth:`_prefetch_next`; a fetch failure just leaves the queue empty.
+        """
+        threading.Thread(
+            target=_load_up_next_safe,
+            args=(self.client, video_id),
+            daemon=True,
+            name="up-next",
+        ).start()
 
     def on_track_end(self) -> None:
         self.client.current = None

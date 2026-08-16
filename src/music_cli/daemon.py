@@ -263,13 +263,19 @@ def _download_hook(
     """
 
     def hook(progress: dict[str, Any]) -> None:
+        if progress.get("status") == "finished":
+            _push_download_progress(
+                subscribers, {"event": "download", "finished": True}
+            )
+            return
         if progress.get("status") != "downloading":
             return
         total = progress.get("total_bytes") or progress.get("total_bytes_estimate")
         downloaded = progress.get("downloaded_bytes") or 0
         percent = round(downloaded / total * 100) if total else None
         _push_download_progress(
-            subscribers, {"event": "download", "percent": percent}
+            subscribers,
+            {"event": "download", "percent": percent, "downloaded": downloaded},
         )
 
     return hook
