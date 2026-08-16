@@ -6,6 +6,7 @@ import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from .core.errors import PlayerError
 from .player.audio import AVFoundationPlayer
@@ -45,17 +46,21 @@ class MusicClient:
         self.extractor = extractor_factory(cookies)
         self.watch = WatchPlaylist(cookies=cookies)
         self.library = Library(cookies=cookies)
-        self.player = AVFoundationPlayer(
-            volume=volume,
-            on_track_end=on_track_end,
-            cookies=cookies,
-            cache=self.cache,
-        )
         self.queue: list[PlaylistTrack] = []
         self.current: StreamInfo | None = None
         self._playlist: list[PlaylistTrack] = []
         self._in_flight: set[str] = set()
         self._play_lock = threading.Lock()
+        # Live download-progress hook, consulted per download. The daemon sets it
+        # only after the client is built, so the player reads it via a getter.
+        self._download_progress: Callable[[dict[str, Any]], None] | None = None
+        self.player = AVFoundationPlayer(
+            volume=volume,
+            on_track_end=on_track_end,
+            cookies=cookies,
+            cache=self.cache,
+            download_progress=lambda: self._download_progress,
+        )
 
     @property
     def on_track_end(self) -> Callable[[], None] | None:
@@ -72,6 +77,14 @@ class MusicClient:
     @loop.setter
     def loop(self, value: bool) -> None:
         self.player.loop = value
+
+    @property
+    def download_progress(self) -> Callable[[dict[str, Any]], None] | None:
+        return self._download_progress
+
+    @download_progress.setter
+    def download_progress(self, hook: Callable[[dict[str, Any]], None] | None) -> None:
+        self._download_progress = hook
 
     def search(
         self,

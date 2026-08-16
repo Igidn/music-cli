@@ -190,6 +190,35 @@ class TestStreamExtractor:
         assert seen["skip_download"] is False
         assert seen["outtmpl"] == f"{out}.%(ext)s"
 
+    def test_download_registers_progress_hook(self, tmp_path):
+        out = tmp_path / "music-cli-x"
+        result = {"requested_downloads": [{"filepath": f"{out}.webm"}]}
+        seen = {}
+        hook = lambda p: None  # noqa: E731, RUF100
+
+        class HookYDL(FakeYDL):
+            def extract_info(self, url, download=False):
+                return result
+
+        StreamExtractor(ydl_factory=lambda opts: seen.update(opts) or HookYDL({})).download(
+            "abc", str(out), progress_hook=hook
+        )
+        assert seen["progress_hooks"] == [hook]
+
+    def test_download_omits_hook_by_default(self, tmp_path):
+        out = tmp_path / "music-cli-x"
+        result = {"requested_downloads": [{"filepath": f"{out}.webm"}]}
+        seen = {}
+
+        class HookYDL(FakeYDL):
+            def extract_info(self, url, download=False):
+                return result
+
+        StreamExtractor(ydl_factory=lambda opts: seen.update(opts) or HookYDL({})).download(
+            "abc", str(out)
+        )
+        assert "progress_hooks" not in seen
+
     def test_download_wraps_download_error(self, tmp_path):
         class BrokenYDL:
             def __enter__(self):

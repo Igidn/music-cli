@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from collections import deque
+
 import pytest
 
 from music_cli.core.errors import PlayerError
-from music_cli.daemon import handle_request
+from music_cli.daemon import _download_hook, handle_request
 
 
 class FakePlayer:
@@ -350,3 +352,32 @@ def test_unexpected_error_never_escapes(session):
     response = handle_request(session, {"cmd": "pause"})
     assert response["ok"] is False
     assert "a bug" in response["error"]
+
+
+class _FakeSub:
+    """Writable fake subscriber: collects pushed lines, no blocking."""
+
+    def __init__(self):
+        self.lines = []
+
+    def send(self, chunk: bytes) -> int:
+        self.lines.append(chunk)
+        return len(chunk)
+
+
+def test_download_hook_pushes_percent():
+    sub = _FakeSub()
+    subscribers = {sub: deque()}
+    hook = _download_hook(subscribers)
+    hook({"status": "downloading", "downloaded_bytes": 500, "total_bytes": 1000})
+    assert sub.lines == [b'{"event": "download", "percent": 50}\n']
+
+
+def test_download_hook_skips_unknown_total_and_other_statuses():
+    sub = _FakeSub()
+    subscribers = {sub: deque()}
+    hook = _download_hook(subscribers)
+    hook({"status": "downloading", "downloaded_bytes": 500})
+    assert sub.lines == [b'{"event": "download", "percent": null}\n']
+    hook({"status": "finished"})
+    assert len(sub.lines) == 1  # finished status is not pushed

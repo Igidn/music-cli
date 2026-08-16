@@ -83,12 +83,15 @@ def _default_player() -> AVPlayer:
     return AVPlayer.alloc().init()
 
 
-def _download_temp(extractor: StreamExtractor, stream: StreamInfo) -> LocalFile:
+def _download_temp(extractor, stream, *, progress_hook=None) -> LocalFile:
     """Download ``stream`` to a temporary file the player owns and deletes."""
     file = tempfile.NamedTemporaryFile(prefix="music-cli-", delete=False)
     file.close()
     try:
-        return LocalFile(extractor.download(stream.video_id, file.name), owned=True)
+        return LocalFile(
+            extractor.download(stream.video_id, file.name, progress_hook=progress_hook),
+            owned=True,
+        )
     except PlayerError:
         try:
             os.unlink(file.name)
@@ -102,6 +105,7 @@ def _default_fetch_stream(
     cache: AudioCache | None = None,
     *,
     extractor: StreamExtractor | None = None,
+    download_progress: Callable[[], Callable[[dict[str, Any]], None] | None] | None = None,
 ) -> Callable[[StreamInfo], LocalFile]:
     """Build the default stream fetcher: cache-aware, else a temp download.
 
@@ -111,13 +115,16 @@ def _default_fetch_stream(
     downloads go to temporary files the player deletes after playback.
     """
     extractor = extractor or StreamExtractor(cookies)
+    get_hook = download_progress or (lambda: None)
 
     def fetch(stream: StreamInfo) -> LocalFile:
         if cache is None:
-            return _download_temp(extractor, stream)
+            return _download_temp(extractor, stream, progress_hook=get_hook())
 
         def downloader(target: Path) -> DownloadResult:
-            filepath = extractor.download(stream.video_id, str(target))
+            filepath = extractor.download(
+                stream.video_id, str(target), progress_hook=get_hook()
+            )
             return DownloadResult(
                 path=filepath,
                 meta=TrackMeta(
@@ -155,6 +162,7 @@ class AVFoundationPlayer:
         player_factory: Callable[[], AVPlayer] = _default_player,
         fetch_stream: Callable[[StreamInfo], LocalFile] | None = None,
         cache: AudioCache | None = None,
+        download_progress: Callable[[], Callable[[dict[str, Any]], None] | None] | None = None,
     ) -> None:
         self.on_track_end = on_track_end
         self._loop = loop
@@ -163,7 +171,9 @@ class AVFoundationPlayer:
         self._observer_token: Any = None
         self._current_item: AVPlayerItem | None = None
         self._local_url: str | None = None
-        self._fetch_stream = fetch_stream or _default_fetch_stream(cookies, cache=cache)
+        self._fetch_stream = fetch_stream or _default_fetch_stream(
+            cookies, cache=cache, download_progress=download_progress
+        )
         self._player = player_factory()
         # Volume lives on the track's audio mix, not the player: AVPlayer.volume
         # is unreliable for macOS local-file streams, so it is kept at unity and

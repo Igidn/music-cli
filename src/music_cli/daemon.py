@@ -20,7 +20,8 @@ import sys
 import threading
 import time
 from collections import deque
-from typing import TYPE_CHECKING
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
 
 from . import ipc
 from .core.errors import PlayerError
@@ -36,6 +37,22 @@ IDLE_TIMEOUT = 30.0
 _MAX_SUBSCRIBER_BYTES = 1 << 20
 #: Heartbeat interval at which the current status is re-pushed.
 _HEARTBEAT = 0.5
+
+
+def _push_download_progress(
+    subscribers: dict[socket.socket, deque[bytes]], status: dict
+) -> None:
+    """Enqueue and immediately flush a download-progress event.
+
+    Runs inside a play request, while the serve loop is blocked in the
+    download, so buffering alone would never flush until the download ends.
+    Each hook call pushes straight onto the wire instead.
+    """
+    payload = json.dumps(status).encode() + b"\n"
+    for _conn, buffer in list(subscribers.items()):
+        buffer.append(payload)
+    for conn in list(subscribers.keys()):
+        _flush_subscriber(conn, subscribers)
 
 
 def handle_request(session: PlaybackSession, request: dict) -> dict:
@@ -236,6 +253,28 @@ def main(argv: list[str] | None = None) -> None:
         session.close()
 
 
+def _download_hook(
+    subscribers: dict[socket.socket, deque[bytes]]
+) -> Callable[[dict[str, Any]], None]:
+    """A yt-dlp progress hook that pushes the download percent to subscribers.
+
+    ``percent`` is None when the total size is unknown (yt-dlp only gives an
+    estimate / no total), so the TUI can fall back to an indeterminate hint.
+    """
+
+    def hook(progress: dict[str, Any]) -> None:
+        if progress.get("status") != "downloading":
+            return
+        total = progress.get("total_bytes") or progress.get("total_bytes_estimate")
+        downloaded = progress.get("downloaded_bytes") or 0
+        percent = round(downloaded / total * 100) if total else None
+        _push_download_progress(
+            subscribers, {"event": "download", "percent": percent}
+        )
+
+    return hook
+
+
 def _serve(
     session: PlaybackSession,
     server: socket.socket,
@@ -255,6 +294,7 @@ def _serve(
     last_signature: tuple | None = None
     last_heartbeat = time.monotonic()
     last_activity = time.monotonic()
+    session.client.download_progress = _download_hook(subscribers)
     while not stop.is_set():
         # Only poll a subscriber for writability when it has pending bytes:
         # a connected socket is always writable, so selecting on it turns the

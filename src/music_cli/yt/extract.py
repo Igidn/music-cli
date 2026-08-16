@@ -121,12 +121,18 @@ class StreamExtractor:
             http_headers=dict(info.get("http_headers") or {}),
         )
 
-    def download(self, video_id: str, outtmpl: str) -> str:
+    def download(
+        self, video_id: str, outtmpl: str, *, progress_hook: Callable[[dict[str, Any]], None] | None = None
+    ) -> str:
         """Download the best audio for ``video_id`` to a file, returning its path.
 
         Re-extracts so the signing parameters (``n``, ``pot``) are freshly
         decoded: googlevideo frequently rejects direct fetches of previously
         extracted URLs with HTTP 403.
+
+        ``progress_hook``, when given, is registered as a yt-dlp progress hook,
+        called with the ``{'status': 'downloading', ...}`` dict as the download
+        progresses.
         """
         if not video_id:
             raise PlayerError("A video id is required to download a stream")
@@ -136,6 +142,8 @@ class StreamExtractor:
             "skip_download": False,
             "outtmpl": outtmpl + ".%(ext)s",
         }
+        if progress_hook is not None:
+            opts["progress_hooks"] = [progress_hook]
         with self._ydl_factory(opts) as ydl:
             try:
                 info = ydl.extract_info(url, download=True)

@@ -315,6 +315,14 @@ class MusicTUI(App[None]):
                     status = event.get("status")
                     if status is not None:
                         self.call_from_thread(self._render_status, status)
+                elif event.get("event") == "download":
+                    percent = event.get("percent")
+                    label = (
+                        f"Downloading… {percent}%"
+                        if percent is not None
+                        else "Downloading…"
+                    )
+                    self.call_from_thread(self.set_status, label)
 
     def on_unmount(self) -> None:
         self._clear_events_socket()
