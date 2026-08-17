@@ -395,6 +395,37 @@ class TestNextTrack:
         assert session._downloads_context is None
         assert client.current.video_id == "other"
 
+    def test_up_next_shows_remaining_downloads(self, client, session, tmp_path):
+        from music_cli.storage.state import DownloadsStore
+
+        client.downloads = DownloadsStore(tmp_path / "downloads.db")
+        # newest-first: d2, d1, d3
+        client.downloads.record("d3", "Third")
+        client.downloads.record("d1", "First")
+        client.downloads.record("d2", "Second")
+        client.queue = [make_track("net1")]  # network queue must not leak in
+
+        session.play_download("d1", "First")
+        queue = session.queue()
+        assert [t["video_id"] for t in queue] == ["d3"]  # d2,d1 already-done/current
+
+    def test_up_next_queue_select_plays_download(self, client, session, tmp_path):
+        from music_cli.storage.state import DownloadsStore
+
+        client.downloads = DownloadsStore(tmp_path / "downloads.db")
+        client.downloads.record("d3", "Third")
+        client.downloads.record("d1", "First")
+        client.downloads.record("d2", "Second")
+
+        session.play_download("d2", "Second")
+        queue = session.queue()
+        assert [t["video_id"] for t in queue] == ["d1", "d3"]
+
+        session.play_queue_track(1)  # pick "d3" from the Up-Next panel
+        assert client.current.video_id == "d3"
+        assert [t["video_id"] for t in session.queue()] == []  # d3 was last
+
+
     def test_on_track_end_respects_auto_next_off(self, client, session):
         session.set_auto_next("off")
         client.current = StreamInfo(video_id="v0", title="T", stream_url="u")

@@ -151,7 +151,17 @@ class PlaybackSession:
         return self.play_video(video_id, title, from_download=True)
 
     def play_queue_track(self, index: int) -> StreamInfo:
-        """Play the queued track at ``index`` and record it."""
+        """Play the queued track at ``index`` and record it.
+
+        Inside the Downloads context (see :meth:`_downloads_up_next`) ``index``
+        addresses the remaining downloads list instead of the network queue,
+        so the Up-Next panel's click-to-play matches what it shows.
+        """
+        if self._downloads_context:
+            up_next = self._downloads_up_next()
+            if not 0 <= index < len(up_next):
+                raise PlayerError(f"No track at queue index {index}")
+            return self.play_download(up_next[index].video_id, up_next[index].title)
         self._downloads_context = None
         stream = self.client.play_queue_track(index)
         self.record(stream)
@@ -373,15 +383,35 @@ class PlaybackSession:
         }
 
     def queue(self) -> list[dict]:
-        return [
-            {
-                "video_id": track.video_id,
-                "title": track.title,
-                "artists": list(track.artists),
-                "duration": track.duration,
-            }
-            for track in self.client.queue
-        ]
+        source = (
+            self._downloads_up_next()
+            if self._downloads_context
+            else self.client.queue
+        )
+        return [self._queue_entry(track) for track in source]
+
+    def _downloads_up_next(self) -> list[DownloadedTrack]:
+        """The remaining tracks of the active Downloads list, after the current.
+
+        Mirrors the order :meth:`_next_download` walks, so the Up-Next panel
+        shows exactly what auto-advance will play.
+        """
+        tracks = list(self._downloads_context or ())
+        current = self.client.current
+        if current is not None:
+            for i, track in enumerate(tracks):
+                if track.video_id == current.video_id:
+                    return tracks[i + 1 :]
+        return tracks
+
+    @staticmethod
+    def _queue_entry(track: PlaylistTrack | DownloadedTrack) -> dict:
+        return {
+            "video_id": track.video_id,
+            "title": track.title,
+            "artists": list(track.artists),
+            "duration": track.duration,
+        }
 
     def close(self) -> None:
         self.client.close()
