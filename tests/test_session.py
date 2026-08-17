@@ -393,6 +393,14 @@ class TestPrefetchNext:
         time.sleep(0.1)
         assert client.cache.path_for("t1") is None
 
+    def test_skipped_when_looping(self, client, session):
+        # Loop replays the current track on end and never advances to queue[0],
+        # so a speculative prefetch would be wasted network.
+        session.set_loop("on")
+        client.queue = [make_track("t1")]
+        session.record(StreamInfo(video_id="cur", title="Cur", stream_url="u"))
+        assert client.cache.path_for("t1") is None
+
     def test_skipped_when_queue_empty(self, client, session):
         client.queue = []
         session.record(StreamInfo(video_id="cur", title="Cur", stream_url="u"))

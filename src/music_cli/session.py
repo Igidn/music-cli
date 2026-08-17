@@ -184,7 +184,9 @@ class PlaybackSession:
         thread so the download never blocks playback. Best-effort:
         :meth:`client.prefetch` swallows failures.
         """
-        if not self.auto_next or not self.client.queue:
+        # Loop mode replays the current track on end; it never advances to
+        # queue[0], so a speculative download there would be wasted network.
+        if not self.auto_next or self.client.loop or not self.client.queue:
             return
         target = self.client.queue[0].video_id
         threading.Thread(
