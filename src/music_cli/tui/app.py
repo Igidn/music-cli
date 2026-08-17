@@ -172,6 +172,7 @@ class MusicTUI(App[None]):
         Binding("minus", "volume_down", "Vol -"),
         Binding("plus", "volume_up", "Vol +"),
         Binding("m", "toggle_mute", "Mute"),
+        Binding("ctrl+d", "download_track", "Download track"),
         Binding("q", "quit", "Quit", show=False),
         Binding("escape", "focus_results", show=False),
         Binding("left", "pane_left", "Prev pane"),
