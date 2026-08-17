@@ -353,6 +353,48 @@ class TestNextTrack:
         with pytest.raises(PlayerError):
             session.next_track()
 
+    def test_auto_next_stays_inside_downloads(self, client, session, tmp_path):
+        from music_cli.storage.state import DownloadsStore
+
+        client.downloads = DownloadsStore(tmp_path / "downloads.db")
+        # newest-first list: d2, d1, d3 (recorded last is newest/top).
+        client.downloads.record("d3", "Third")
+        client.downloads.record("d1", "First")
+        client.downloads.record("d2", "Second")
+
+        stream = session.play_download("d1", "First")
+        assert client.current.video_id == "d1"
+        assert session._downloads_context is not None
+
+        session.next_track()  # auto-next after d1
+        assert client.current.video_id == "d3"  # follows list order
+
+        session.next_track()  # d3 is last in the snapshot -> downloads mode ends
+        assert session._downloads_context is None
+        assert client.current.video_id == "d3"  # stops, no further track
+
+    def test_play_download_returns_played_stream(self, client, session, tmp_path):
+        from music_cli.storage.state import DownloadsStore
+
+        client.downloads = DownloadsStore(tmp_path / "downloads.db")
+        client.downloads.record("d2", "Two")
+        stream = session.play_download("d2", "Two")
+        assert stream.video_id == "d2"
+
+    def test_non_download_play_leaves_downloads_mode(self, client, session, tmp_path):
+        from music_cli.storage.state import DownloadsStore
+
+        client.downloads = DownloadsStore(tmp_path / "downloads.db")
+        client.downloads.record("d2", "Two",)
+        client.downloads.record("d1", "One")
+
+        session.play_download("d2", "Two")
+        assert session._downloads_context is not None
+
+        session.play_video("other", "Other")  # a non-downloads play
+        assert session._downloads_context is None
+        assert client.current.video_id == "other"
+
     def test_on_track_end_respects_auto_next_off(self, client, session):
         session.set_auto_next("off")
         client.current = StreamInfo(video_id="v0", title="T", stream_url="u")

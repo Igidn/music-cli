@@ -127,7 +127,10 @@ def _play(session: PlaybackSession, request: dict) -> dict:
     if target == "query":
         session.play_query(request["query"])
     elif target == "video_id":
-        session.play_video(request["video_id"], request.get("title", ""))
+        if request.get("from_downloads"):
+            session.play_download(request["video_id"], request.get("title", ""))
+        else:
+            session.play_video(request["video_id"], request.get("title", ""))
     elif target == "playlist_id":
         session.play_playlist(request["playlist_id"], request.get("playlist_index", 0))
     elif target == "album_id":
