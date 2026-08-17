@@ -98,7 +98,15 @@ class PlaybackSession:
         daemon's single event loop. Call on a worker thread; hand the result to
         :meth:`commit_play` on the main thread so AVFoundation playback starts
         where it can pump the run loop.
+
+        A ``from_downloads`` request snapshots the Downloads list so playback
+        stays inside it (see :meth:`play_video`); downloads are always cached,
+        so this prepare returns instantly and there is no long gap where the
+        up-next panel would show a stale context.
         """
+        self._downloads_context = (
+            self.client.downloads.recent() if request.get("from_downloads") else None
+        )
         if target == "video_id":
             return self.client.prepare_playable(
                 request["video_id"], progress=progress
@@ -120,7 +128,6 @@ class PlaybackSession:
         """
         if not self.client.start_playable(stream):
             raise PlayerError(f"Playback did not start for {stream.video_id}")
-        self._downloads_context = None
         self._load_up_next(stream.video_id)
         self.record(stream)
 
@@ -279,13 +286,17 @@ class PlaybackSession:
         return track
 
     def _next_download(self) -> PlaylistTrack | None:
-        """Play the next track in the Downloads snapshot, or clear it at the end."""
+        """Play the next track in the Downloads snapshot, or clear it at the end.
+
+        Uses the currently playing track's id to find its position in the list.
+        On natural track end :meth:`on_track_end` clears ``client.current``
+        before this runs, so fall back to ``last_video_id`` (the just-finished
+        track's id, recorded when it started) to still find the next entry.
+        """
         current = self.client.current
-        if current is None:
-            self._downloads_context = None
-            return None
+        current_vid = current.video_id if current is not None else self.last_video_id
         for i, track in enumerate(self._downloads_context or ()):
-            if track.video_id != current.video_id:
+            if track.video_id != current_vid:
                 continue
             if i + 1 < len(self._downloads_context or ()):
                 nxt = self._downloads_context[i + 1]

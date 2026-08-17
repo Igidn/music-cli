@@ -298,6 +298,30 @@ class TestAsyncPlay:
         assert history.most_recent().video_id == "v1"
         assert session.last_video_id == "v1"
 
+    def test_prepare_from_downloads_sets_context(self, client, session, tmp_path):
+        """Regress: the daemon's async path (prepare/commit) must keep playback
+        inside Downloads, mirroring play_download. It used to clear the context
+        in commit_play, so Up-Next showed the network queue and `n` left the
+        Downloads list."""
+        from music_cli.storage.state import DownloadsStore
+
+        client.downloads = DownloadsStore(tmp_path / "downloads.db")
+        client.downloads.record("d3", "Third")
+        client.downloads.record("d1", "First")
+        client.downloads.record("d2", "Second")  # newest-first: d2, d1, d3
+
+        stream = session.prepare_play(
+            "video_id",
+            {"video_id": "d2", "title": "Second", "from_downloads": True},
+        )
+        session.commit_play(stream)
+
+        # up-next shows the remaining downloads, not the network queue
+        assert [t["video_id"] for t in session.queue()] == ["d1", "d3"]
+        assert session._downloads_context is not None
+        session.next_track()
+        assert client.current.video_id == "d1"  # stays inside Downloads
+
     def test_prepare_query_picks_first_playable(self, client, session):
         client.search_api = FakeSearch(
             [make_result(video_id="", title="Artist row"), make_result("vq")]
@@ -372,6 +396,25 @@ class TestNextTrack:
         session.next_track()  # d3 is last in the snapshot -> downloads mode ends
         assert session._downloads_context is None
         assert client.current.video_id == "d3"  # stops, no further track
+
+    def test_on_track_end_auto_advances_inside_downloads(self, client, session, tmp_path):
+        """Regress: natural track end (on_track_end clears ``client.current``
+        before next_track) must still advance within Downloads, not stop/pause.
+        Both fixes are required together."""
+        from music_cli.storage.state import DownloadsStore
+
+        client.downloads = DownloadsStore(tmp_path / "downloads.db")
+        client.downloads.record("d3", "Third")
+        client.downloads.record("d1", "First")
+        client.downloads.record("d2", "Second")  # newest-first: d2, d1, d3
+
+        session.play_download("d1", "First")
+        assert client.current.video_id == "d1"
+        assert session._downloads_context is not None
+
+        session.on_track_end()  # player finished d1
+        assert client.current.video_id == "d3"  # auto-advanced within Downloads
+        assert session._downloads_context is not None
 
     def test_play_download_returns_played_stream(self, client, session, tmp_path):
         from music_cli.storage.state import DownloadsStore
