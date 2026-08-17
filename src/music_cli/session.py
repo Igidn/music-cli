@@ -172,6 +172,10 @@ class PlaybackSession:
         self.last_video_id = stream.video_id
         self._prefetch_next()
 
+    def remove_download(self, video_id: str) -> None:
+        """Delete one offline download (audio file and its index entry)."""
+        self.client.remove_download(video_id)
+
     def _prefetch_next(self) -> None:
         """Download the next up-next track ahead of auto-advance, if used.
 

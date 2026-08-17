@@ -31,6 +31,8 @@ from .core.paths import config_dir
 # targets for the "play" command (query | video_id | playlist_id | queue_index).
 COMMANDS = (
     "play",
+    "download",
+    "remove_download",
     "pause",
     "resume",
     "toggle",

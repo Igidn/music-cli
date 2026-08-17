@@ -15,7 +15,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def open_db(path: str | Path, *, check_same_thread: bool = False) -> sqlite3.Connection:
@@ -75,6 +75,9 @@ def _migrate(conn: sqlite3.Connection, current: int, target: int) -> None:
     if version < 1:
         _schema_v1(conn)
         version = 1
+    if version < 2:
+        _schema_v2(conn)
+        version = 2
     if version < target:
         raise NotImplementedError(f"No migration path from schema v{version}")
 
@@ -103,6 +106,26 @@ def _schema_v1(conn: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS settings (
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
+        );
+        """
+    )
+
+
+def _schema_v2(conn: sqlite3.Connection) -> None:
+    """v2: pin audio-cache entries for offline downloads, and index those
+    downloads so the TUI's Downloads pseudo-playlist can list them without
+    hitting YouTube. ``pinned`` entries are exempt from cache eviction, so a
+    deliberately downloaded track stays on disk until it is removed.
+    """
+    conn.execute("ALTER TABLE tracks ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS downloads (
+            video_id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            artists TEXT NOT NULL DEFAULT '[]',
+            duration REAL,
+            downloaded_at REAL NOT NULL
         );
         """
     )

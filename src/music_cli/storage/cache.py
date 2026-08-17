@@ -74,6 +74,7 @@ class CachedTrack:
     duration: float | None
     ext: str
     size: int
+    pinned: bool = False
 
 
 @dataclass
@@ -138,6 +139,7 @@ class AudioCache:
                 duration=entry.get("duration"),
                 ext=entry["ext"],
                 size=entry["size"],
+                pinned=bool(entry.get("pinned")),
             )
 
     def path_for(self, video_id: str) -> Path | None:
@@ -236,6 +238,7 @@ class AudioCache:
                 "size": dest.stat().st_size,
                 "added": now,
                 "last_used": now,
+                "pinned": False,
             }
             self._dirty = True
             self._persist()
@@ -243,7 +246,11 @@ class AudioCache:
         return dest
 
     def discard(self, video_id: str) -> None:
-        """Remove ``video_id`` from the cache (file and index entry)."""
+        """Remove ``video_id`` from the cache (file and index entry).
+
+        Explicit removal drops the pin too, unlike :meth:`evict` which skips
+        pinned entries.
+        """
         with self._lock:
             entry = self._entries.pop(video_id, None)
             if entry is not None:
@@ -257,8 +264,38 @@ class AudioCache:
                 self._dirty = True
             self._persist()
 
+    def pin(self, video_id: str) -> None:
+        """Exempt ``video_id`` from cache eviction (offline downloads).
+
+        Only the in-memory flag is flipped for a present entry; an absent id
+        is a no-op (nothing to protect yet).
+        """
+        with self._lock:
+            entry = self._entries.get(video_id)
+            if entry is None:
+                return
+            if entry.get("pinned"):
+                return
+            entry["pinned"] = True
+            self._dirty = True
+            self._persist()
+
+    def unpin(self, video_id: str) -> None:
+        """Let the cache evict ``video_id`` again (when its download is removed)."""
+        with self._lock:
+            entry = self._entries.get(video_id)
+            if entry is None:
+                return
+            entry["pinned"] = False
+            self._dirty = True
+            self._persist()
+
     def evict(self) -> None:
-        """Evict entries over the size, count or age budgets, LRU first."""
+        """Evict entries over the size, count or age budgets, LRU first.
+
+        Pinned entries (offline downloads) are skipped, so a deliberate
+        download stays on disk until it is explicitly removed.
+        """
         with self._lock:
             self._evict_ttl()
             self._evict_budget()
@@ -312,6 +349,7 @@ class AudioCache:
                 "size": path.stat().st_size,
                 "added": time.time(),
                 "last_used": time.time(),
+                "pinned": False,
             }
             self._dirty = True
         self.evict()
@@ -333,6 +371,7 @@ class AudioCache:
             "size": row["size"] or 0,
             "added": row["added"],
             "last_used": row["last_used"],
+            "pinned": bool(row["pinned"]),
         }
 
     def _evict_ttl(self) -> None:
@@ -340,6 +379,8 @@ class AudioCache:
             return
         cutoff = time.time() - self.ttl.total_seconds()
         for video_id, entry in list(self._entries.items()):
+            if entry.get("pinned"):
+                continue
             if entry.get("last_used", 0) >= cutoff:
                 continue
             self._drop(video_id, entry)
@@ -353,6 +394,8 @@ class AudioCache:
         for video_id, entry in sorted(
             self._entries.items(), key=lambda item: item[1]["last_used"]
         ):
+            if entry.get("pinned"):
+                continue
             self._drop(video_id, entry)
             if (
                 len(self._entries) <= self.max_entries
@@ -393,6 +436,7 @@ class AudioCache:
                 entry.get("size") or 0,
                 entry.get("added", time.time()),
                 entry.get("last_used", time.time()),
+                int(bool(entry.get("pinned"))),
             )
             for video_id, entry in self._entries.items()
         ]
@@ -400,7 +444,7 @@ class AudioCache:
             with self._conn:
                 self._conn.execute("DELETE FROM tracks")
                 self._conn.executemany(
-                    "INSERT INTO tracks VALUES (?, ?, ?, ?, ?, ?, ?, ?)", rows
+                    "INSERT INTO tracks VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", rows
                 )
         except sqlite3.DatabaseError:
             # A write failure means the database is gone or corrupt; fall
@@ -411,5 +455,5 @@ class AudioCache:
             with self._conn:
                 self._conn.execute("DELETE FROM tracks")
                 self._conn.executemany(
-                    "INSERT INTO tracks VALUES (?, ?, ?, ?, ?, ?, ?, ?)", rows
+                    "INSERT INTO tracks VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", rows
                 )

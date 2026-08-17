@@ -64,6 +64,13 @@ def register_subcommands(subparsers: argparse._SubParsersAction) -> None:
     ):
         subparsers.add_parser(name, help=help_text)
 
+    download = subparsers.add_parser(
+        "download", help="download a track for offline listening"
+    )
+    download.add_argument(
+        "video_id", metavar="TRACK_ID", help="the video id of the track to download"
+    )
+
     seek = subparsers.add_parser("seek", help="seek within the current track")
     seek.add_argument(
         "value",
@@ -130,6 +137,10 @@ def register_subcommands(subparsers: argparse._SubParsersAction) -> None:
         metavar="N",
         help="start from this track, 1-based in list order (default: 1)",
     )
+    downloaded = commands.add_parser(
+        "downloaded", help="list tracks you downloaded for offline listening"
+    )
+    _add_json(downloaded)
 
     history = subparsers.add_parser("history", help="show recently played tracks")
     history.add_argument(
@@ -448,6 +459,9 @@ def _cmd_search(args: argparse.Namespace) -> int:
 
 
 def _cmd_playlists(args: argparse.Namespace) -> int:
+    # `downloaded` is a local (non-synced) list and needs no sign-in/library.
+    if args.playlists_command == "downloaded":
+        return _playlists_downloaded(args)
     client = build_client(args)
     library = client.library
     if not library.authenticated:
@@ -537,6 +551,78 @@ def _playlists_tracks(args: argparse.Namespace, library: Any) -> int:
     return 0
 
 
+def _cmd_download(args: argparse.Namespace) -> int:
+    """Download ``video_id`` for offline listening, streaming progress.
+
+    Runs through the daemon (which owns the audio cache) so the progress UI
+    and the Downloads list stay in sync with the TUI.
+    """
+    _ensure_daemon(args)
+    try:
+        with _console.status("Downloading…", spinner="dots") as status:
+            response = ipc.send_play_request(
+                {"cmd": "download", "video_id": args.video_id},
+                on_progress=lambda pct: status.update(
+                    "Downloading…" if pct is None else f"Downloading… {pct:.0f}%"
+                ),
+            )
+    except PlayerError as error:
+        _errors.print(f"music-cli: {error}", style="bold red")
+        return 1
+    if not response.get("ok"):
+        _errors.print(
+            f"music-cli: {response.get('error', 'unknown error')}", style="bold red"
+        )
+        return 1
+    _console.print(
+        f"Downloaded {args.video_id} for offline listening — "
+        "find it under 'music-cli playlists downloaded'",
+        style="green",
+    )
+    return 0
+
+
+def _playlists_downloaded(args: argparse.Namespace) -> int:
+    """List locally downloaded tracks (the non-synced Downloads list)."""
+    from .storage.state import DownloadsStore
+
+    store = DownloadsStore()
+    try:
+        tracks = store.recent()
+    finally:
+        store.close()
+    if args.json:
+        for track in tracks:
+            _print_json(
+                {
+                    "video_id": track.video_id,
+                    "title": track.title,
+                    "artists": list(track.artists),
+                    "duration": track.duration,
+                }
+            )
+        return 0
+    if not tracks:
+        _console.print("No downloads yet — use 'music-cli download <id>'")
+        return 0
+    table = Table()
+    table.add_column("#", justify="right", style="dim")
+    table.add_column("Title", style="bold")
+    table.add_column("Artists")
+    table.add_column("Time")
+    table.add_column("Video ID")
+    for index, track in enumerate(tracks, 1):
+        table.add_row(
+            str(index),
+            escape(track.title),
+            escape(", ".join(track.artists)),
+            format_duration(track.duration) or "--:--",
+            track.video_id,
+        )
+    _console.print(table)
+    return 0
+
+
 def _playlists_play(args: argparse.Namespace) -> int:
     """Play a playlist from ``--track`` (1-based) via the daemon.
 
@@ -598,6 +684,7 @@ def _cmd_history(args: argparse.Namespace) -> int:
 
 _DISPATCH = {
     "play": _cmd_play,
+    "download": _cmd_download,
     "pause": _cmd_transport,
     "resume": _cmd_resume,
     "toggle": _cmd_transport,

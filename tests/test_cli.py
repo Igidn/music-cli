@@ -206,6 +206,15 @@ class TestArgParsing:
         assert args.limit == 3
         assert args.json is False
 
+    def test_download(self):
+        args = parse("download", "dQw4w9WgXcQ")
+        assert args.video_id == "dQw4w9WgXcQ"
+
+    def test_playlists_downloaded(self):
+        args = parse("playlists", "downloaded", "--json")
+        assert args.playlists_command == "downloaded"
+        assert args.json is True
+
     def test_play_requires_a_target(self):
         with pytest.raises(SystemExit) as error:
             parse("play")
@@ -358,6 +367,28 @@ class TestDaemonCommands:
         daemon.error = "boom"
         assert cli.run(parse("status")) == 1
         assert "boom" in capsys.readouterr().err
+
+    def test_download_sends_to_daemon(self, daemon, capsys):
+        assert cli.run(parse("download", "dQw4w9WgXcQ")) == 0
+        assert daemon.requests == [{"cmd": "download", "video_id": "dQw4w9WgXcQ"}]
+        assert "Downloaded dQw4w9WgXcQ" in capsys.readouterr().out
+
+    def test_download_error_response(self, daemon, capsys):
+        daemon.ok = False
+        daemon.error = "no streams found"
+        assert cli.run(parse("download", "abc")) == 1
+        assert "no streams found" in capsys.readouterr().err
+
+    def test_download_not_running(self, monkeypatch, capsys):
+        def dead(request, timeout=1200.0, on_progress=None):
+            raise PlayerError("the daemon is not running")
+
+        monkeypatch.setattr(
+            ipc, "ensure_daemon", lambda cookies=None, volume=None: None, raising=False
+        )
+        monkeypatch.setattr(ipc, "send_play_request", dead)
+        assert cli.run(parse("download", "abc")) == 1
+        assert "not running" in capsys.readouterr().err
 
     def test_daemon_not_running(self, monkeypatch, capsys):
         def dead(request, timeout=30.0):
@@ -551,3 +582,32 @@ class TestHistory:
     def test_empty(self, capsys):
         assert cli.run(parse("history")) == 0
         assert "No history" in capsys.readouterr().out
+
+
+class TestDownloads:
+    def seed(self):
+        from music_cli.storage.state import DownloadsStore
+
+        store = DownloadsStore()
+        store.record("d1", "Old Download", ("Artist A",), 100.0)
+        store.record("d2", "New Download", ("Artist B",), 200.0)
+        store.close()
+
+    def test_human_table(self, capsys):
+        self.seed()
+        assert cli.run(parse("playlists", "downloaded")) == 0
+        out = capsys.readouterr().out
+        assert "New Download" in out
+        assert "Old Download" in out
+
+    def test_json(self, capsys):
+        self.seed()
+        assert cli.run(parse("playlists", "downloaded", "--json")) == 0
+        lines = capsys.readouterr().out.strip().splitlines()
+        first = json.loads(lines[0])
+        assert first["video_id"] == "d2"
+        assert set(first) == {"video_id", "title", "artists", "duration"}
+
+    def test_empty(self, capsys):
+        assert cli.run(parse("playlists", "downloaded")) == 0
+        assert "No downloads yet" in capsys.readouterr().out

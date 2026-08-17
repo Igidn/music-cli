@@ -318,6 +318,8 @@ class MusicTUI(App[None]):
                     status = event.get("status")
                     if status is not None:
                         self.call_from_thread(self._render_status, status)
+                elif event.get("event") == "downloads":
+                    self.call_from_thread(self._refresh_downloads)
                 elif event.get("event") == "download":
                     if event.get("finished"):
                         self._download_status = None
@@ -431,6 +433,7 @@ class MusicTUI(App[None]):
             "run_search": self._on_search_finished,
             "rpc_worker": self._on_rpc_finished,
             "state_worker": self._on_state_finished,
+            "download_worker": self._on_download_finished,
             "init_status_worker": self._on_init_status_finished,
             "lyric_worker": self._on_lyric_fetched,
             "library_worker": self._on_library_fetched,
@@ -465,6 +468,10 @@ class MusicTUI(App[None]):
     @work(thread=True, exit_on_error=False)
     def state_worker(self, request: object) -> dict:
         return ipc.send_request(request)
+
+    @work(thread=True, exit_on_error=False)
+    def download_worker(self, request: dict) -> dict:
+        return ipc.send_play_request(request)
 
     @work(thread=True, exit_on_error=False)
     def lyric_worker(
@@ -564,6 +571,29 @@ class MusicTUI(App[None]):
         if "loop" in data:
             self._loop_enabled = bool(data["loop"])
             now_playing.set_modes(self._auto_next, self._loop_enabled)
+
+    def _on_download_finished(self, worker: Worker[dict]) -> None:
+        """A download request settled: refresh the list and clear progress."""
+        self._download_status = None
+        if worker.state is not WorkerState.SUCCESS:
+            self.set_status("Download failed")
+            self.notify(
+                f"Download failed: {worker.error}",
+                title="Download",
+                severity="error",
+            )
+            return
+        response = worker.result or {}
+        if not response.get("ok"):
+            self.set_status("Download failed")
+            self.notify(
+                f"Download failed: {response.get('error')}",
+                title="Download",
+                severity="error",
+            )
+            return
+        self._refresh_downloads()
+        self.set_status("Download ready")
 
     # ------------------------------------------------------------------
     # Event-driven rendering from pushed daemon status.
@@ -732,6 +762,36 @@ class MusicTUI(App[None]):
             },
         )
 
+    @on(LibraryTree.DownloadsExpandRequested)
+    def _on_downloads_expand(self, message: LibraryTree.DownloadsExpandRequested) -> None:
+        self.query_one(LibraryTree).show_downloads(self.client.downloads.recent())
+
+    @on(LibraryTree.DownloadActivated)
+    def _on_download_activated(self, message: LibraryTree.DownloadActivated) -> None:
+        track = message.track
+        self._start_play(
+            track.video_id,
+            track.title,
+            " • ".join(track.artists),
+            {"cmd": "play", "video_id": track.video_id, "title": track.title},
+        )
+
+    @on(LibraryTree.DownloadRemoveRequested)
+    def _on_download_remove(self, message: LibraryTree.DownloadRemoveRequested) -> None:
+        track = message.track
+        self.push_screen(
+            ConfirmScreen(f"Remove “{track.title}” from your downloads?"),
+            lambda confirmed: self._remove_download(
+                track.video_id, track.title, confirmed
+            ),
+        )
+
+    def _remove_download(self, video_id: str, title: str, confirmed: bool | None) -> None:
+        if not confirmed:
+            return
+        self.rpc_worker({"cmd": "remove_download", "video_id": video_id})
+        self.set_status(f"Removed “{title}” from downloads")
+
     def _start_play(
         self, video_id: str, title: str, subtitle: str, request: dict
     ) -> None:
@@ -758,6 +818,16 @@ class MusicTUI(App[None]):
 
     def _refresh_history(self) -> None:
         self.query_one(HistoryList).set_tracks(self._history_store.recent(15))
+
+    def _refresh_downloads(self) -> None:
+        """Refresh the Downloads pseudo-playlist node from the local index."""
+        tree = self.query_one(LibraryTree)
+        tracks = self.client.downloads.recent()
+        if tree.downloads_loaded:
+            tree.show_downloads(tracks)
+        else:
+            tree.update_downloads_count(len(tracks))
+        self._downloads_loaded = tree.downloads_loaded
 
     @work(thread=True, exit_on_error=False)
     def library_worker(self) -> list[LibraryPlaylist]:
@@ -945,6 +1015,36 @@ class MusicTUI(App[None]):
 
     def action_toggle_playback(self) -> None:
         self.rpc_worker({"cmd": "toggle"})
+
+    def action_download_track(self) -> None:
+        """Download the track currently selected in the focused pane."""
+        track = self._selected_track()
+        if track is None:
+            self.notify(
+                "Select a track to download", title="Download", severity="warning"
+            )
+            return
+        video_id, title = track[0], track[1]
+        self.set_status(f"Downloading “{title}”…")
+        self.download_worker({"cmd": "download", "video_id": video_id})
+
+    def _selected_track(self) -> tuple[str, str, str] | None:
+        """(video_id, title, subtitle) for the selected row in the focused pane."""
+        focused = self.focused
+        if focused is None:
+            return None
+        if isinstance(focused, LibraryTree):
+            return focused.selected_track()
+        if isinstance(focused, (QueueList, HistoryList)):
+            track = focused.track_at(getattr(focused, "index", None))
+            if track is None:
+                return None
+            return track.video_id, track.title, " • ".join(track.artists)
+        if isinstance(focused, ResultsTable):
+            result = focused.selected_result()
+            if result is not None and result.video_id:
+                return result.video_id, result.title, result.subtitle
+        return None
 
     def action_seek_forward(self) -> None:
         self._seek(5)

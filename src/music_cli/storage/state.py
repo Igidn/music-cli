@@ -44,6 +44,17 @@ class PlayedTrack:
     last_played: float | None = None
 
 
+@dataclass(frozen=True)
+class DownloadedTrack:
+    """One row of the offline-downloads index (a local, non-synced playlist)."""
+
+    video_id: str
+    title: str
+    artists: tuple[str, ...] = ()
+    duration: float | None = None
+    downloaded_at: float | None = None
+
+
 class PlayHistoryStore:
     """SQLite-backed play history, one row per track with a play counter."""
 
@@ -136,6 +147,85 @@ class PlayHistoryStore:
             duration=row["duration"],
             played=row["played"] or 1,
             last_played=row["last_played"],
+        )
+
+
+class DownloadsStore:
+    """SQLite-backed index of tracks downloaded for offline listening.
+
+    Behaves like a playlist that never syncs to YouTube Music: the audio
+    file lives in the audio cache (pinned so it isn't evicted) and this
+    index remembers the metadata so the Downloads list can render offline.
+    """
+
+    def __init__(self, path: str | os.PathLike[str] | None = None) -> None:
+        self.path = Path(path) if path is not None else config_dir() / STATE_DB_FILENAME
+        self._conn: sqlite3.Connection | None = None
+
+    def record(
+        self,
+        video_id: str,
+        title: str,
+        artists: tuple[str, ...] = (),
+        duration: float | None = None,
+    ) -> None:
+        """Record (or refresh) a downloaded track, moving it to the top."""
+        conn = self._ensure_open()
+        conn.execute(
+            """
+            INSERT INTO downloads (video_id, title, artists, duration, downloaded_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(video_id) DO UPDATE SET
+                title = excluded.title,
+                artists = excluded.artists,
+                duration = excluded.duration,
+                downloaded_at = excluded.downloaded_at
+            """,
+            (
+                video_id,
+                title or video_id,
+                json.dumps(list(artists)),
+                duration,
+                time.time(),
+            ),
+        )
+        conn.commit()
+
+    def recent(self, limit: int = 100) -> list[DownloadedTrack]:
+        """All downloaded tracks, newest first (same shape as playlists)."""
+        rows = self._ensure_open().execute(
+            "SELECT * FROM downloads ORDER BY downloaded_at DESC LIMIT ?", (limit,)
+        ).fetchall()
+        return [self._from_row(row) for row in rows]
+
+    def remove(self, video_id: str) -> None:
+        """Forget ``video_id`` (the audio file is removed by the cache)."""
+        conn = self._ensure_open()
+        conn.execute("DELETE FROM downloads WHERE video_id = ?", (video_id,))
+        conn.commit()
+
+    def close(self) -> None:
+        if self._conn is not None:
+            self._conn.close()
+            self._conn = None
+
+    def _ensure_open(self) -> sqlite3.Connection:
+        if self._conn is None:
+            self._conn = open_db_with_recovery(self.path)
+        return self._conn
+
+    @staticmethod
+    def _from_row(row: sqlite3.Row) -> DownloadedTrack:
+        try:
+            artists = json.loads(row["artists"] or "[]")
+        except ValueError:
+            artists = []
+        return DownloadedTrack(
+            video_id=row["video_id"],
+            title=row["title"] or row["video_id"],
+            artists=tuple(a for a in artists if isinstance(a, str)),
+            duration=row["duration"],
+            downloaded_at=row["downloaded_at"],
         )
 
 

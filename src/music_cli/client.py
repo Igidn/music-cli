@@ -11,6 +11,7 @@ from typing import Any
 from .core.errors import PlayerError
 from .player.audio import AVFoundationPlayer
 from .storage.cache import AudioCache, DownloadResult, TrackMeta
+from .storage.state import DownloadsStore
 from .yt.cookies import Cookies
 from .yt.extract import PlaylistTrack, StreamExtractor, StreamInfo, WatchPlaylist
 from .yt.playlists import Library
@@ -38,10 +39,12 @@ class MusicClient:
         on_track_end: Callable[[], None] | None = None,
         extractor_factory: Callable[..., StreamExtractor] = StreamExtractor,
         cache: AudioCache | None = None,
+        downloads: DownloadsStore | None = None,
     ) -> None:
         self._cookies = cookies
         self._extractor_factory = extractor_factory
         self.cache = cache or AudioCache()
+        self.downloads = downloads or DownloadsStore()
         self.search_api = YTmusicSearch()
         self.extractor = extractor_factory(cookies)
         self.watch = WatchPlaylist(cookies=cookies)
@@ -209,6 +212,28 @@ class MusicClient:
         except PlayerError:
             return False
         return path is not None
+
+    def download(self, video_id: str, progress=None) -> StreamInfo:
+        """Download ``video_id`` for offline listening and record it.
+
+        Wraps :meth:`prepare_playable` (network-only resolve + cache) then pins
+        the cached file so eviction leaves it alone, and adds it to the
+        downloads index. Safe to call from a worker thread. Already-downloaded
+        tracks resolve from the cache instantly and are re-recorded.
+        """
+        stream = self.prepare_playable(video_id, progress=progress)
+        if self.cache is not None:
+            self.cache.pin(video_id)
+        self.downloads.record(
+            video_id, stream.title, tuple(stream.artists), stream.duration
+        )
+        return stream
+
+    def remove_download(self, video_id: str) -> None:
+        """Delete a downloaded track's audio and forget it in the index."""
+        if self.cache is not None:
+            self.cache.discard(video_id)
+        self.downloads.remove(video_id)
 
     def prepare_playable(self, video_id: str, progress=None) -> StreamInfo:
         """Resolve ``video_id`` and download it into the cache. Network only.
@@ -397,3 +422,4 @@ class MusicClient:
         self.player.close()
         if self.cache is not None:
             self.cache.close()
+        self.downloads.close()

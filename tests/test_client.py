@@ -8,6 +8,7 @@ import pytest
 from music_cli.client import MusicClient
 from music_cli.core.errors import PlayerError
 from music_cli.storage.cache import AudioCache, TrackMeta
+from music_cli.storage.state import DownloadsStore
 from music_cli.yt.extract import PlaylistTrack, StreamExtractor, StreamInfo
 from music_cli.yt.search import parse_artists, parse_search_result
 
@@ -115,6 +116,7 @@ def client(tmp_path):
     c._play_lock = threading.Lock()
     c._download_progress = None
     c.cache = AudioCache(directory=tmp_path / "cache")
+    c.downloads = DownloadsStore(tmp_path / "downloads.db")
     return c
 
 
@@ -327,6 +329,30 @@ class TestCacheIntegration:
         assert track is not None
         assert track.title == "Stream xyz"
         assert track.ext == "m4a"
+
+    def test_download_records_and_pins(self, client, tmp_path):
+        """download() caches the audio, pins it (no eviction) and indexes it."""
+
+        class DownloadingExtractor(FakeExtractor):
+            def download(self, video_id, outtmpl, progress_hook=None):
+                path = f"{outtmpl}.m4a"
+                Path(path).write_bytes(b"audio")
+                return path
+
+        client.extractor = DownloadingExtractor()
+        stream = client.download("abc")
+        assert stream.video_id == "abc"
+        assert client.cache.lookup("abc").pinned is True
+        downloaded = client.downloads.recent()
+        assert [t.video_id for t in downloaded] == ["abc"]
+        assert downloaded[0].title == "Stream abc"
+
+    def test_remove_download_drops_file_and_index(self, client):
+        client.downloads.record("abc", "Song")
+        seed_cache(client, "abc")
+        client.remove_download("abc")
+        assert client.cache.lookup("abc") is None
+        assert client.downloads.recent() == []
 
     def test_prepare_playable_downloads_then_start_plays(self, client):
         """The async play split: prepare caches without touching the AV player;

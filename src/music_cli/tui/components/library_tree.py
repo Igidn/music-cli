@@ -10,6 +10,7 @@ from textual.message import Message
 from textual.widgets import Tree
 from textual.widgets._tree import TreeNode
 
+from music_cli.storage.state import DownloadedTrack
 from music_cli.yt.extract import PlaylistTrack
 from music_cli.yt.playlists import LibraryPlaylist
 
@@ -37,6 +38,31 @@ class LibraryTree(Tree[dict[str, Any] | None], inherit_bindings=False):
         Binding("c", "create_playlist", "Create playlist"),
         Binding("r", "rename_playlist", "Rename playlist"),
     ]
+
+    class DownloadsExpandRequested(Message):
+        """The Downloads node was activated while its tracks were still unloaded."""
+
+        def __init__(self, node: TreeNode) -> None:
+            self.node = node
+            super().__init__()
+
+        @property
+        def control(self) -> LibraryTree:
+            return self.node.tree
+
+    class DownloadActivated(Message):
+        """A downloaded track leaf was activated and should be played."""
+
+        def __init__(self, track: DownloadedTrack) -> None:
+            self.track = track
+            super().__init__()
+
+    class DownloadRemoveRequested(Message):
+        """The user pressed `d` with a downloaded track leaf selected."""
+
+        def __init__(self, track: DownloadedTrack) -> None:
+            self.track = track
+            super().__init__()
 
     class PlaylistExpandRequested(Message):
         """A playlist node was activated before its tracks were loaded."""
@@ -88,9 +114,48 @@ class LibraryTree(Tree[dict[str, Any] | None], inherit_bindings=False):
         self.show_root = False
         self._last_kind: str | None = None
         self.root.add_leaf("Loading library…")
+        self._ensure_downloads_node()
 
+    def _ensure_downloads_node(self) -> TreeNode:
+        """The always-present Downloads branch (child 0, never removed).
+
+        A local, non-synced pseudo-playlist listing tracks downloaded for
+        offline use. It is created first so it always sits above the synced
+        library playlists; ``set_playlists``/``set_unavailable`` preserve it.
+        """
+        for node in self.root.children:
+            data = node.data
+            if isinstance(data, dict) and data.get("kind") == "downloads":
+                return node
+        node = self.root.add(
+            Text("⬇ Downloads"),
+            data={"kind": "downloads", "loaded": False, "loading": False},
+            allow_expand=False,
+        )
+        self._last_kind = None
+        self.refresh_bindings()
+        return node
+
+    @property
+    def downloads_node(self) -> TreeNode:
+        return self._ensure_downloads_node()
+
+    @property
+    def downloads_loaded(self) -> bool:
+        return bool(self.downloads_node.data.get("loaded")) if isinstance(
+            self.downloads_node.data, dict
+        ) else False
+
+    def update_downloads_count(self, count: int) -> None:
+        """Refresh just the Downloads node's label, keeping its collapse state."""
+        node = self.downloads_node
+        suffix = f" ({count})" if count else ""
+        node.set_label(Text(f"⬇ Downloads{suffix}"))
     def set_playlists(self, playlists: list[LibraryPlaylist]) -> None:
-        self.root.remove_children()
+        downloads = self.downloads_node
+        for node in list(self.root.children):
+            if node is not downloads:
+                node.remove()
         if not playlists:
             self.root.add_leaf("No playlists in your library")
             return
@@ -109,10 +174,53 @@ class LibraryTree(Tree[dict[str, Any] | None], inherit_bindings=False):
         self.refresh_bindings()
 
     def set_unavailable(self, message: str) -> None:
-        """Replace the tree contents with a non-interactive notice."""
-        self.root.remove_children()
+        """Replace the synced tree contents with a notice, keeping Downloads."""
+        downloads = self.downloads_node
+        for node in list(self.root.children):
+            if node is not downloads:
+                node.remove()
         self.root.add_leaf(message)
         self.refresh_bindings()
+
+    def show_downloads(self, tracks: list[DownloadedTrack]) -> None:
+        """Fill the Downloads node with downloaded tracks and a count badge."""
+        node = self.downloads_node
+        node.data["loaded"] = True
+        node.data["loading"] = False
+        self.update_downloads_count(len(tracks))
+        node.remove_children()
+        if not tracks:
+            node.allow_expand = False
+            node.add_leaf("No downloads yet")
+            return
+        node.allow_expand = True
+        for track in tracks:
+            node.add_leaf(
+                self._download_label(track),
+                data={"kind": "download", "track": track},
+            )
+        self.refresh_bindings()
+
+    @staticmethod
+    def _download_label(track: DownloadedTrack) -> Text:
+        artists = " • ".join(track.artists) or "Unknown artist"
+        return Text.assemble(
+            Text(f"⬇ {track.title}"),
+            Text(f"  {artists}", style="grey58"),
+        )
+
+    def selected_track(self) -> tuple[str, str, str] | None:
+        """The (video_id, title, artists) under the cursor, if it is a track."""
+        data = self._cursor_data()
+        if data is None:
+            return None
+        if data.get("kind") == "track":
+            track = data["track"]
+            return track.video_id, track.title, " • ".join(track.artists)
+        if data.get("kind") == "download":
+            track = data["track"]
+            return track.video_id, track.title, " • ".join(track.artists)
+        return None
 
     def show_tracks(self, playlist_id: str, tracks: list[PlaylistTrack]) -> None:
         """Fill ``playlist_id``'s node with its tracks and expand it."""
@@ -169,6 +277,14 @@ class LibraryTree(Tree[dict[str, Any] | None], inherit_bindings=False):
             self.post_message(
                 self.TrackActivated(data["playlist_id"], data["index"], data["track"])
             )
+        elif data["kind"] == "download":
+            self.post_message(self.DownloadActivated(data["track"]))
+        elif data["kind"] == "downloads":
+            if not data["loaded"] and not data.get("loading"):
+                data["loading"] = True
+                self.post_message(self.DownloadsExpandRequested(node))
+            else:
+                node.toggle()
         elif not data["loaded"] and not data.get("loading"):
             data["loading"] = True
             self.post_message(self.PlaylistExpandRequested(data["playlist_id"], node))
@@ -186,7 +302,14 @@ class LibraryTree(Tree[dict[str, Any] | None], inherit_bindings=False):
             return self.app.client.library.authenticated and kind == "track"
         if action == "rename_playlist":
             return self.app.client.library.authenticated and kind == "playlist"
+        if action == "remove_download":
+            return kind == "download"
         return super().check_action(action, parameters)
+
+    def action_remove_download(self) -> None:
+        data = self._cursor_data()
+        if data is not None and data.get("kind") == "download":
+            self.post_message(self.DownloadRemoveRequested(data["track"]))
 
     def action_add_to_playlist(self) -> None:
         data = self._cursor_data()

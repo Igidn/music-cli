@@ -18,6 +18,7 @@ from pathlib import Path
 
 import music_cli.ipc as ipc
 from music_cli.client import MusicClient
+from music_cli.storage.state import DownloadsStore
 from music_cli.yt.extract import PlaylistTrack, StreamInfo
 from music_cli.yt.playlists import LibraryPlaylist
 from music_cli.yt.search import SearchResult
@@ -208,6 +209,7 @@ def make_client() -> MusicClient:
     client.current = None
     client._playlist = []
     client.cache = None
+    client.downloads = DownloadsStore()
     client.player = FakePlayer()
     client._in_flight = set()
     client._play_lock = threading.Lock()
@@ -557,6 +559,7 @@ def test_library_track_activates_sends_playlist_play(monkeypatch):
                 await pilot.pause()
             tree = app.query_one(LibraryTree)
             tree.focus()
+            await pilot.press("down")
             await pilot.press("down")
             await pilot.press("enter")
             for _ in range(10):
@@ -1059,8 +1062,10 @@ def test_library_tree_renders_playlists(monkeypatch):
             assert tree.id == "library-tree"
             assert tree.can_focus
             playlists = list(tree.root.children)
-            assert [node.data["kind"] for node in playlists] == ["playlist", "playlist"]
-            assert "My Mix" in str(playlists[0].label.plain)
+            kinds = [node.data["kind"] for node in playlists]
+            assert kinds == ["downloads", "playlist", "playlist"]
+            assert "Downloads" in str(playlists[0].label.plain)
+            assert "My Mix" in str(playlists[1].label.plain)
 
     _run(scenario())
 
@@ -1078,7 +1083,7 @@ def test_library_tree_sign_in_notice_when_unauthenticated(monkeypatch):
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
             tree = app.query_one(LibraryTree)
-            assert "Sign in" in str(tree.root.children[0].label.plain)
+            assert "Sign in" in str(tree.root.children[1].label.plain)
 
     _run(scenario())
 
@@ -1097,6 +1102,7 @@ def test_library_tree_expand_loads_tracks(monkeypatch):
                 await pilot.pause()
             tree = app.query_one(LibraryTree)
             tree.focus()
+            await pilot.press("down")
             await pilot.press("down")
             node = tree.cursor_node
             assert node.data["playlist_id"] == "p1"
@@ -1288,7 +1294,10 @@ def test_lyrics_survive_status_heartbeats(monkeypatch):
             # Lyric worker finishes and hands over the synced lines.
             np.set_lyrics([(0.0, "first line"), (5.0, "second line")])
             np.set_progress(6.0, 200.0)
-            lyric = lambda: str(np.query_one("#np-lyric").content)
+
+            def lyric():
+                return str(np.query_one("#np-lyric").content)
+
             assert lyric() == "second line"
             # Next heartbeat for the same track: lyrics must survive.
             _push(app, status_for(7.0))
@@ -1394,6 +1403,7 @@ def test_remove_track_from_playlist_tree(monkeypatch):
             tree = app.query_one(LibraryTree)
             tree.focus()
             await pilot.press("down")
+            await pilot.press("down")
             await pilot.press("enter")
             for _ in range(10):
                 await pilot.pause()
@@ -1457,6 +1467,7 @@ def test_rename_playlist_from_tree(monkeypatch):
             tree = app.query_one(LibraryTree)
             tree.focus()
             await pilot.press("down")
+            await pilot.press("down")
             await pilot.press("r")
             await pilot.pause()
             assert isinstance(app.screen, PlaylistNameScreen)
@@ -1498,6 +1509,7 @@ def test_playlist_keybinds_show_only_with_selection(monkeypatch):
             for _ in range(10):
                 await pilot.pause()
             tree.focus()
+            await pilot.press("down")
             await pilot.press("down")
             await pilot.pause()
             bindings = app.screen.active_bindings

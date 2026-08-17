@@ -32,6 +32,8 @@ run `music-cli --help` to get started
 | Command | Description |
 | --- | --- |
 | `play` | Play a query, video, or playlist |
+| `download <id>` | Download a track for offline listening |
+| `playlists downloaded` | List tracks you downloaded for offline use |
 | `pause` / `resume` / `toggle` | Transport control |
 | `next` / `stop` | Skip ahead / halt playback |
 | `seek +30` / `seek 120` | Skip forward or jump to a position |

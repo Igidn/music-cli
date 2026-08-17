@@ -91,6 +91,40 @@ class TestAudioCache:
         cache.evict()
         assert cache.lookup("a") is None
 
+    def test_pinned_survives_eviction(self, cache):
+        cache.max_entries = 2
+        seed(cache, "keep")
+        cache.pin("keep")
+        seed(cache, "b")
+        seed(cache, "c")
+        # The oldest entry ("keep") is pinned, so the cache evicts "b" instead
+        # and the download survives count pressure.
+        assert cache.lookup("keep") is not None
+        assert cache.lookup("b") is None
+
+    def test_pinned_survives_ttl(self, cache):
+        cache.ttl = timedelta(seconds=3600)
+        seed(cache, "a")
+        cache.pin("a")
+        cache._entries["a"]["last_used"] = time.time() - 7200
+        cache.evict()
+        assert cache.lookup("a") is not None
+
+    def test_discard_drops_pin(self, cache):
+        seed(cache, "a")
+        cache.pin("a")
+        cache.discard("a")
+        assert cache.lookup("a") is None
+
+    def test_pin_persists_across_instances(self, tmp_path):
+        directory = tmp_path / "cache"
+        first = AudioCache(directory=directory)
+        seed(first, "pid")
+        first.pin("pid")
+        first.close()
+        second = AudioCache(directory=directory)
+        assert second.lookup("pid").pinned is True
+
     def test_discard(self, cache):
         path = seed(cache, "a")
         cache.discard("a")

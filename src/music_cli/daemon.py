@@ -95,6 +95,9 @@ def _dispatch(session: PlaybackSession, request: dict) -> dict:
     elif cmd == "stop":
         session.stop()
         return {"ok": True, "data": session.status()}
+    elif cmd == "remove_download":
+        session.remove_download(request["video_id"])
+        return {"ok": True, "data": None}
     elif cmd == "quit":
         return {"ok": True, "data": None}
     elif cmd != "status":
@@ -323,7 +326,7 @@ def _is_async_play(request: dict[str, Any]) -> bool:
 
 
 def _spawn_async_play(
-    session: "PlaybackSession", request: dict[str, Any], conn: socket.socket
+    session: PlaybackSession, request: dict[str, Any], conn: socket.socket
 ) -> _AsyncPlay:
     """Apply launch flags and start the background resolve+download for a play."""
     slot = _AsyncPlay(conn, request)
@@ -345,7 +348,7 @@ def _spawn_async_play(
 
 
 def _async_play_worker(
-    session: "PlaybackSession",
+    session: PlaybackSession,
     target: str,
     request: dict[str, Any],
     slot: _AsyncPlay,
@@ -386,6 +389,98 @@ def _resolve_pending_plays(session, pending_plays: dict) -> None:
         del pending_plays[conn]
 
 
+class _AsyncDownload:
+    """A standalone ``download`` running in the background.
+
+    Like :class:`_AsyncPlay`, the slow network+download work runs off the
+    serve loop (which keeps pumping AVFoundation); when the file is committed
+    and recorded, the loop answers the requesting client and notifies
+    subscribers so the TUI refreshes its Downloads tree.
+    """
+
+    def __init__(self, conn: socket.socket, request: dict[str, Any]) -> None:
+        self.conn = conn
+        self.request = request
+        self.client: Any = None
+        self.ready = threading.Event()
+        self.error: Exception | None = None
+
+    def progress(self, info: dict[str, Any]) -> None:
+        """Stream progress to subscribers and the requesting client.
+
+        The events hook feeds the TUI's prioritized status line; the client
+        connection carries plain ``type: progress`` lines so the headless CLI
+        (``send_play_request``) can show the same download live.
+        """
+        if self.client is not None:
+            events = self.client.download_progress
+            if events is not None:
+                events(info)
+        if info.get("status") != "downloading":
+            return
+        total = info.get("total_bytes") or info.get("total_bytes_estimate")
+        downloaded = info.get("downloaded_bytes") or 0
+        percent = round(downloaded / total * 100) if total else None
+        try:
+            payload = json.dumps({"type": "progress", "percent": percent}).encode()
+            self.conn.sendall(payload + b"\n")
+        except OSError:
+            pass  # client gave up; keep downloading so the track is still cached
+
+
+def _spawn_async_download(
+    session: PlaybackSession, request: dict[str, Any], conn: socket.socket
+) -> _AsyncDownload:
+    """Start a background resolve+download; the loop replies when it finishes."""
+    slot = _AsyncDownload(conn, request)
+    slot.client = session.client
+    threading.Thread(
+        target=_download_worker,
+        args=(session, request, slot),
+        daemon=True,
+        name="download",
+    ).start()
+    return slot
+
+
+def _download_worker(
+    session: PlaybackSession,
+    request: dict[str, Any],
+    slot: _AsyncDownload,
+) -> None:
+    """Thread body: resolve, download into the cache, pin and record the track."""
+    video_id = request["video_id"]
+    try:
+        session.client.download(video_id, progress=slot.progress)
+    except Exception as error:  # noqa: BLE001 — daemon boundary; report to client
+        slot.error = error
+    finally:
+        slot.ready.set()
+
+
+def _resolve_pending_downloads(
+    session, pending_downloads: dict, subscribers: dict
+) -> None:
+    """Reply to finished background downloads and notify subscribers."""
+    for conn, slot in list(pending_downloads.items()):
+        if not slot.ready.is_set():
+            continue
+        if slot.error is not None:
+            response = {"ok": False, "error": str(slot.error)}
+        else:
+            response = {"ok": True, "data": {"video_id": slot.request["video_id"]}}
+            _push_event(subscribers, {"event": "downloads"})
+        try:
+            ipc.send_message(slot.conn, response)
+        except OSError:
+            pass  # client disconnected mid-download; the track is cached regardless
+        try:
+            conn.close()
+        except OSError:
+            pass
+        del pending_downloads[conn]
+
+
 def _serve(
     session: PlaybackSession,
     server: socket.socket,
@@ -403,6 +498,7 @@ def _serve(
     """
     subscribers: dict[socket.socket, deque[bytes]] = {}
     pending_plays: dict[socket.socket, _AsyncPlay] = {}
+    pending_downloads: dict[socket.socket, _AsyncDownload] = {}
     last_signature: tuple | None = None
     last_heartbeat = time.monotonic()
     last_activity = time.monotonic()
@@ -426,6 +522,14 @@ def _serve(
                     conn.close()
                     continue  # malformed request; keep serving
                 cmd = request.get("cmd")
+                if cmd == "download" and request.get("video_id"):
+                    # Slow offline download: run off the event loop and reply
+                    # (with progress streamed) when the file is on disk.
+                    pending_downloads[conn] = _spawn_async_download(
+                        session, request, conn
+                    )
+                    last_activity = time.monotonic()
+                    continue
                 if cmd == "play" and _is_async_play(request):
                     # Run the slow resolve+download off the event loop; the
                     # response is streamed back when playback actually starts.
@@ -438,6 +542,9 @@ def _serve(
                     ipc.send_message(conn, response)
                 finally:
                     conn.close()
+                # An offline download was removed; tell subscribers to refresh.
+                if cmd == "remove_download" and response.get("ok"):
+                    _push_event(subscribers, {"event": "downloads"})
                 # A play request replaces the current track; drop any pending
                 # track-end from the track it superseded, or the loop below
                 # would auto-advance straight past what the user just played.
@@ -465,6 +572,8 @@ def _serve(
                 _flush_subscriber(sock, subscribers)
         # Start playback for any finished background downloads (main thread).
         _resolve_pending_plays(session, pending_plays)
+        # Reply to finished offline downloads and tell subscribers to refresh.
+        _resolve_pending_downloads(session, pending_downloads, subscribers)
         if eof.is_set():
             eof.clear()
             try:
@@ -480,7 +589,9 @@ def _serve(
         elif time.monotonic() - last_heartbeat >= _HEARTBEAT:
             last_heartbeat = time.monotonic()
             _push(subscribers, status)
-        if _idle(session, subscribers, pending_plays, last_activity, idle_timeout):
+        if _idle(
+            session, subscribers, pending_plays, pending_downloads, last_activity, idle_timeout
+        ):
             return
         session.client.player.pump()
 
@@ -497,6 +608,17 @@ def _status_signature(status: dict) -> tuple:
         status["loop"],
         status["auto_next"],
     )
+
+
+def _push_event(
+    subscribers: dict[socket.socket, deque[bytes]], event: dict[str, Any]
+) -> None:
+    """Fan one non-status event (e.g. ``downloads`` refresh) to subscribers."""
+    payload = json.dumps(event).encode() + b"\n"
+    for conn, buffer in list(subscribers.items()):
+        buffer.append(payload)
+        if sum(len(chunk) for chunk in buffer) > _MAX_SUBSCRIBER_BYTES:
+            _drop_subscriber(conn, subscribers)
 
 
 def _push(subscribers: dict[socket.socket, deque[bytes]], status: dict) -> None:
@@ -542,19 +664,22 @@ def _idle(
     session: PlaybackSession,
     subscribers: dict,
     pending_plays: dict,
+    pending_downloads: dict,
     last_activity: float,
     idle_timeout: float,
 ) -> bool:
     """Whether to idle-exit: nothing playing, no subscribers, quiet for a while.
 
-    A background download in flight is still activity: let it finish and cache
-    the track before the daemon exits itself.
+    Any background download in flight (play or offline) is still activity:
+    let it finish and cache the track before the daemon exits itself.
     """
     if session.client.current is not None:
         return False
     if subscribers:
         return False
     if pending_plays:
+        return False
+    if pending_downloads:
         return False
     return time.monotonic() - last_activity > idle_timeout
 

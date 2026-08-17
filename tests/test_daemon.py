@@ -130,6 +130,9 @@ class FakeSession:
     def close(self):
         self._record("close")
 
+    def remove_download(self, video_id):
+        self._record("remove_download", video_id)
+
 
 @pytest.fixture
 def session():
@@ -341,6 +344,12 @@ def test_unknown_command(session):
     assert "explode" in response["error"]
 
 
+def test_remove_download_dispatch(session):
+    response = handle_request(session, {"cmd": "remove_download", "video_id": "abc"})
+    assert response == {"ok": True, "data": None}
+    assert ("remove_download", ("abc",), {}) in session.calls
+
+
 def test_player_error_becomes_error_response(session):
     session.fail_with = PlayerError("no streams found")
     response = handle_request(session, {"cmd": "play", "query": "x"})
@@ -370,7 +379,7 @@ def test_download_hook_pushes_percent():
     subscribers = {sub: deque()}
     hook = _download_hook(subscribers)
     hook({"status": "downloading", "downloaded_bytes": 500, "total_bytes": 1000})
-    assert sub.lines == [b'{"event": "download", "percent": 50}\n']
+    assert sub.lines == [b'{"event": "download", "percent": 50, "downloaded": 500}\n']
 
 
 def test_is_async_play_routes_single_track_targets_only():
@@ -387,6 +396,8 @@ def test_download_hook_skips_unknown_total_and_other_statuses():
     subscribers = {sub: deque()}
     hook = _download_hook(subscribers)
     hook({"status": "downloading", "downloaded_bytes": 500})
-    assert sub.lines == [b'{"event": "download", "percent": null}\n']
+    assert sub.lines == [b'{"event": "download", "percent": null, "downloaded": 500}\n']
+    # finished is pushed so the TUI can clear the download status line.
     hook({"status": "finished"})
-    assert len(sub.lines) == 1  # finished status is not pushed
+    assert len(sub.lines) == 2
+    assert b'"finished": true' in sub.lines[1]
