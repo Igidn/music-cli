@@ -262,11 +262,10 @@ class PlaybackSession:
     def next_track(self) -> PlaylistTrack | None:
         """Play the next track, refilling the queue when it runs dry.
 
-        When the current play started inside Downloads, auto-advance stays in
-        that list (see :meth:`play_download`), playing the next downloaded
-        track and dropping back to normal fallback at the end of the list.
-        Otherwise: the active playlist loops, then a radio refill off the last
-        played track. Returns ``None`` when there is nothing to play anywhere;
+        Playing from the Downloads list wraps to the first track at the end,
+        so the list plays continuously like a normal playlist. Otherwise the
+        active playlist loops, then a radio refill off the last played track.
+        Returns ``None`` when there is nothing to play anywhere;
         stream-resolution errors propagate.
         """
         client = self.client
@@ -286,22 +285,26 @@ class PlaybackSession:
         return track
 
     def _next_download(self) -> PlaylistTrack | None:
-        """Play the next track in the Downloads snapshot, or clear it at the end.
+        """Play the next track in the Downloads snapshot, wrapping to the first
+        at the end so the list plays continuously (like a normal playlist).
 
         Uses the currently playing track's id to find its position in the list.
         On natural track end :meth:`on_track_end` clears ``client.current``
         before this runs, so fall back to ``last_video_id`` (the just-finished
         track's id, recorded when it started) to still find the next entry.
         """
+        tracks = self._downloads_context or ()
+        if not tracks:
+            self._downloads_context = None
+            return None
         current = self.client.current
         current_vid = current.video_id if current is not None else self.last_video_id
-        for i, track in enumerate(self._downloads_context or ()):
+        for i, track in enumerate(tracks):
             if track.video_id != current_vid:
                 continue
-            if i + 1 < len(self._downloads_context or ()):
-                nxt = self._downloads_context[i + 1]
-                return self.play_video(nxt.video_id, nxt.title, from_download=True)
-            break
+            nxt = tracks[i + 1] if i + 1 < len(tracks) else tracks[0]
+            return self.play_video(nxt.video_id, nxt.title, from_download=True)
+        # current track isn't in the snapshot (e.g. removed mid-play); stop.
         self._downloads_context = None
         return None
 

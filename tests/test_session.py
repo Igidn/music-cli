@@ -393,9 +393,9 @@ class TestNextTrack:
         session.next_track()  # auto-next after d1
         assert client.current.video_id == "d3"  # follows list order
 
-        session.next_track()  # d3 is last in the snapshot -> downloads mode ends
-        assert session._downloads_context is None
-        assert client.current.video_id == "d3"  # stops, no further track
+        session.next_track()  # d3 is last -> wraps back to the first (d2)
+        assert client.current.video_id == "d2"
+        assert session._downloads_context is not None  # keeps looping
 
     def test_on_track_end_auto_advances_inside_downloads(self, client, session, tmp_path):
         """Regress: natural track end (on_track_end clears ``client.current``
