@@ -774,7 +774,12 @@ class MusicTUI(App[None]):
             track.video_id,
             track.title,
             " • ".join(track.artists),
-            {"cmd": "play", "video_id": track.video_id, "title": track.title},
+            {
+                "cmd": "play",
+                "video_id": track.video_id,
+                "title": track.title,
+                "from_downloads": True,
+            },
         )
 
     @on(LibraryTree.DownloadRemoveRequested)

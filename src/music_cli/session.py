@@ -17,6 +17,7 @@ from .storage.state import (
     SETTING_LOOP,
     SETTING_MUTED,
     SETTING_VOLUME,
+    DownloadedTrack,
     PlayedTrack,
     PlayHistoryStore,
     SettingsStore,
@@ -56,6 +57,9 @@ class PlaybackSession:
             settings_store if settings_store is not None else SettingsStore()
         )
         self.last_video_id: str = ""
+        # Set when a play started from the Downloads list: auto-next then walks
+        # this snapshot of the Downloads list instead of the queue/radio.
+        self._downloads_context: list[DownloadedTrack] | None = None
         # Saved settings always win over the player's construction defaults.
         player = client.player
         player.volume = self._settings.get_int(SETTING_VOLUME, player.volume)
@@ -78,6 +82,7 @@ class PlaybackSession:
         Results without a video id (artists, playlists) cannot be played
         directly and are skipped.
         """
+        self._downloads_context = None
         result = next((r for r in self.client.search(query) if r.video_id), None)
         if result is None:
             raise PlayerError(f"No playable results for {query!r}")
@@ -115,29 +120,53 @@ class PlaybackSession:
         """
         if not self.client.start_playable(stream):
             raise PlayerError(f"Playback did not start for {stream.video_id}")
+        self._downloads_context = None
         self._load_up_next(stream.video_id)
         self.record(stream)
 
-    def play_video(self, video_id: str, title: str = "") -> StreamInfo:
+    def play_video(
+        self,
+        video_id: str,
+        title: str = "",
+        *,
+        from_download: bool = False,
+    ) -> StreamInfo:
+        """Play ``video_id``; ``from_download`` keeps auto-next inside Downloads.
+
+        Playing from the Downloads list snapshots the list order so each
+        auto-advance (and manual next) stays in that list rather than falling
+        into the queue/radio refill (see :meth:`next_track`). Any other play
+        clears the context.
+        """
+        self._downloads_context = (
+            self.client.downloads.recent() if from_download else None
+        )
         stream = self.client.play_video(video_id, title)
         self._load_up_next(video_id)
         self.record(stream)
         return stream
 
+    def play_download(self, video_id: str, title: str = "") -> StreamInfo:
+        """Play a track from the Downloads list; auto-next stays in that list."""
+        return self.play_video(video_id, title, from_download=True)
+
     def play_queue_track(self, index: int) -> StreamInfo:
         """Play the queued track at ``index`` and record it."""
+        self._downloads_context = None
         stream = self.client.play_queue_track(index)
         self.record(stream)
         return stream
 
     def play_playlist(self, playlist_id: str, start_index: int = 0) -> StreamInfo:
         """Play a playlist from ``start_index``; the client queues the remainder."""
+        self._downloads_context = None
         stream = self.client.play_from_playlist(playlist_id, start_index)
         self.record(stream)
         return stream
 
     def play_album(self, album_id: str, start_index: int = 0) -> StreamInfo:
         """Play an album from ``start_index``; the client queues the remainder."""
+        self._downloads_context = None
         stream = self.client.play_album(album_id, start_index)
         self.record(stream)
         return stream
@@ -214,11 +243,16 @@ class PlaybackSession:
     def next_track(self) -> PlaylistTrack | None:
         """Play the next track, refilling the queue when it runs dry.
 
-        Order of fallback: the active playlist loops, then a radio refill
-        off the last played track. Returns ``None`` when there is nothing
-        to play anywhere; stream-resolution errors propagate.
+        When the current play started inside Downloads, auto-advance stays in
+        that list (see :meth:`play_download`), playing the next downloaded
+        track and dropping back to normal fallback at the end of the list.
+        Otherwise: the active playlist loops, then a radio refill off the last
+        played track. Returns ``None`` when there is nothing to play anywhere;
+        stream-resolution errors propagate.
         """
         client = self.client
+        if self._downloads_context:
+            return self._next_download()
         if not client.queue:
             client.loop_playlist()
         if not client.queue and self.last_video_id:
@@ -231,6 +265,22 @@ class PlaybackSession:
         track = client.next()
         self.record(self.client.current)  # type: ignore[arg-type]
         return track
+
+    def _next_download(self) -> PlaylistTrack | None:
+        """Play the next track in the Downloads snapshot, or clear it at the end."""
+        current = self.client.current
+        if current is None:
+            self._downloads_context = None
+            return None
+        for i, track in enumerate(self._downloads_context or ()):
+            if track.video_id != current.video_id:
+                continue
+            if i + 1 < len(self._downloads_context or ()):
+                nxt = self._downloads_context[i + 1]
+                return self.play_video(nxt.video_id, nxt.title, from_download=True)
+            break
+        self._downloads_context = None
+        return None
 
     def pause(self) -> None:
         self.client.player.pause()
