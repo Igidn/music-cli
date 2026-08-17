@@ -519,6 +519,10 @@ def _serve(
         for sock in readable:
             if sock is server:
                 conn, _ = server.accept()
+                # Bound the first read: a client that connects and sends
+                # nothing must not pin the main thread in recv, which would
+                # freeze the loop below (signals, other requests, playback).
+                conn.settimeout(30)
                 try:
                     request = ipc.recv_message(conn)
                 except PlayerError:
@@ -542,7 +546,10 @@ def _serve(
                     continue
                 try:
                     response = handle_request(session, request)
-                    ipc.send_message(conn, response)
+                    try:
+                        ipc.send_message(conn, response)
+                    except OSError:
+                        pass  # client disconnected before reading the answer
                 finally:
                     conn.close()
                 # An offline download was removed; tell subscribers to refresh.
