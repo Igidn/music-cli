@@ -344,6 +344,11 @@ def _spawn_async_play(
     """Apply launch flags and start the background resolve+download for a play."""
     slot = _AsyncPlay(conn, request)
     slot.client = session.client
+    # The requested track replaces whatever is playing now: stop it up front
+    # (exactly like the synchronous play path) so the old audio doesn't keep
+    # playing while the new track resolves and downloads. The serve loop
+    # pumps the run loop right after, so no explicit pump is needed.
+    session.client.player.stop()
     # Launch flags must shape playback before the track starts.
     if "volume" in request:
         session.set_volume(volume=request["volume"])

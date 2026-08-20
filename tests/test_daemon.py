@@ -7,7 +7,12 @@ from collections import deque
 import pytest
 
 from music_cli.core.errors import PlayerError
-from music_cli.daemon import _download_hook, _is_async_play, handle_request
+from music_cli.daemon import (
+    _download_hook,
+    _is_async_play,
+    _spawn_async_play,
+    handle_request,
+)
 
 
 class FakePlayer:
@@ -388,6 +393,41 @@ def test_is_async_play_routes_single_track_targets_only():
     assert _is_async_play({"cmd": "play", "playlist_id": "PL"}) is False
     assert _is_async_play({"cmd": "play", "album_id": "MPREb_x"}) is False
     assert _is_async_play({"cmd": "play", "queue_index": 0}) is False
+
+
+def test_spawn_async_play_stops_current_track():
+    """Requesting a new track must stop the old audio immediately.
+
+    The async play path resolves+downloads in the background; if playback
+    weren't stopped at request time the previous track would keep playing
+    until the download finished and the new one committed.
+    """
+
+    class Player:
+        def __init__(self):
+            self.stops = 0
+
+        def stop(self):
+            self.stops += 1
+
+    class Client:
+        def __init__(self):
+            self.player = Player()
+
+    class Session:
+        def __init__(self):
+            self.client = Client()
+
+        def prepare_play(self, target, request, progress=None):
+            raise PlayerError("not prepared in test")
+
+    slot = _spawn_async_play(
+        Session(), {"cmd": "play", "video_id": "v"}, conn=object()
+    )
+    # The stop happens synchronously at spawn, on the serve-loop thread.
+    assert slot.client.player.stops == 1
+    # And the background worker still runs (and fails cleanly) afterwards.
+    assert slot.ready.wait(2)
     assert _is_async_play({"cmd": "play", "video_id": "v", "playlist_id": "PL"}) is False
 
 
