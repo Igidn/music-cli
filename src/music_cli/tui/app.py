@@ -201,7 +201,9 @@ class MusicTUI(App[None]):
         # Reflect-the-daemon state; the daemon owns the truth and pushes it.
         self._current_video_id: str | None = None
         self._pending_play: str | None = None
+        self._play_worker: Worker[dict] | None = None
         self._next_pending = False
+        self._next_worker: Worker[dict] | None = None
         # While a download is live the status line must keep showing it;
         # the state heartbeat's "Playing" label must not clobber it.
         self._download_status: str | None = None
@@ -430,6 +432,10 @@ class MusicTUI(App[None]):
         worker = event.worker
         if not worker.is_finished:
             return
+        # A background worker (e.g. the lyric fetch) can finish after the app
+        # has started tearing down; its handler must not touch the widgets then.
+        if not self.is_running:
+            return
         handlers = {
             "run_search": self._on_search_finished,
             "rpc_worker": self._on_rpc_finished,
@@ -524,10 +530,16 @@ class MusicTUI(App[None]):
             self.query_one(NowPlaying).clear_track()
 
     def _on_rpc_finished(self, worker: Worker[dict]) -> None:
-        # Any IPC finishing clears the in-flight guards; the daemon also
-        # dedups, so an over-eager clear just lets a re-click re-send.
-        self._pending_play = None
-        self._next_pending = False
+        # Only the play request itself clears the play guard: an unrelated RPC
+        # (toggle, seek, …) settling mid-download must not, or the stale track's
+        # heartbeat would slip back into the bar and transport actions would
+        # hit the track the pending play is replacing.
+        if worker is self._play_worker:
+            self._play_worker = None
+            self._pending_play = None
+        if worker is self._next_worker:
+            self._next_worker = None
+            self._next_pending = False
         if worker.state is WorkerState.SUCCESS:
             response = worker.result or {}
             if response.get("ok"):
@@ -634,7 +646,13 @@ class MusicTUI(App[None]):
                         track.get("duration"),
                     )
         state = status.get("state")
-        if self._download_status is None:
+        # While a play/next is resolving, keep the "Resolving stream…" status:
+        # the pushed frames describe the stale track, not the pending one.
+        if (
+            self._download_status is None
+            and self._pending_play is None
+            and not self._next_pending
+        ):
             if state == "stopped" or track is None:
                 self.set_status("Ready")
             else:
@@ -813,7 +831,7 @@ class MusicTUI(App[None]):
         self.set_timer(
             _SLOW_DOWNLOAD_HINT_SECS, lambda: self._hint_slow_download(video_id)
         )
-        self.rpc_worker(request, timeout=_PLAY_RPC_TIMEOUT)
+        self._play_worker = self.rpc_worker(request, timeout=_PLAY_RPC_TIMEOUT)
 
     def _hint_slow_download(self, video_id: str) -> None:
         """Nudge the status line when a play is still downloading after a while."""
@@ -1011,7 +1029,9 @@ class MusicTUI(App[None]):
             return
         self._next_pending = True
         self.set_status("Resolving stream…")
-        self.rpc_worker({"cmd": "next"}, timeout=_PLAY_RPC_TIMEOUT)
+        self._next_worker = self.rpc_worker(
+            {"cmd": "next"}, timeout=_PLAY_RPC_TIMEOUT
+        )
 
     def action_toggle_auto_next(self) -> None:
         self.state_worker({"cmd": "auto_next", "state": "toggle"})
@@ -1020,6 +1040,11 @@ class MusicTUI(App[None]):
         self.state_worker({"cmd": "loop", "state": "toggle"})
 
     def action_toggle_playback(self) -> None:
+        # While a track is resolving, the daemon still has the previous track
+        # loaded; a toggle would play/pause that stale track, then the resolved
+        # one would start on top. Drop the press until the play lands.
+        if self._pending_play or self._next_pending:
+            return
         self.rpc_worker({"cmd": "toggle"})
 
     def action_download_track(self) -> None:

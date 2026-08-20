@@ -199,6 +199,23 @@ class FakeDaemon:
         return {"ok": True, "data": self.status}
 
 
+class DelayedDaemon(FakeDaemon):
+    """FakeDaemon whose play response waits for the test to release it.
+
+    Stands in for the daemon's async play: resolve+download is slow, so the
+    play request stays in flight while the test exercises that gap.
+    """
+
+    def __init__(self, status=None):
+        super().__init__(status)
+        self.play_release = threading.Event()
+
+    def respond(self, request, timeout=30.0):
+        if request["cmd"] == "play":
+            self.play_release.wait(timeout)
+        return super().respond(request, timeout)
+
+
 def make_client() -> MusicClient:
     client = MusicClient.__new__(MusicClient)
     client.search_api = FakeSearch()
@@ -713,6 +730,72 @@ def test_in_flight_play_ignores_stale_track_status(monkeypatch):
             await _settle(pilot)
             assert title() == "Track C"
             assert app._current_video_id == "C"
+
+    _run(scenario())
+
+
+def test_pending_play_survives_stale_pushes_and_other_rpcs(monkeypatch):
+    """The resolve/download window must not regress to the stale track.
+
+    Selecting a track shows it immediately and keeps "Resolving stream…"
+    while the daemon downloads it. Previously a stale heartbeat clobbered the
+    status, any unrelated IPC settling (toggle, seek) cleared the in-flight
+    guard, and a space press during the gap toggled the *previous* track —
+    which kept playing until the new one landed.
+    """
+    from music_cli.tui.app import MusicTUI
+    from music_cli.tui.components import NowPlaying
+
+    fake = DelayedDaemon(STATUS)
+    monkeypatch.setattr(ipc, "events_socket_path", _unused_socket_path, raising=False)
+    monkeypatch.setattr(
+        ipc, "ensure_daemon", lambda cookies=None, volume=None: None, raising=False
+    )
+    monkeypatch.setattr(ipc, "send_request", fake.respond)
+
+    async def scenario():
+        app = MusicTUI(make_client())
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _settle(pilot, 6)
+            _push(app, STATUS)  # stale track "Some Song" is playing
+            np = app.query_one(NowPlaying)
+
+            # User selects another track: optimistic bar + in-flight resolve.
+            app.play_result(make_result(0, "v9"))
+            assert app._pending_play == "v9"
+            assert str(np.query_one("#np-title").content) == "Song 0"
+            assert str(np.query_one("#np-status").content) == "Resolving stream…"
+
+            # Stale heartbeats for the old track must not regress bar/status.
+            _push(app, STATUS)
+            assert str(np.query_one("#np-title").content) == "Song 0"
+            assert str(np.query_one("#np-status").content) == "Resolving stream…"
+
+            # Space during the gap must not toggle the stale track.
+            app.action_toggle_playback()
+            await _settle(pilot)
+            assert not any(r["cmd"] == "toggle" for r in fake.requests)
+
+            # An unrelated RPC settling must not clear the in-flight play.
+            app.action_seek_forward()
+            await _settle(pilot)
+            assert app._pending_play == "v9"
+            assert str(np.query_one("#np-title").content) == "Song 0"
+            assert str(np.query_one("#np-status").content) == "Resolving stream…"
+
+            # The download lands: the target takes over the bar.
+            fake.status = dict(STATUS)
+            fake.status["track"] = {
+                "video_id": "v9",
+                "title": "Song 0",
+                "artists": ["Artist 0"],
+                "duration": 201.0,
+            }
+            fake.play_release.set()
+            await _settle(pilot)
+            assert app._pending_play is None
+            assert str(np.query_one("#np-title").content) == "Song 0"
+            assert str(np.query_one("#np-status").content) == "Playing"
 
     _run(scenario())
 

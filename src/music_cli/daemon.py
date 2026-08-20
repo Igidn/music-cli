@@ -299,12 +299,22 @@ class _AsyncPlay:
     def __init__(self, conn: socket.socket, request: dict[str, Any]) -> None:
         self.conn = conn
         self.request = request
+        self.client: Any = None
         self.ready = threading.Event()
         self.stream: Any = None
         self.error: Exception | None = None
 
     def progress(self, info: dict[str, Any]) -> None:
-        """yt-dlp progress hook: stream a progress line to the client."""
+        """yt-dlp progress hook: feed subscribers and stream to the client.
+
+        The subscriber feed drives the TUI's live "Downloading… N%" status
+        during an async play; the client connection carries the plain
+        ``type: progress`` lines for headless callers.
+        """
+        if self.client is not None:
+            events = self.client.download_progress
+            if events is not None:
+                events(info)
         if info.get("status") != "downloading":
             return
         total = info.get("total_bytes") or info.get("total_bytes_estimate")
@@ -333,6 +343,7 @@ def _spawn_async_play(
 ) -> _AsyncPlay:
     """Apply launch flags and start the background resolve+download for a play."""
     slot = _AsyncPlay(conn, request)
+    slot.client = session.client
     # Launch flags must shape playback before the track starts.
     if "volume" in request:
         session.set_volume(volume=request["volume"])
