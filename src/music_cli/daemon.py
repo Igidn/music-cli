@@ -4,10 +4,10 @@ The daemon is the only process that plays audio in CLI mode. The CLI spawns
 it detached (``python -m music_cli.daemon``) and talks to it over the
 protocol in :mod:`music_cli.ipc`.
 
-AVFoundation's media pipeline is serviced by the main ``NSRunLoop``, so the
-serve loop is single-threaded: it polls the socket with a ~20ms timeout and
-pumps the run loop between connections, mirroring the TUI's pump_platform.
-"""
+The player's :meth:`pump` method processes bus messages (or
+services the platform event loop on macOS), so the serve loop is
+single-threaded: it polls the socket with a ~20ms timeout and
+calls ``pump`` between connections."""
 
 from __future__ import annotations
 
@@ -242,7 +242,7 @@ def main(argv: list[str] | None = None) -> None:
     server = _claim_socket(path)
     events_path = ipc.events_socket_path()
     event_server = _claim_socket(events_path)
-    # Track-end fires from an AVFoundation notification; the flag lets the
+    # Track-end fires from a player notification; the flag lets the
     # serve loop run auto-next on the main thread, where pump() runs.
     eof = threading.Event()
     session.client.on_track_end = eof.set
@@ -292,7 +292,7 @@ class _AsyncPlay:
 
     A worker thread does the network work (search, resolve, download into the
     cache) so the serve loop keeps answering other requests; the ready file is
-    handed to the main thread, where AVFoundation playback actually starts.
+    handed to the main thread, where player playback actually starts.
     Download progress is streamed to the client so its socket stays alive.
     """
 
@@ -347,7 +347,7 @@ def _spawn_async_play(
     # The requested track replaces whatever is playing now: stop it up front
     # (exactly like the synchronous play path) so the old audio doesn't keep
     # playing while the new track resolves and downloads. The serve loop
-    # pumps the run loop right after, so no explicit pump is needed.
+    # pumps after, so no explicit pump is needed.
     session.client.player.stop()
     # Launch flags must shape playback before the track starts.
     if "volume" in request:
@@ -384,7 +384,7 @@ def _async_play_worker(
 def _resolve_pending_plays(session, pending_plays: dict) -> None:
     """Start playback for finished downloads and reply to their clients.
 
-    Runs on the main thread so AVFoundation playback can pump the run loop.
+    Runs on the main thread so player playback can pump.
     """
     for conn, slot in list(pending_plays.items()):
         if not slot.ready.is_set():
@@ -412,7 +412,7 @@ class _AsyncDownload:
     """A standalone ``download`` running in the background.
 
     Like :class:`_AsyncPlay`, the slow network+download work runs off the
-    serve loop (which keeps pumping AVFoundation); when the file is committed
+    serve loop (which keeps pumping the player); when the file is committed
     and recorded, the loop answers the requesting client and notifies
     subscribers so the TUI refreshes its Downloads tree.
     """
@@ -510,7 +510,7 @@ def _serve(
 ) -> None:
     """Serve control requests and push state events until quit/idle/signal.
 
-    One loop pumps the AVFoundation run loop, handles control requests, and
+    One loop pumps the platform player, handles control requests, and
     fans state events out to subscribers. Push happens when the discrete
     state signature changes or as a coarse heartbeat, so a connected TUI gets
     fresh ``position`` without polling.

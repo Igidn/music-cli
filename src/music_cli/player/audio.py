@@ -12,12 +12,9 @@ from __future__ import annotations
 
 import math
 import os
-import tempfile
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 from AVFoundation import (
@@ -42,9 +39,10 @@ from Foundation import (
 )
 
 from ..core.errors import PlayerError
-from ..storage.cache import AudioCache, DownloadResult, TrackMeta
+from ..storage.cache import AudioCache
 from ..yt.cookies import Cookies
 from ..yt.extract import StreamExtractor, StreamInfo
+from .base import LocalFile, default_fetch_stream
 
 # Not exposed by pyobjc's AVFoundation bindings; the constant's runtime value
 # is its own name string (see AVURLAsset.h).
@@ -52,19 +50,6 @@ AVURLAssetHTTPHeaderFieldsKey = "AVURLAssetHTTPHeaderFieldsKey"
 # How long play() keeps re-issuing the play request when the end-of-item
 # pause of the previous track drops it (see _ensure_playback_started).
 PLAY_RATE_TIMEOUT = 1.0
-
-
-@dataclass(frozen=True)
-class LocalFile:
-    """A local audio file handed to the player by a stream fetcher.
-
-    ``owned`` files are temporary downloads the player deletes when they are
-    replaced or playback stops; cache-managed files (``owned=False``) are
-    removed by the cache's eviction policy instead.
-    """
-
-    path: str
-    owned: bool = True
 
 
 def _cmtime_seconds(value: Any) -> float | None:
@@ -83,22 +68,6 @@ def _default_player() -> AVPlayer:
     return AVPlayer.alloc().init()
 
 
-def _download_temp(extractor, stream, *, progress_hook=None) -> LocalFile:
-    """Download ``stream`` to a temporary file the player owns and deletes."""
-    file = tempfile.NamedTemporaryFile(prefix="music-cli-", delete=False)
-    file.close()
-    try:
-        return LocalFile(
-            extractor.download(stream.video_id, file.name, progress_hook=progress_hook),
-            owned=True,
-        )
-    except PlayerError:
-        try:
-            os.unlink(file.name)
-        except OSError:
-            pass
-        raise
-
 
 def _default_fetch_stream(
     cookies: Cookies | None,
@@ -107,40 +76,13 @@ def _default_fetch_stream(
     extractor: StreamExtractor | None = None,
     download_progress: Callable[[], Callable[[dict[str, Any]], None] | None] | None = None,
 ) -> Callable[[StreamInfo], LocalFile]:
-    """Build the default stream fetcher: cache-aware, else a temp download.
+    """Build the default stream fetcher via :func:`base.default_fetch_stream`.
 
-    Tracks already in the cache are returned directly (no network at all);
-    the rest are downloaded with yt-dlp into the cache, with concurrent
-    requests for the same video sharing one download. Without a cache,
-    downloads go to temporary files the player deletes after playback.
+    Delegates to :func:`base.default_fetch_stream` — this thin wrapper
+    is kept so ``AVFoundationPlayer``'s constructor signature stays
+    the same and existing tests continue to work.
     """
-    extractor = extractor or StreamExtractor(cookies)
-    get_hook = download_progress or (lambda: None)
-
-    def fetch(stream: StreamInfo) -> LocalFile:
-        if cache is None:
-            return _download_temp(extractor, stream, progress_hook=get_hook())
-
-        def downloader(target: Path) -> DownloadResult:
-            filepath = extractor.download(
-                stream.video_id, str(target), progress_hook=get_hook()
-            )
-            return DownloadResult(
-                path=filepath,
-                meta=TrackMeta(
-                    title=stream.title,
-                    artists=tuple(stream.artists),
-                    duration=stream.duration,
-                    ext=Path(filepath).suffix.lstrip("."),
-                ),
-            )
-
-        path = cache.get_or_download(stream.video_id, downloader)
-        if path is None:
-            raise PlayerError(f"Failed to download {stream.video_id}")
-        return LocalFile(str(path), owned=False)
-
-    return fetch
+    return default_fetch_stream(cookies, cache=cache, extractor=extractor, download_progress=download_progress)
 
 
 class AVFoundationPlayer:

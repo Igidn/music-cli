@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .core.errors import PlayerError
-from .player.audio import AVFoundationPlayer
+from .player import create_player
 from .storage.cache import AudioCache, DownloadResult, TrackMeta
 from .storage.state import DownloadsStore
 from .yt.cookies import Cookies
@@ -26,9 +26,9 @@ class MusicClient:
     """Wires search, stream resolution, playback and the autoplay queue.
 
     Owns the ``YTmusicSearch``, ``StreamExtractor``, ``WatchPlaylist`` and
-    ``AVFoundationPlayer`` instances and exposes the operations the UI needs:
-    searching, playing search results or queued tracks, fetching the autoplay
-    queue, and transport controls.
+    a platform-appropriate :func:`~.player.create_player` instance, and
+    exposes the operations the UI needs: searching, playing search results
+    or queued tracks, fetching the autoplay queue, and transport controls.
     """
 
     def __init__(
@@ -57,7 +57,7 @@ class MusicClient:
         # Live download-progress hook, consulted per download. The daemon sets it
         # only after the client is built, so the player reads it via a getter.
         self._download_progress: Callable[[dict[str, Any]], None] | None = None
-        self.player = AVFoundationPlayer(
+        self.player = create_player(
             volume=volume,
             on_track_end=on_track_end,
             cookies=cookies,

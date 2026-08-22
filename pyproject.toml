@@ -9,7 +9,8 @@ authors = [
 requires-python = ">=3.14"
 dependencies = [
     "playwright>=1.50",
-    "pyobjc-framework-avfoundation>=12.2.2",
+    "pygobject>=3.50; sys_platform != 'darwin'",
+    "pyobjc-framework-avfoundation>=12.2.2; sys_platform == 'darwin'",
     "requests>=2.32",
     "textual>=8.2.8",
     "yt-dlp>=2026.7.4",

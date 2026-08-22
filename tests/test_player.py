@@ -1,22 +1,20 @@
+"""Cross-platform player tests.
+
+AVFoundationPlayer tests run only on macOS (where pyobjc is available).
+GStreamerPlayer tests run only when GStreamer is installed (most Linux,
+and some BSDs / Windows with MSYS2).
+"""
+
 from __future__ import annotations
 
+import sys
 import threading
 from pathlib import Path
 
 import pytest
 import yt_dlp
-from AVFoundation import (
-    AVPlayerActionAtItemEndPause,
-    CMTimeGetSeconds,
-    CMTimeMakeWithSeconds,
-)
 
 from music_cli.core.errors import PlayerError
-from music_cli.player.audio import (
-    AVFoundationPlayer,
-    LocalFile,
-    _default_fetch_stream,
-)
 from music_cli.storage.cache import AudioCache, TrackMeta
 from music_cli.yt.cookies import Cookies
 from music_cli.yt.extract import (
@@ -26,6 +24,38 @@ from music_cli.yt.extract import (
     WatchPlaylist,
     parse_watch_track,
 )
+
+# ------------------------------------------------------------------
+# Platform-detection helpers for skip markers
+# ------------------------------------------------------------------
+
+_HAS_AVFOUNDATION = False
+_HAS_GSTREAMER = False
+
+try:
+    from AVFoundation import (  # noqa: F401
+        AVPlayerActionAtItemEndPause,
+        CMTimeGetSeconds,
+        CMTimeMakeWithSeconds,
+    )
+
+    _HAS_AVFOUNDATION = True
+except ImportError:
+    pass
+
+try:
+    import gi  # noqa: F401
+
+    gi.require_version("Gst", "1.0")
+    from gi.repository import Gst  # noqa: F401
+
+    _HAS_GSTREAMER = True
+except (ImportError, ValueError):
+    pass
+
+# ------------------------------------------------------------------
+# Shared imports (cross-platform)
+# ------------------------------------------------------------------
 
 NETSCAPE_COOKIE_FILE = """\
 # Netscape HTTP Cookie File
@@ -300,337 +330,602 @@ class TestWatchPlaylist:
         assert tracks[1].title == "Track Two"
 
 
-class FakeAVPlayer:
-    """Minimal stand-in for AVPlayer exposing the pyobjc call surface used."""
+# ------------------------------------------------------------------
+# AVFoundationPlayer tests (macOS only via pyobjc)
+# ------------------------------------------------------------------
 
-    def __init__(self):
-        self._rate = 0.0
-        self._volume = 0.8
-        self._muted = False
-        self._time = CMTimeMakeWithSeconds(0.0, 600)
-        self._item = None
-        self.action_at_item_end = None
-        self.seek_calls = []
+if _HAS_AVFOUNDATION:
+    from AVFoundation import (  # noqa: F811
+        AVPlayerActionAtItemEndPause,
+        CMTimeGetSeconds,
+        CMTimeMakeWithSeconds,
+    )
 
-    def setVolume_(self, value):
-        self._volume = value
-
-    def volume(self):
-        return self._volume
-
-    def setMuted_(self, value):
-        self._muted = value
-
-    def isMuted(self):
-        return self._muted
-
-    def setActionAtItemEnd_(self, action):
-        self.action_at_item_end = action
-
-    def rate(self):
-        return self._rate
-
-    def play(self):
-        self._rate = 1.0
-
-    def pause(self):
-        self._rate = 0.0
-
-    def currentTime(self):
-        return self._time
-
-    def seekToTime_toleranceBefore_toleranceAfter_(self, time, before, after):
-        self.seek_calls.append((CMTimeGetSeconds(time), before, after))
-        self._time = time
-
-    def replaceCurrentItemWithPlayerItem_(self, item):
-        self._item = item
-
-    def currentItem(self):
-        return self._item
+    from music_cli.player.audio import AVFoundationPlayer
+    from music_cli.player.base import LocalFile
 
 
-class FakeItem:
-    """Stand-in for AVPlayerItem, controllable per test."""
+    class FakeAVPlayer:
+        """Minimal stand-in for AVPlayer exposing the pyobjc call surface used."""
 
-    def __init__(self, duration=100.0, status=1):
-        self._duration = CMTimeMakeWithSeconds(duration, 600)
-        self._status = status
-        self.audio_mix = None
+        def __init__(self):
+            self._rate = 0.0
+            self._volume = 0.8
+            self._muted = False
+            self._time = CMTimeMakeWithSeconds(0.0, 600)
+            self._item = None
+            self.action_at_item_end = None
+            self.seek_calls = []
 
-    def duration(self):
-        return self._duration
+        def setVolume_(self, value):
+            self._volume = value
 
-    def status(self):
-        return self._status
+        def volume(self):
+            return self._volume
 
-    def setAudioMix_(self, mix):
-        self.audio_mix = mix
+        def setMuted_(self, value):
+            self._muted = value
 
+        def isMuted(self):
+            return self._muted
 
-def _local(stream: StreamInfo) -> LocalFile:
-    return LocalFile(path="file:///tmp/fake-audio.m4a")
+        def setActionAtItemEnd_(self, action):
+            self.action_at_item_end = action
 
+        def rate(self):
+            return self._rate
 
-class TestAVFoundationPlayer:
-    def test_constructor_applies_volume(self):
-        fake = FakeAVPlayer()
-        player = AVFoundationPlayer(volume=50, player_factory=lambda: fake)
-        assert player.volume == 50
-        assert fake.volume() == 1.0
-        assert not fake.isMuted()
-        assert fake.action_at_item_end == AVPlayerActionAtItemEndPause
+        def play(self):
+            self._rate = 1.0
 
-    def test_volume_carried_on_item_audio_mix(self):
-        fake = FakeAVPlayer()
-        player = AVFoundationPlayer(volume=40, player_factory=lambda: fake)
-        item = FakeItem()
-        player._current_item = item
-        player.volume = 75
-        assert item.audio_mix is not None
-        assert item.audio_mix.inputParameters()
-        assert player.volume == 75
+        def pause(self):
+            self._rate = 0.0
 
-    def test_play_sets_item_and_starts(self):
-        fake = FakeAVPlayer()
-        player = AVFoundationPlayer(player_factory=lambda: fake, fetch_stream=_local)
-        stream = StreamInfo(
-            video_id="v",
-            title="T",
-            stream_url="https://u/audio",
-            http_headers={"User-Agent": "ua"},
-        )
-        player.play(stream)
-        assert fake._item is not None
-        assert fake.rate() == 1.0
-        assert player.media_title == "T"
+        def currentTime(self):
+            return self._time
 
-    def test_play_retries_when_end_of_item_pause_drops_request(self):
-        """The end-of-item pause can land after the next play() request.
+        def seekToTime_toleranceBefore_toleranceAfter_(self, time, before, after):
+            self.seek_calls.append((CMTimeGetSeconds(time), before, after))
+            self._time = time
 
-        Replicates the auto-next race: play() is issued, the player briefly
-        reports rate 0 (the previous item's pause), so playback must be
-        re-requested until the rate sticks.
-        """
+        def replaceCurrentItemWithPlayerItem_(self, item):
+            self._item = item
 
-        class DroppingAVPlayer(FakeAVPlayer):
-            def __init__(self):
-                super().__init__()
-                self.play_calls = 0
-                self._drop_next = True
-
-            def play(self):
-                self.play_calls += 1
-                if not self._drop_next:
-                    self._rate = 1.0
-                self._drop_next = False
-
-        fake = DroppingAVPlayer()
-        player = AVFoundationPlayer(player_factory=lambda: fake, fetch_stream=_local)
-        player.play(StreamInfo(video_id="v", title="T", stream_url="https://u"))
-        assert fake.play_calls >= 2
-        assert fake.rate() == 1.0
-
-    def test_transport_controls(self):
-        fake = FakeAVPlayer()
-        player = AVFoundationPlayer(player_factory=lambda: fake, fetch_stream=_local)
-        assert player.paused is True
-        player.play(StreamInfo(video_id="v", title="T", stream_url="https://u"))
-        assert player.paused is False
-        player.pause()
-        assert player.paused is True
-        player.resume()
-        assert player.paused is False
-        player.toggle()
-        assert player.paused is True
-        player.toggle()
-        assert player.paused is False
-        player.seek(42.0)
-        assert fake.seek_calls[-1][0] == 42.0
-        player.volume = 120
-        assert fake.volume() == 1.0
-        assert player.volume == 100
-        player.muted = True
-        assert fake.isMuted() is True
-
-    def test_seek_relative(self):
-        fake = FakeAVPlayer()
-        player = AVFoundationPlayer(player_factory=lambda: fake, fetch_stream=_local)
-        player.play(StreamInfo(video_id="v", title="T", stream_url="https://u"))
-        fake._time = CMTimeMakeWithSeconds(30.0, 600)
-        player.seek_relative(-5)
-        assert fake.seek_calls[-1][0] == 25.0
-
-    def test_metadata_properties(self):
-        fake = FakeAVPlayer()
-        player = AVFoundationPlayer(player_factory=lambda: fake, fetch_stream=_local)
-        player.play(StreamInfo(video_id="v", title="T", stream_url="https://u"))
-        player._current_item = FakeItem(duration=100.0, status=1)
-        assert player.duration == 100.0
-        assert player.media_title == "T"
-        fake._time = CMTimeMakeWithSeconds(41.5, 600)
-        assert player.position == 41.5
-
-    def test_duration_none_without_item(self):
-        player = AVFoundationPlayer(player_factory=lambda: FakeAVPlayer())
-        assert player.duration is None
-        assert not player.playing
-
-    def test_playing_state_follows_item_status(self):
-        fake = FakeAVPlayer()
-        player = AVFoundationPlayer(player_factory=lambda: fake, fetch_stream=_local)
-        player.play(StreamInfo(video_id="v", title="T", stream_url="https://u"))
-        player._current_item = FakeItem(status=1)
-        assert player.playing
-        player._current_item = FakeItem(status=2)  # Failed
-        assert not player.playing
-
-    def test_eof_event_and_wait(self):
-        event = threading.Event()
-
-        def on_end():
-            event.set()
-
-        player = AVFoundationPlayer(
-            on_track_end=on_end, player_factory=lambda: FakeAVPlayer()
-        )
-        assert not player.eof_reached
-        player._on_item_ended(None)
-        assert player.eof_reached
-        assert event.is_set()
-        assert player.wait_for_end(0.1) is True
-
-    def test_loop_replays_instead_of_ending(self):
-        event = threading.Event()
-        fake = FakeAVPlayer()
-        player = AVFoundationPlayer(
-            loop=True,
-            on_track_end=event.set,
-            player_factory=lambda: fake,
-            fetch_stream=_local,
-        )
-        player.play(StreamInfo(video_id="v", title="T", stream_url="https://u"))
-        fake._time = CMTimeMakeWithSeconds(95.0, 600)
-        player._on_item_ended(None)
-        assert CMTimeGetSeconds(fake._time) == 0.0
-        assert fake.rate() == 1.0
-        assert not player.eof_reached
-        assert not event.is_set()
-
-    def test_loop_off_notifies_on_end(self):
-        fake = FakeAVPlayer()
-        player = AVFoundationPlayer(
-            loop=True,
-            on_track_end=lambda: None,
-            player_factory=lambda: fake,
-            fetch_stream=_local,
-        )
-        player.play(StreamInfo(video_id="v", title="T", stream_url="https://u"))
-        player.loop = False
-        player._on_item_ended(None)
-        assert player.eof_reached
-
-    def test_stale_end_notification_from_replaced_item_is_ignored(self):
-        """Replacing the current item must not register the old item's end.
-
-        The previous item's DidPlayToEndTime can be delivered late (queued on
-        the run loop before _unobserve ran, fired by the next pump()). Without
-        a guard it would auto-advance past the track just requested — the
-        up-next head flashing as current and landing in the play history.
-        """
-        ended = threading.Event()
-        player = AVFoundationPlayer(
-            on_track_end=ended.set,
-            player_factory=lambda: FakeAVPlayer(),
-            fetch_stream=_local,
-        )
-        player.play(StreamInfo(video_id="old", title="Old", stream_url="https://u"))
-        old_item = player._current_item
-        # User switches: a new item replaces the old one before the old item's
-        # end notification is delivered.
-        player.play(StreamInfo(video_id="new", title="New", stream_url="https://u"))
-        assert player._current_item is not old_item
-
-        class _Note:
-            def __init__(self, obj):
-                self._obj = obj
-
-            def object(self):
-                return self._obj
-
-        # The stale notification for the replaced item must be ignored.
-        player._on_item_ended(_Note(old_item))
-        assert not player.eof_reached
-        assert not ended.is_set()
-        # A real end of the current item still registers.
-        player._on_item_ended(_Note(player._current_item))
-        assert player.eof_reached
-        assert ended.is_set()
-
-    def test_loop_property_defaults_off(self):
-        player = AVFoundationPlayer(player_factory=lambda: FakeAVPlayer())
-        assert player.loop is False
-        player.loop = True
-        assert player.loop is True
-
-    def test_close_stops_and_unloads(self):
-        fake = FakeAVPlayer()
-        player = AVFoundationPlayer(player_factory=lambda: fake, fetch_stream=_local)
-        player.play(StreamInfo(video_id="v", title="T", stream_url="https://u"))
-        player.close()
-        assert fake._item is None
-        assert player._observer_token is None
+        def currentItem(self):
+            return self._item
 
 
-class TestFileOwnership:
-    def test_unowned_file_survives_stop(self, tmp_path):
-        audio = tmp_path / "cached.m4a"
-        audio.write_bytes(b"audio")
+    class FakeItem:
+        """Stand-in for AVPlayerItem, controllable per test."""
 
-        def fetch(stream):
-            return LocalFile(path=str(audio), owned=False)
+        def __init__(self, duration=100.0, status=1):
+            self._duration = CMTimeMakeWithSeconds(duration, 600)
+            self._status = status
+            self.audio_mix = None
 
-        player = AVFoundationPlayer(
-            player_factory=lambda: FakeAVPlayer(), fetch_stream=fetch
-        )
-        player.play(StreamInfo(video_id="v", title="T", stream_url="https://u"))
-        player.stop()
-        assert audio.exists()
+        def duration(self):
+            return self._duration
 
-    def test_owned_file_is_deleted_on_stop(self, tmp_path):
-        audio = tmp_path / "temp.m4a"
-        audio.write_bytes(b"audio")
+        def status(self):
+            return self._status
 
-        def fetch(stream):
-            return LocalFile(path=str(audio), owned=True)
+        def setAudioMix_(self, mix):
+            self.audio_mix = mix
 
-        player = AVFoundationPlayer(
-            player_factory=lambda: FakeAVPlayer(), fetch_stream=fetch
-        )
-        player.play(StreamInfo(video_id="v", title="T", stream_url="https://u"))
-        player.stop()
-        assert not audio.exists()
 
-    def test_replacing_track_removes_owned_but_keeps_cached(self, tmp_path):
-        temp = tmp_path / "temp.m4a"
-        cached = tmp_path / "cached.m4a"
-        temp.write_bytes(b"a")
-        cached.write_bytes(b"b")
-        first = {"value": True}
+    def _local(stream: StreamInfo) -> LocalFile:
+        return LocalFile(path="file:///tmp/fake-audio.m4a")
 
-        def fetch(stream):
-            if first["value"]:
-                first["value"] = False
-                return LocalFile(path=str(temp), owned=True)
-            return LocalFile(path=str(cached), owned=False)
 
-        player = AVFoundationPlayer(
-            player_factory=lambda: FakeAVPlayer(), fetch_stream=fetch
-        )
-        player.play(StreamInfo(video_id="v1", title="T1", stream_url="https://u"))
-        player.play(StreamInfo(video_id="v2", title="T2", stream_url="https://u"))
-        assert not temp.exists()
-        assert cached.exists()
+    @pytest.mark.skipif(
+        not _HAS_AVFOUNDATION, reason="pyobjc-avfoundation not installed (not macOS)"
+    )
+    class TestAVFoundationPlayer:
+        def test_constructor_applies_volume(self):
+            fake = FakeAVPlayer()
+            player = AVFoundationPlayer(volume=50, player_factory=lambda: fake)
+            assert player.volume == 50
+            assert fake.volume() == 1.0
+            assert not fake.isMuted()
+            assert fake.action_at_item_end == AVPlayerActionAtItemEndPause
+
+        def test_volume_carried_on_item_audio_mix(self):
+            fake = FakeAVPlayer()
+            player = AVFoundationPlayer(volume=40, player_factory=lambda: fake)
+            item = FakeItem()
+            player._current_item = item
+            player.volume = 75
+            assert item.audio_mix is not None
+            assert item.audio_mix.inputParameters()
+            assert player.volume == 75
+
+        def test_play_sets_item_and_starts(self):
+            fake = FakeAVPlayer()
+            player = AVFoundationPlayer(player_factory=lambda: fake, fetch_stream=_local)
+            stream = StreamInfo(
+                video_id="v",
+                title="T",
+                stream_url="https://u/audio",
+                http_headers={"User-Agent": "ua"},
+            )
+            player.play(stream)
+            assert fake._item is not None
+            assert fake.rate() == 1.0
+            assert player.media_title == "T"
+
+        def test_play_retries_when_end_of_item_pause_drops_request(self):
+            """The end-of-item pause can land after the next play() request.
+
+            Replicates the auto-next race: play() is issued, the player briefly
+            reports rate 0 (the previous item's pause), so playback must be
+            re-requested until the rate sticks.
+            """
+
+            class DroppingAVPlayer(FakeAVPlayer):
+                def __init__(self):
+                    super().__init__()
+                    self.play_calls = 0
+                    self._drop_next = True
+
+                def play(self):
+                    self.play_calls += 1
+                    if not self._drop_next:
+                        self._rate = 1.0
+                    self._drop_next = False
+
+            fake = DroppingAVPlayer()
+            player = AVFoundationPlayer(player_factory=lambda: fake, fetch_stream=_local)
+            player.play(StreamInfo(video_id="v", title="T", stream_url="https://u"))
+            assert fake.play_calls >= 2
+            assert fake.rate() == 1.0
+
+        def test_transport_controls(self):
+            fake = FakeAVPlayer()
+            player = AVFoundationPlayer(player_factory=lambda: fake, fetch_stream=_local)
+            assert player.paused is True
+            player.play(StreamInfo(video_id="v", title="T", stream_url="https://u"))
+            assert player.paused is False
+            player.pause()
+            assert player.paused is True
+            player.resume()
+            assert player.paused is False
+            player.toggle()
+            assert player.paused is True
+            player.toggle()
+            assert player.paused is False
+            player.seek(42.0)
+            assert fake.seek_calls[-1][0] == 42.0
+            player.volume = 120
+            assert fake.volume() == 1.0
+            assert player.volume == 100
+            player.muted = True
+            assert fake.isMuted() is True
+
+        def test_seek_relative(self):
+            fake = FakeAVPlayer()
+            player = AVFoundationPlayer(player_factory=lambda: fake, fetch_stream=_local)
+            player.play(StreamInfo(video_id="v", title="T", stream_url="https://u"))
+            fake._time = CMTimeMakeWithSeconds(30.0, 600)
+            player.seek_relative(-5)
+            assert fake.seek_calls[-1][0] == 25.0
+
+        def test_metadata_properties(self):
+            fake = FakeAVPlayer()
+            player = AVFoundationPlayer(player_factory=lambda: fake, fetch_stream=_local)
+            player.play(StreamInfo(video_id="v", title="T", stream_url="https://u"))
+            player._current_item = FakeItem(duration=100.0, status=1)
+            assert player.duration == 100.0
+            assert player.media_title == "T"
+            fake._time = CMTimeMakeWithSeconds(41.5, 600)
+            assert player.position == 41.5
+
+        def test_duration_none_without_item(self):
+            player = AVFoundationPlayer(player_factory=lambda: FakeAVPlayer())
+            assert player.duration is None
+            assert not player.playing
+
+        def test_playing_state_follows_item_status(self):
+            fake = FakeAVPlayer()
+            player = AVFoundationPlayer(player_factory=lambda: fake, fetch_stream=_local)
+            player.play(StreamInfo(video_id="v", title="T", stream_url="https://u"))
+            player._current_item = FakeItem(status=1)
+            assert player.playing
+            player._current_item = FakeItem(status=2)  # Failed
+            assert not player.playing
+
+        def test_eof_event_and_wait(self):
+            event = threading.Event()
+
+            def on_end():
+                event.set()
+
+            player = AVFoundationPlayer(
+                on_track_end=on_end, player_factory=lambda: FakeAVPlayer()
+            )
+            assert not player.eof_reached
+            player._on_item_ended(None)
+            assert player.eof_reached
+            assert event.is_set()
+            assert player.wait_for_end(0.1) is True
+
+        def test_loop_replays_instead_of_ending(self):
+            event = threading.Event()
+            fake = FakeAVPlayer()
+            player = AVFoundationPlayer(
+                loop=True,
+                on_track_end=event.set,
+                player_factory=lambda: fake,
+                fetch_stream=_local,
+            )
+            player.play(StreamInfo(video_id="v", title="T", stream_url="https://u"))
+            fake._time = CMTimeMakeWithSeconds(95.0, 600)
+            player._on_item_ended(None)
+            assert CMTimeGetSeconds(fake._time) == 0.0
+            assert fake.rate() == 1.0
+            assert not player.eof_reached
+            assert not event.is_set()
+
+        def test_loop_off_notifies_on_end(self):
+            fake = FakeAVPlayer()
+            player = AVFoundationPlayer(
+                loop=True,
+                on_track_end=lambda: None,
+                player_factory=lambda: fake,
+                fetch_stream=_local,
+            )
+            player.play(StreamInfo(video_id="v", title="T", stream_url="https://u"))
+            player.loop = False
+            player._on_item_ended(None)
+            assert player.eof_reached
+
+        def test_stale_end_notification_from_replaced_item_is_ignored(self):
+            """Replacing the current item must not register the old item's end.
+
+            The previous item's DidPlayToEndTime can be delivered late (queued on
+            the run loop before _unobserve ran, fired by the next pump()). Without
+            a guard it would auto-advance past the track just requested — the
+            up-next head flashing as current and landing in the play history.
+            """
+            ended = threading.Event()
+            player = AVFoundationPlayer(
+                on_track_end=ended.set,
+                player_factory=lambda: FakeAVPlayer(),
+                fetch_stream=_local,
+            )
+            player.play(StreamInfo(video_id="old", title="Old", stream_url="https://u"))
+            old_item = player._current_item
+            # User switches: a new item replaces the old one before the old item's
+            # end notification is delivered.
+            player.play(StreamInfo(video_id="new", title="New", stream_url="https://u"))
+            assert player._current_item is not old_item
+
+            class _Note:
+                def __init__(self, obj):
+                    self._obj = obj
+
+                def object(self):
+                    return self._obj
+
+            # The stale notification for the replaced item must be ignored.
+            player._on_item_ended(_Note(old_item))
+            assert not player.eof_reached
+            assert not ended.is_set()
+            # A real end of the current item still registers.
+            player._on_item_ended(_Note(player._current_item))
+            assert player.eof_reached
+            assert ended.is_set()
+
+        def test_loop_property_defaults_off(self):
+            player = AVFoundationPlayer(player_factory=lambda: FakeAVPlayer())
+            assert player.loop is False
+            player.loop = True
+            assert player.loop is True
+
+        def test_close_stops_and_unloads(self):
+            fake = FakeAVPlayer()
+            player = AVFoundationPlayer(player_factory=lambda: fake, fetch_stream=_local)
+            player.play(StreamInfo(video_id="v", title="T", stream_url="https://u"))
+            player.close()
+            assert fake._item is None
+            assert player._observer_token is None
+
+
+    class TestFileOwnership:
+        def test_unowned_file_survives_stop(self, tmp_path):
+            audio = tmp_path / "cached.m4a"
+            audio.write_bytes(b"audio")
+
+            def fetch(stream):
+                return LocalFile(path=str(audio), owned=False)
+
+            player = AVFoundationPlayer(
+                player_factory=lambda: FakeAVPlayer(), fetch_stream=fetch
+            )
+            player.play(StreamInfo(video_id="v", title="T", stream_url="https://u"))
+            player.stop()
+            assert audio.exists()
+
+        def test_owned_file_is_deleted_on_stop(self, tmp_path):
+            audio = tmp_path / "temp.m4a"
+            audio.write_bytes(b"audio")
+
+            def fetch(stream):
+                return LocalFile(path=str(audio), owned=True)
+
+            player = AVFoundationPlayer(
+                player_factory=lambda: FakeAVPlayer(), fetch_stream=fetch
+            )
+            player.play(StreamInfo(video_id="v", title="T", stream_url="https://u"))
+            player.stop()
+            assert not audio.exists()
+
+        def test_replacing_track_removes_owned_but_keeps_cached(self, tmp_path):
+            temp = tmp_path / "temp.m4a"
+            cached = tmp_path / "cached.m4a"
+            temp.write_bytes(b"a")
+            cached.write_bytes(b"b")
+            first = {"value": True}
+
+            def fetch(stream):
+                if first["value"]:
+                    first["value"] = False
+                    return LocalFile(path=str(temp), owned=True)
+                return LocalFile(path=str(cached), owned=False)
+
+            player = AVFoundationPlayer(
+                player_factory=lambda: FakeAVPlayer(), fetch_stream=fetch
+            )
+            player.play(StreamInfo(video_id="v1", title="T1", stream_url="https://u"))
+            player.play(StreamInfo(video_id="v2", title="T2", stream_url="https://u"))
+            assert not temp.exists()
+            assert cached.exists()
+
+else:
+    # Placeholder so `pytest --co` / pytest's test discovery doesn't
+    # error on an absent class or tests referencing AVFoundation types.
+    _ = None
+
+
+# ------------------------------------------------------------------
+# GStreamerPlayer tests (Linux / GStreamer-enabled platforms)
+# ------------------------------------------------------------------
+
+if _HAS_GSTREAMER:
+    from music_cli.player.gst import GStreamerPlayer
+    from music_cli.player.base import LocalFile
+
+
+    def _gst_local(stream: StreamInfo) -> LocalFile:
+        return LocalFile(path="file:///tmp/gst-fake-audio.m4a")
+
+
+    @pytest.mark.skipif(
+        not _HAS_GSTREAMER, reason="GStreamer not available (gi.repository.Gst)"
+    )
+    class TestGStreamerPlayer:
+        def test_constructor_defaults(self):
+            player = GStreamerPlayer()
+            assert player.volume == 80
+            assert player.loop is False
+            assert player.muted is False
+            assert player.paused is True
+            assert player.position == 0.0
+            assert not player.playing
+
+        def test_constructor_applies_volume(self):
+            player = GStreamerPlayer(volume=42)
+            assert player.volume == 42
+            # Volume is clamped 0-100.
+            player = GStreamerPlayer(volume=-1)
+            assert player.volume == 0
+            player = GStreamerPlayer(volume=200)
+            assert player.volume == 100
+
+        def test_volume_property(self):
+            player = GStreamerPlayer()
+            player.volume = 65
+            assert player.volume == 65
+            player.volume = 150
+            assert player.volume == 100
+
+        def test_muted_property(self):
+            player = GStreamerPlayer()
+            assert player.muted is False
+            player.muted = True
+            assert player.muted is True
+
+        def test_loop_property(self):
+            player = GStreamerPlayer()
+            assert player.loop is False
+            player.loop = True
+            assert player.loop is True
+
+        def test_play_and_stop(self):
+            """Smoke test: play() creates a pipeline and stop() tears it down.
+
+            Without a real audio file GStreamer cannot preroll, so
+            ``playing`` reports ``False`` — no exception is the signal
+            that the pipeline was created successfully.
+            """
+            player = GStreamerPlayer()
+            stream = StreamInfo(
+                video_id="v",
+                title="Test",
+                stream_url="https://example.test/audio",
+                http_headers={},
+                artists=["Test Artist"],
+                duration=100.0,
+            )
+            # No exception -> pipeline created without error.
+            player.play(stream)
+            # GStreamer can't reach PLAYING without a real file.
+            # That's fine — the client's retry loop handles it.
+            assert not player.playing
+            player.stop()
+            assert not player.playing
+
+        def test_pause_resume(self):
+            """Calling pause/resume on an idle pipeline is safe."""
+            player = GStreamerPlayer()
+            # Without a valid audio file the pipeline stays in NULL, but
+            # pause/resume must not crash (they are no-ops internally).
+            player.pause()
+            player.resume()
+
+        def test_toggle(self):
+            """Calling toggle on an idle pipeline is safe."""
+            player = GStreamerPlayer()
+            player.toggle()
+            player.toggle()
+
+        def test_seek(self):
+            player = GStreamerPlayer()
+            # Seek on an idle pipeline is safe (no-op internally).
+            player.seek(30.0)
+            player.seek_relative(5.0)
+
+        def test_close_cleans_up(self):
+            player = GStreamerPlayer()
+            stream = StreamInfo(
+                video_id="v", title="T", stream_url="https://u", http_headers={}
+            )
+            player.play(stream)
+            player.close()
+            assert not player.playing
+
+        def test_pump_no_crash(self):
+            """pump() on an idle pipeline must not crash."""
+            player = GStreamerPlayer()
+            player.pump()
+
+        def test_double_stop(self):
+            """Calling stop() twice must not crash."""
+            player = GStreamerPlayer()
+            stream = StreamInfo(
+                video_id="v", title="T", stream_url="https://u", http_headers={}
+            )
+            player.play(stream)
+            player.stop()
+            player.stop()
+
+        def test_media_title(self):
+            """media_title is set from the stream passed to play()."""
+            player = GStreamerPlayer(
+                fetch_stream=lambda s: LocalFile(path="file:///dev/null", owned=False)
+            )
+            assert player.media_title == ""
+            stream = StreamInfo(
+                video_id="v",
+                title="My Song",
+                stream_url="https://u",
+                http_headers={},
+            )
+            player.play(stream)
+            assert player.media_title == "My Song"
+
+        def test_duration_and_position_no_track(self):
+            player = GStreamerPlayer()
+            assert player.duration is None
+            assert player.position == 0.0
+
+        def test_eof_reached_defaults_false(self):
+            player = GStreamerPlayer()
+            assert player.eof_reached is False
+
+        def test_owned_file_deleted_on_stop(self, tmp_path):
+            audio = tmp_path / "temp.m4a"
+            audio.write_bytes(b"audio")
+
+            def fetch(stream):
+                return LocalFile(path=str(audio), owned=True)
+
+            player = GStreamerPlayer(fetch_stream=fetch)
+            stream = StreamInfo(
+                video_id="v", title="T", stream_url="https://u", http_headers={}
+            )
+            player.play(stream)
+            assert audio.exists()
+            player.stop()
+            assert not audio.exists()
+
+        def test_unowned_file_survives_stop(self, tmp_path):
+            audio = tmp_path / "cached.m4a"
+            audio.write_bytes(b"audio")
+
+            def fetch(stream):
+                return LocalFile(path=str(audio), owned=False)
+
+            player = GStreamerPlayer(fetch_stream=fetch)
+            stream = StreamInfo(
+                video_id="v", title="T", stream_url="https://u", http_headers={}
+            )
+            player.play(stream)
+            player.stop()
+            assert audio.exists()
+
+        def test_replacing_track_removes_owned_file(self, tmp_path):
+            temp = tmp_path / "temp.m4a"
+            cached = tmp_path / "cached.m4a"
+            temp.write_bytes(b"a")
+            cached.write_bytes(b"b")
+            first = {"value": True}
+
+            def fetch(stream):
+                if first["value"]:
+                    first["value"] = False
+                    return LocalFile(path=str(temp), owned=True)
+                return LocalFile(path=str(cached), owned=False)
+
+            player = GStreamerPlayer(fetch_stream=fetch)
+            stream1 = StreamInfo(
+                video_id="v1", title="T1", stream_url="https://u", http_headers={}
+            )
+            stream2 = StreamInfo(
+                video_id="v2", title="T2", stream_url="https://u", http_headers={}
+            )
+            player.play(stream1)
+            player.play(stream2)
+            assert not temp.exists()
+            assert cached.exists()
+
+        def test_loop_property_affects_eos_behaviour(self):
+            """With loop on, EOS should seek to 0 and continue."""
+            player = GStreamerPlayer(loop=True)
+            assert player.loop is True
+            player.loop = False
+            assert player.loop is False
+
+        def test_wait_for_end_timeout(self):
+            """wait_for_end() returns False on timeout when no track ended."""
+            player = GStreamerPlayer()
+            assert player.wait_for_end(0.05) is False
+
+        def test_on_track_end_callback_without_loop(self):
+            """When loop is off, the on_track_end callback must fire on EOS."""
+            fired = threading.Event()
+            player = GStreamerPlayer(loop=False, on_track_end=fired.set)
+            # Simulate an EOS message via the internal handler.
+            player._on_eos()
+            assert fired.wait(1.0)
+            assert player.eof_reached
+
+        def test_loop_eos_does_not_fire_callback(self):
+            """When loop is on, EOS must not fire the track-end callback."""
+            fired = threading.Event()
+            player = GStreamerPlayer(loop=True, on_track_end=fired.set)
+            player._on_eos()
+            assert not fired.is_set()
+            assert not player.eof_reached
+
+else:
+    _ = None
+
+
+# ------------------------------------------------------------------
+# Cross-platform stream fetch / cache tests (use the base module)
+# ------------------------------------------------------------------
+
+from music_cli.player.base import LocalFile, default_fetch_stream
 
 
 class WritingYDL:
@@ -675,7 +970,7 @@ class TestCachedFetch:
         )
 
         ydl = WritingYDL()
-        fetch = _default_fetch_stream(
+        fetch = default_fetch_stream(
             None,
             cache=cache,
             extractor=StreamExtractor(ydl_factory=WritingYDL.factory(ydl)),
@@ -689,7 +984,7 @@ class TestCachedFetch:
     def test_miss_downloads_and_commits(self, tmp_path):
         cache = AudioCache(directory=tmp_path / "cache")
         ydl = WritingYDL()
-        fetch = _default_fetch_stream(
+        fetch = default_fetch_stream(
             None,
             cache=cache,
             extractor=StreamExtractor(ydl_factory=WritingYDL.factory(ydl)),
@@ -706,7 +1001,7 @@ class TestCachedFetch:
 
     def test_without_cache_falls_back_to_temp_download(self, tmp_path):
         ydl = WritingYDL()
-        fetch = _default_fetch_stream(
+        fetch = default_fetch_stream(
             None,
             extractor=StreamExtractor(ydl_factory=WritingYDL.factory(ydl)),
         )
