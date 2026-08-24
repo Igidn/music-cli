@@ -13,15 +13,20 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .base import LocalFile, default_fetch_stream, download_temp
 
+if TYPE_CHECKING:
+    from ..storage.cache import AudioCache
+    from ..yt.cookies import Cookies
+    from ..yt.extract import StreamInfo
+
 __all__ = [
     "LocalFile",
+    "create_player",
     "default_fetch_stream",
     "download_temp",
-    "create_player",
 ]
 
 
@@ -30,9 +35,9 @@ def create_player(
     volume: int = 80,
     loop: bool = False,
     on_track_end: Callable[[], None] | None = None,
-    cookies: "Cookies | None" = None,
-    cache: "AudioCache | None" = None,
-    fetch_stream: Callable[["StreamInfo"], LocalFile] | None = None,
+    cookies: Cookies | None = None,
+    cache: AudioCache | None = None,
+    fetch_stream: Callable[[StreamInfo], LocalFile] | None = None,
     download_progress: Callable[
         [], Callable[[dict[str, Any]], None] | None
     ] | None = None,

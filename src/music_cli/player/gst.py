@@ -13,20 +13,19 @@ from __future__ import annotations
 
 import os
 import threading
-import time
 from collections.abc import Callable
 from typing import Any
 
 import gi
 
 gi.require_version("Gst", "1.0")
-from gi.repository import Gst, GLib  # noqa: E402
+from gi.repository import Gst  # noqa: E402
 
-from ..core.errors import PlayerError
-from ..storage.cache import AudioCache
-from ..yt.cookies import Cookies
-from ..yt.extract import StreamExtractor, StreamInfo
-from .base import LocalFile, default_fetch_stream
+from ..core.errors import PlayerError  # noqa: E402
+from ..storage.cache import AudioCache  # noqa: E402
+from ..yt.cookies import Cookies  # noqa: E402
+from ..yt.extract import StreamInfo  # noqa: E402
+from .base import LocalFile, default_fetch_stream  # noqa: E402
 
 # Initialise GStreamer once at module load time.
 Gst.init(None)

@@ -386,7 +386,7 @@ class TestNextTrack:
         client.downloads.record("d1", "First")
         client.downloads.record("d2", "Second")
 
-        stream = session.play_download("d1", "First")
+        session.play_download("d1", "First")
         assert client.current.video_id == "d1"
         assert session._downloads_context is not None
 

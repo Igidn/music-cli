@@ -356,7 +356,11 @@ def _ensure_browser_binary(api, report: StatusCallback) -> None:
     try:
         from playwright._impl._driver import compute_driver_executable
 
-        command = [compute_driver_executable(), "install", "chromium"]
+        driver = compute_driver_executable()
+        if isinstance(driver, tuple):
+            command = [*driver, "install", "chromium"]
+        else:
+            command = [driver, "install", "chromium"]
     except ImportError:
         command = [sys.executable, "-m", "playwright", "install", "chromium"]
     try:

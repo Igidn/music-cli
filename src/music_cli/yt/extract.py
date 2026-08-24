@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import shutil
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Any
 
 import yt_dlp
@@ -13,7 +15,15 @@ from ..core.errors import PlayerError
 from .cookies import Cookies
 from .search import parse_artists
 
-DEFAULT_PLAYER_CLIENT = "web_embedded"
+DEFAULT_PLAYER_CLIENT = "default"
+# yt-dlp needs a JavaScript runtime to solve YouTube's JS challenges (EJS);
+# without one the ``n`` challenge fails and every audio format is dropped.
+# Only deno is auto-enabled by yt-dlp itself, so probe for any supported
+# runtime on PATH and pass an explicit override when deno is absent.
+JS_RUNTIMES = ("deno", "node", "bun")
+# The challenge-solver script fetched from yt-dlp/ejs releases; required when
+# YouTube rotates its player faster than yt-dlp ships updates.
+REMOTE_COMPONENTS = ["ejs:github"]
 # Prefer AAC in an MP4 container: AVFoundation plays it on every system,
 # whereas WebM/Opus support is missing on some macOS installs (the system's
 # own avconvert fails on webm, so downloads falling back to opus simply
@@ -50,6 +60,15 @@ class PlaylistTrack:
     counterpart_video_id: str = ""
 
 
+@lru_cache(maxsize=1)
+def detect_js_runtime() -> str | None:
+    """Name of the first available JS runtime on PATH, or None."""
+    for runtime in JS_RUNTIMES:
+        if shutil.which(runtime):
+            return runtime
+    return None
+
+
 class _QuietLogger:
     def debug(self, msg: str) -> None:
         pass
@@ -76,6 +95,10 @@ class StreamExtractor:
         self._player_client = player_client
         self._format_selector = format_selector
         self._ydl_factory = ydl_factory
+        self._runtime_detector: Callable[[], str | None] = detect_js_runtime
+
+    def _js_runtime(self) -> str | None:
+        return self._runtime_detector()
 
     def _options(self) -> dict[str, Any]:
         opts: dict[str, Any] = {
@@ -86,11 +109,19 @@ class StreamExtractor:
             "skip_download": True,
             "socket_timeout": 30,
             "extractor_retries": 3,
-            "extractor_args": {
-                "youtube": {"player_client": [self._player_client]},
-            },
+            "remote_components": REMOTE_COMPONENTS,
             "logger": _QuietLogger(),
         }
+        # "default" lets yt-dlp pick its maintained client list; anything else
+        # is passed through as an explicit player_client override.
+        if self._player_client != "default":
+            opts["extractor_args"] = {
+                "youtube": {"player_client": [self._player_client]},
+            }
+        # deno is already enabled by default; only override for node/bun.
+        runtime = self._js_runtime()
+        if runtime and runtime != "deno":
+            opts["js_runtimes"] = {runtime: {}}
         if self._cookies and self._cookies.enabled:
             opts.update(self._cookies.ydl_options())
         return opts

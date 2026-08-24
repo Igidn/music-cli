@@ -19,7 +19,7 @@ from .yt.search import SearchFilter, SearchResult, YTmusicSearch
 
 PLAY_START_TIMEOUT = 6.0
 PRIMARY_PLAY_ATTEMPTS = 2
-FALLBACK_PLAYER_CLIENTS = ("web_safari", "web", "tv")
+FALLBACK_PLAYER_CLIENTS = ("web_embedded", "web", "tv")
 
 
 class MusicClient:

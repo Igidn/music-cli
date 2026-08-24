@@ -7,7 +7,6 @@ and some BSDs / Windows with MSYS2).
 
 from __future__ import annotations
 
-import sys
 import threading
 from pathlib import Path
 
@@ -33,7 +32,7 @@ _HAS_AVFOUNDATION = False
 _HAS_GSTREAMER = False
 
 try:
-    from AVFoundation import (  # noqa: F401
+    from AVFoundation import (
         AVPlayerActionAtItemEndPause,
         CMTimeGetSeconds,
         CMTimeMakeWithSeconds,
@@ -44,7 +43,7 @@ except ImportError:
     pass
 
 try:
-    import gi  # noqa: F401
+    import gi
 
     gi.require_version("Gst", "1.0")
     from gi.repository import Gst  # noqa: F401
@@ -163,9 +162,8 @@ class TestStreamExtractor:
         extractor = StreamExtractor(Cookies.from_file(cookie_file), ydl_factory=factory)
         extractor.resolve("abc")
         assert seen["cookiefile"] == cookie_file
-        assert seen["extractor_args"] == {
-            "youtube": {"player_client": ["web_embedded"]}
-        }
+        # "default" player client: yt-dlp picks its own maintained clients.
+        assert "extractor_args" not in seen
         assert seen["format"] == "bestaudio[ext=m4a]/bestaudio[acodec=aac]/bestaudio"
         assert seen["skip_download"] is True
 
@@ -335,7 +333,7 @@ class TestWatchPlaylist:
 # ------------------------------------------------------------------
 
 if _HAS_AVFOUNDATION:
-    from AVFoundation import (  # noqa: F811
+    from AVFoundation import (
         AVPlayerActionAtItemEndPause,
         CMTimeGetSeconds,
         CMTimeMakeWithSeconds,
@@ -691,8 +689,8 @@ else:
 # ------------------------------------------------------------------
 
 if _HAS_GSTREAMER:
-    from music_cli.player.gst import GStreamerPlayer
     from music_cli.player.base import LocalFile
+    from music_cli.player.gst import GStreamerPlayer
 
 
     def _gst_local(stream: StreamInfo) -> LocalFile:
@@ -925,7 +923,10 @@ else:
 # Cross-platform stream fetch / cache tests (use the base module)
 # ------------------------------------------------------------------
 
-from music_cli.player.base import LocalFile, default_fetch_stream
+from music_cli.player.base import (  # noqa: E402
+    LocalFile,
+    default_fetch_stream,
+)
 
 
 class WritingYDL:
