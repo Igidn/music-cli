@@ -139,8 +139,10 @@ class MusicTUI(App[None]):
     TITLE = "music-cli"
 
     # Below this width the side panes (playlists, up next) are hidden so the
-    # search results and now-playing bar keep the full terminal.
-    NARROW_WIDTH = 100
+    # search results and now-playing bar keep the full terminal. The two panes
+    # take ~70 columns plus margins, so below this the results table would be
+    # too cramped to read.
+    NARROW_WIDTH = 130
     HORIZONTAL_BREAKPOINTS: ClassVar = [(0, "-narrow"), (NARROW_WIDTH, "-wide")]
 
     PANE_NAV: ClassVar[dict[str, dict[str, str]]] = {
@@ -473,6 +475,10 @@ class MusicTUI(App[None]):
         return ipc.send_request(request, timeout=timeout)
 
     @work(thread=True, exit_on_error=False)
+    def play_rpc_worker(self, request: dict, timeout: float = 1200.0) -> dict:
+        return ipc.send_play_request(request, timeout=timeout)
+
+    @work(thread=True, exit_on_error=False)
     def state_worker(self, request: object) -> dict:
         return ipc.send_request(request)
 
@@ -545,9 +551,10 @@ class MusicTUI(App[None]):
             if response.get("ok"):
                 self._render_status(response.get("data"))
             else:
+                err = response.get("error") or "unknown error"
                 self.set_status("Playback failed")
                 self.notify(
-                    f"Playback failed: {response.get('error')}",
+                    f"Playback failed: {err}",
                     title="Playback",
                     severity="error",
                 )
@@ -831,7 +838,7 @@ class MusicTUI(App[None]):
         self.set_timer(
             _SLOW_DOWNLOAD_HINT_SECS, lambda: self._hint_slow_download(video_id)
         )
-        self._play_worker = self.rpc_worker(request, timeout=_PLAY_RPC_TIMEOUT)
+        self._play_worker = self.play_rpc_worker(request, timeout=_PLAY_RPC_TIMEOUT)
 
     def _hint_slow_download(self, video_id: str) -> None:
         """Nudge the status line when a play is still downloading after a while."""

@@ -391,12 +391,16 @@ def _resolve_pending_plays(session, pending_plays: dict) -> None:
             continue
         if slot.error is not None:
             response = {"ok": False, "error": str(slot.error)}
+        elif slot.stream is None:
+            response = {"ok": False, "error": "unknown error: stream not resolved"}
         else:
             try:
                 session.commit_play(slot.stream)
                 response = {"ok": True, "data": session.status()}
             except PlayerError as error:
                 response = {"ok": False, "error": str(error)}
+            except Exception as error:  # noqa: BLE001 — daemon boundary
+                response = {"ok": False, "error": f"{type(error).__name__}: {error}"}
         try:
             ipc.send_message(slot.conn, response)
         except OSError:

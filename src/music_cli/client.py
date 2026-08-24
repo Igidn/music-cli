@@ -329,6 +329,8 @@ class MusicClient:
                 return True
             if self.player.duration and not self.player.paused:
                 return True
+            if self.player.eof_reached:
+                return False
             if time.monotonic() > grace and not self.player.playing:
                 return False
             time.sleep(0.2)
