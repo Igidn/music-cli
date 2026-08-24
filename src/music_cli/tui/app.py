@@ -190,7 +190,10 @@ class MusicTUI(App[None]):
         settings_store: SettingsStore | None = None,
         cookies: str | None = None,
     ) -> None:
-        super().__init__()
+        # Native ANSI colors let the TUI be truly transparent: surfaces styled
+        # "ansi_default"/"transparent" emit no background escape, so the
+        # terminal's own background/transparency compositor shows through.
+        super().__init__(ansi_color=True)
         self.client = client or MusicClient()
         self._cookies = cookies
         self._history_store = history_store or PlayHistoryStore()

@@ -1,8 +1,12 @@
 /* Colors come from the active Textual theme (Ctrl+P → Theme); the default
    "music-cli" theme is registered in app.py and matches the original palette. */
 
+/* True terminal transparency: the app runs in native ANSI mode
+   (App(ansi_color=True)), so "transparent"/"ansi_default" backgrounds emit no
+   background escape and the terminal's own background shows through.
+   Percent-opacity colors don't work here: they blend against what's behind
+   *inside* the app (black when that layer is transparent), not the terminal. */
 Screen {
-    background: $background;
     color: $text;
 }
 
@@ -17,7 +21,7 @@ TopBar {
     height: 3;
     layout: horizontal;
     align-vertical: middle;
-    background: $surface;
+    background: transparent;
     padding: 0 2;
 }
 
@@ -59,7 +63,7 @@ TopBar {
     border-title-color: $accent;
     border-title-style: bold;
     margin: 0 1 0 0;
-    background: $surface;
+    background: transparent;
 }
 
 #playlist-pane:focus-within {
@@ -70,7 +74,7 @@ TopBar {
 LibraryTree {
     height: 1fr;
     padding: 0 1;
-    background: $surface;
+    background: transparent;
 }
 
 LibraryTree > .tree--guides,
@@ -93,7 +97,7 @@ HistoryList {
     border-top: solid $border-blurred;
     border-title-color: $accent;
     border-title-style: bold;
-    background: $surface;
+    background: transparent;
 }
 
 HistoryList > ListItem {
@@ -118,7 +122,7 @@ HistoryList > ListItem.-highlight .queue-subtitle {
     height: 1;
     margin: 1 2 0 2;
     padding: 0 1;
-    background: $surface;
+    background: transparent;
 }
 
 #search-box:focus-within {
@@ -153,7 +157,7 @@ ResultsTable {
     height: 1fr;
     margin: 1 2;
     border-top: solid $border-blurred;
-    background: $background;
+    background: transparent;
 }
 
 ResultsTable:focus {
@@ -166,6 +170,8 @@ ResultsTable > .datatable--header {
     text-style: bold;
 }
 
+/* Zebra stripes must be fully opaque over a transparent screen: translucent
+   colors would blend toward black instead of toward the terminal background. */
 ResultsTable > .datatable--odd-row {
     background: $surface;
 }
@@ -177,7 +183,7 @@ ResultsTable > .datatable--cursor {
 }
 
 ResultsTable > .datatable--even-row {
-    background: $background;
+    background: transparent;
 }
 
 QueueList {
@@ -186,7 +192,7 @@ QueueList {
     border-title-color: $accent;
     border-title-style: bold;
     margin: 0 0 0 1;
-    background: $surface;
+    background: transparent;
 }
 
 QueueList:focus {
@@ -233,15 +239,16 @@ QueueList > ListItem.-highlight .queue-subtitle {
 
 NowPlaying {
     height: 11;
-    background: $surface;
+    background: transparent;
     border-top: solid $border-blurred;
     padding: 0 2;
 }
 
 /* Playlist management modal screens: centered dialog over a dimmed main TUI */
+/* No explicit background: Textual's defaults dim with $background 60% normally
+   and fall back to plain transparency in ANSI mode. */
 ModalScreen {
     align: center middle;
-    background: $background 60%;
 }
 
 #add-playlist-modal,
@@ -459,7 +466,7 @@ Screen.-narrow #np-lyric {
 }
 
 Footer {
-    background: $surface-lighten-1;
+    background: transparent;
 }
 
 FooterKey {
