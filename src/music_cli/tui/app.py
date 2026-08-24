@@ -209,6 +209,10 @@ class MusicTUI(App[None]):
         # While a download is live the status line must keep showing it;
         # the state heartbeat's "Playing" label must not clobber it.
         self._download_status: str | None = None
+        # Guard to ensure _download_status is cleared when a new track actually
+        # starts playing (safety net against a stray "downloading 100%" event
+        # where the matching "finished" never arrives).
+        self._download_track_id: str | None = None
         self._auto_next = True
         self._loop_enabled = False
         self._volume = 80
@@ -441,6 +445,7 @@ class MusicTUI(App[None]):
         handlers = {
             "run_search": self._on_search_finished,
             "rpc_worker": self._on_rpc_finished,
+            "play_rpc_worker": self._on_rpc_finished,
             "state_worker": self._on_state_finished,
             "download_worker": self._on_download_finished,
             "init_status_worker": self._on_init_status_finished,
@@ -622,6 +627,13 @@ class MusicTUI(App[None]):
     def _render_status(self, status: dict) -> None:
         now_playing = self.query_one(NowPlaying)
         track = status.get("track")
+        # If a download progress event got stuck (e.g. a "downloading 100%"
+        # without a matching "finished"), clear it when a new track starts
+        # playing so the status bar shows the correct state label.
+        if track is not None and self._download_track_id != track.get("video_id"):
+            self._download_status = None
+        if track is not None:
+            self._download_track_id = track.get("video_id")
         # While a play request is in flight (_pending_play), a per-track push can
         # arrive for a different track than the one we asked for — the up-next
         # head auto-advancing, or a stale heartbeat of the previous track. Show
