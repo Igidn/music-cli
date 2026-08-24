@@ -68,7 +68,10 @@ def register_subcommands(subparsers: argparse._SubParsersAction) -> None:
         "download", help="download a track for offline listening"
     )
     download.add_argument(
-        "video_id", metavar="TRACK_ID", help="the video id of the track to download"
+        "video_id",
+        nargs="?",
+        metavar="TRACK_ID",
+        help="the video id of the track to download (default: currently playing track)",
     )
 
     seek = subparsers.add_parser("seek", help="seek within the current track")
@@ -552,16 +555,31 @@ def _playlists_tracks(args: argparse.Namespace, library: Any) -> int:
 
 
 def _cmd_download(args: argparse.Namespace) -> int:
-    """Download ``video_id`` for offline listening, streaming progress.
+    """Download a track for offline listening, streaming progress.
 
+    When ``video_id`` is omitted the currently playing track is used.
     Runs through the daemon (which owns the audio cache) so the progress UI
     and the Downloads list stay in sync with the TUI.
     """
     _ensure_daemon(args)
+    video_id = args.video_id
+    if video_id is None:
+        status_data = _send(args, {"cmd": "status"})
+        if status_data is None:
+            return 1
+        track = status_data.get("track")
+        if track is None:
+            _errors.print(
+                "music-cli: nothing is playing — "
+                "specify a track id to download",
+                style="bold red",
+            )
+            return 1
+        video_id = track["video_id"]
     try:
         with _console.status("Downloading…", spinner="dots") as status:
             response = ipc.send_play_request(
-                {"cmd": "download", "video_id": args.video_id},
+                {"cmd": "download", "video_id": video_id},
                 on_progress=lambda pct: status.update(
                     "Downloading…" if pct is None else f"Downloading… {pct:.0f}%"
                 ),
@@ -575,7 +593,7 @@ def _cmd_download(args: argparse.Namespace) -> int:
         )
         return 1
     _console.print(
-        f"Downloaded {args.video_id} for offline listening — "
+        f"Downloaded {video_id} for offline listening — "
         "find it under 'music-cli playlists downloaded'",
         style="green",
     )
