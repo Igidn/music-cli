@@ -10,6 +10,22 @@ music-cli got both TUI and CLI; both of them are in sync, allowing agent control
 
 Requires Python 3.14 or newer and macOS.
 
+On **Linux**, playback additionally needs the GStreamer plugins for MP4/AAC:
+
+```sh
+# Fedora / RHEL
+sudo dnf install gstreamer1-plugins-good gstreamer1-libav
+
+# Debian / Ubuntu
+sudo apt install gst-plugins-good1.0 gst-libav1.0
+
+# Arch
+sudo pacman -S gst-plugins-good gst-libav
+```
+
+Without them, tracks download to 100% but playback fails immediately with a
+decoder error (no MP4 demuxer or AAC decoder).
+
 ```sh
 cd &&
 git clone https://github.com/Igidn/music-cli.git &&
