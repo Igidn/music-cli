@@ -37,7 +37,13 @@ from music_cli.storage.state import (
 from music_cli.yt.extract import PlaylistTrack
 from music_cli.yt.lyrics import fetch_synced_lyrics
 from music_cli.yt.playlists import LibraryPlaylist
-from music_cli.yt.search import SearchFilter, SearchResult, format_duration
+from music_cli.yt.search import (
+    ArtistNotFound,
+    SearchFilter,
+    SearchResult,
+    YTmusicSearch,
+    format_duration,
+)
 
 from .components import (
     AddToPlaylistRequested,
@@ -200,6 +206,7 @@ class MusicTUI(App[None]):
         self._settings_store = settings_store or SettingsStore()
         self._search_timer: Timer | None = None
         self._search_worker: Worker[list[SearchResult]] | None = None
+        self._artist_tracks_worker: Worker[list[SearchResult]] | None = None
         self._library_worker: Worker[list[LibraryPlaylist]] | None = None
         self._playlist_workers: dict[str, Worker[list[PlaylistTrack]]] = {}
         self._library_playlists: list[LibraryPlaylist] = []
@@ -425,16 +432,48 @@ class MusicTUI(App[None]):
         if self._search_worker is not None and self._search_worker.is_running:
             self._search_worker.cancel()
         self._search_worker = None
+        self._cancel_artist_tracks()
 
     def _start_search(self, query: str) -> None:
         self._cancel_search()
+
+        # Detect artist: query syntax
+        artist_name, track_query = YTmusicSearch.parse_artist_query(query)
+        if artist_name and not track_query:
+            # artist:"name" only — fetch the artist's top tracks
+            self.set_status(f"Looking up artist “{artist_name}”…")
+            self._artist_tracks_worker = self.run_artist_tracks(artist_name)
+            return
+
+        if artist_name and track_query:
+            # artist:"name" track — combine for a normal search
+            query = f"{artist_name} {track_query}"
+
         self.set_status(f"Searching for “{query}”…")
         filter = SEARCH_FILTERS[self.query_one("#filter-select", Select).value][1]
         self._search_worker = self.run_search(query, filter)
 
+    def _cancel_artist_tracks(self) -> None:
+        if (
+            self._artist_tracks_worker is not None
+            and self._artist_tracks_worker.is_running
+        ):
+            self._artist_tracks_worker.cancel()
+        self._artist_tracks_worker = None
+
     @work(thread=True, exit_on_error=False)
     def run_search(self, query: str, filter: SearchFilter | None) -> list[SearchResult]:
         return self.client.search(query, filter=filter)
+
+    @work(thread=True, exit_on_error=False)
+    def run_artist_tracks(self, name: str) -> list[SearchResult]:
+        """Find an artist by name and return their top tracks."""
+        return self.client.search_api.get_artist_tracks_by_name(name)
+
+    @work(thread=True, exit_on_error=False)
+    def run_artist_tracks_by_id(self, browse_id: str) -> list[SearchResult]:
+        """Fetch an artist's top tracks by their browse ID."""
+        return self.client.search_api.get_artist_tracks(browse_id)
 
     @on(Worker.StateChanged)
     def _on_worker_state_changed(self, event: Worker.StateChanged) -> None:
@@ -447,6 +486,8 @@ class MusicTUI(App[None]):
             return
         handlers = {
             "run_search": self._on_search_finished,
+            "run_artist_tracks": self._on_artist_tracks_fetched,
+            "run_artist_tracks_by_id": self._on_artist_tracks_fetched,
             "rpc_worker": self._on_rpc_finished,
             "play_rpc_worker": self._on_rpc_finished,
             "state_worker": self._on_state_finished,
@@ -473,6 +514,28 @@ class MusicTUI(App[None]):
             self.notify(
                 f"Search failed: {worker.error}", title="Search", severity="error"
             )
+
+    def _on_artist_tracks_fetched(self, worker: Worker[list[SearchResult]]) -> None:
+        if worker is not self._artist_tracks_worker:
+            return
+        self._artist_tracks_worker = None
+        if worker.state is WorkerState.SUCCESS:
+            results = worker.result or []
+            self.query_one(ResultsTable).set_results(results)
+            self.set_status(
+                f"{len(results)} tracks" if results else "No tracks found"
+            )
+        else:
+            err = worker.error
+            if isinstance(err, ArtistNotFound):
+                self.set_status(f"Artist not found: {err}")
+            else:
+                self.set_status("Failed to load artist tracks")
+                self.notify(
+                    f"Failed to load artist tracks: {err}",
+                    title="Search",
+                    severity="error",
+                )
 
     # ------------------------------------------------------------------
     # Daemon IPC: actions run off the UI thread and render from responses.
@@ -723,7 +786,10 @@ class MusicTUI(App[None]):
             self.play_result(result)
 
     def play_result(self, result: SearchResult) -> None:
-        if result.video_id:
+        if result.result_type == "artist" and result.browse_id:
+            # Fetch and display the artist's tracks.
+            self._show_artist_tracks(result.browse_id, result.title)
+        elif result.video_id:
             self._start_play(
                 result.video_id,
                 result.title,
@@ -752,6 +818,28 @@ class MusicTUI(App[None]):
                 title="Playback",
                 severity="warning",
             )
+
+    def _show_artist_tracks(self, browse_id: str, name: str) -> None:
+        """Fetch an artist's tracks and display them in the results table.
+
+        Sets the search bar to ``artist:"name"`` and launches a background
+        worker to fetch the artist's top tracks.
+        """
+        # Set the search bar to reflect the artist query.
+        # Setting value triggers _on_query_changed which starts a timer;
+        # stop it before the cancel calls so the timer doesn't restart a
+        # search over the top of the correct worker.
+        search = self.query_one("#search-input", Input)
+        search.value = f'artist:"{name}"'
+        search.cursor_position = len(search.value)
+        if self._search_timer is not None:
+            self._search_timer.stop()
+            self._search_timer = None
+
+        self._cancel_search()
+        self._cancel_artist_tracks()
+        self.set_status(f"Loading tracks for “{name}”…")
+        self._artist_tracks_worker = self.run_artist_tracks_by_id(browse_id)
 
     def play_video(self, video_id: str, title: str, subtitle: str = "") -> None:
         """Play a bare video id (used to resume the last played track)."""

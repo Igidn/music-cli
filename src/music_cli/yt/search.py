@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -139,6 +140,34 @@ class YTmusicSearch:
     def __init__(self, api: YTMusic | None = None) -> None:
         self._api = api or YTMusic()
 
+    # Regex for artist: query syntax: artist:"name" rest / artist:'name' rest / artist:name rest
+    _ARTIST_QUERY_RE = re.compile(
+        r'^artist:\s*(?:"([^"]+)"|\'([^\']+)\'|(\S+))\s*(.*)$',
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def parse_artist_query(cls, query: str) -> tuple[str | None, str]:
+        """Parse an ``artist:"name"`` prefix from a search query.
+
+        Returns ``(artist_name, track_query)``. When no artist: prefix is
+        found, ``artist_name`` is ``None`` and ``track_query`` is the whole
+        query.
+
+        Examples::
+
+            artist:"Drake"           -> ("Drake", "")
+            artist:'Drake' God's Plan -> ("Drake", "God's Plan")
+            artist:Drake              -> ("Drake", "")
+            artist:Drake God's Plan   -> ("Drake", "God's Plan")
+        """
+        m = cls._ARTIST_QUERY_RE.match(query)
+        if m:
+            name = m.group(1) or m.group(2) or m.group(3)
+            rest = m.group(4).strip()
+            return (name, rest)
+        return (None, query)
+
     def search(
         self,
         query: str,
@@ -148,3 +177,71 @@ class YTmusicSearch:
     ) -> list[SearchResult]:
         raw = self._api.search(query=query, limit=limit, filter=filter)
         return [parse_search_result(item) for item in raw[:limit]]
+
+    def get_artist_tracks(
+        self, artist_browse_id: str, *, limit: int = 20
+    ) -> list[SearchResult]:
+        """Fetch an artist's top tracks by their browse ID.
+
+        Uses ``get_artist`` for the top songs, then expands via
+        ``get_playlist`` when the artist has a songs playlist browse ID.
+        Returns :class:`SearchResult` rows that look like song results.
+        """
+        artist_data = self._api.get_artist(artist_browse_id)
+        songs = artist_data.get("songs", {})
+        results: list[dict[str, Any]] = list(songs.get("results", []) or [])
+
+        browse_id = songs.get("browseId")
+        if browse_id:
+            playlist = self._api.get_playlist(browse_id, limit=limit)
+            tracks = playlist.get("tracks", []) or []
+            results = tracks[:limit]
+
+        return [_parse_artist_track(item) for item in results[:limit]]
+
+    def get_artist_tracks_by_name(
+        self, name: str, *, limit: int = 20
+    ) -> list[SearchResult]:
+        """Find an artist by name and return their top tracks.
+
+        Searches for the artist, then fetches their top songs.
+        Raises :class:`ArtistNotFound` when no artist matches.
+        """
+        browse_id = find_artist_browse_id(self._api, name)
+        return self.get_artist_tracks(browse_id, limit=limit)
+
+
+class ArtistNotFound(LookupError):
+    """Raised when no artist matches the given name."""
+
+
+def _parse_artist_track(item: dict[str, Any]) -> SearchResult:
+    """Convert an artist song / playlist track dict to a SearchResult.
+
+    Handles two input formats:
+    - ``get_artist`` songs (keys: ``artist`` str, ``album`` str)
+    - ``get_playlist`` tracks (keys: ``artists`` list-of-dicts, ``album`` dict)
+    """
+    item = dict(item)
+    item.setdefault("resultType", "song")
+    return parse_search_result(item)
+
+
+def find_artist_browse_id(
+    api: YTMusic, name: str
+) -> str:
+    """Search for an artist by name and return their browse ID.
+
+    Raises :class:`ArtistNotFound` when no artist matches.
+    """
+    results = api.search(query=name, filter="artists", limit=5)
+    for r in results:
+        browse_id = r.get("browseId", "")
+        if browse_id:
+            return browse_id
+        # Artist results from ytmusicapi carry the channel ID as browseId
+        # only in the unfiltered search; filtered search may use channelId.
+        channel_id = r.get("channelId", "")
+        if channel_id:
+            return channel_id
+    raise ArtistNotFound(f"No artist found for “{name}”")
