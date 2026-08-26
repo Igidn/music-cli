@@ -6,7 +6,6 @@ from typing import ClassVar
 
 from rich.cells import cell_len, set_cell_size
 from rich.text import Text
-from textual import events
 from textual.binding import Binding
 from textual.widgets import DataTable, Input
 
@@ -46,9 +45,6 @@ class ResultsTable(DataTable, inherit_bindings=False):
         super().__init__(*args, **kwargs)
         self._results: dict[str, SearchResult] = {}
         self._last_can_add = False
-        self._max_title_len = 34
-        self._max_artist_len = 13
-        self._max_album_len = 8
 
     def action_cursor_up(self) -> None:
         if not self.row_count or self.cursor_coordinate.row == 0:
@@ -62,76 +58,10 @@ class ResultsTable(DataTable, inherit_bindings=False):
         self.add_column("Artist", key="artist", width=13)
         self.add_column("Album", key="album", width=8)
         self.add_column("Time", key="duration", width=7)
-        self._recalc_column_widths()
-
-    def _on_resize(self, event: events.Resize) -> None:
-        super()._on_resize(event)
-        self._recalc_column_widths()
-
-    def _recalc_column_widths(self) -> None:
-        """Distribute column widths based on available viewport width and title length."""
-        if not self.columns or not self.is_mounted:
-            return
-
-        avail = self.content_size.width
-        ncols = len(self.columns)
-        total_padding = 2 * self.cell_padding * ncols
-        content_avail = max(avail - total_padding, 30)
-
-        # Minimum widths (character count inside padding)
-        type_min = 10  # " EPISODE" / " PODCAST" + padding
-        duration_min = 7  # "h:mm:ss"
-
-        remaining = max(content_avail - type_min - duration_min, 5)
-
-        # Weights based on max content lengths (fall back to defaults when empty)
-        title_wgt = max(self._max_title_len, 10)
-        artist_wgt = max(self._max_artist_len, 5)
-        album_wgt = max(self._max_album_len, 5)
-        total_wgt = title_wgt + artist_wgt + album_wgt
-
-        if remaining >= total_wgt:
-            # Plenty of room – give each enough, surplus to title
-            title_w = title_wgt + (remaining - total_wgt)
-            artist_w = artist_wgt
-            album_w = album_wgt
-        else:
-            # Shrink proportionally, keep minima
-            title_w = max(int(remaining * title_wgt / total_wgt), 10)
-            artist_w = max(int(remaining * artist_wgt / total_wgt), 6)
-            album_w = max(remaining - title_w - artist_w, 6)
-
-        self.columns["type"].width = type_min
-        self.columns["type"].auto_width = False
-        self.columns["duration"].width = duration_min
-        self.columns["duration"].auto_width = False
-        self.columns["title"].width = title_w
-        self.columns["title"].auto_width = False
-        self.columns["artist"].width = artist_w
-        self.columns["artist"].auto_width = False
-        self.columns["album"].width = album_w
-        self.columns["album"].auto_width = False
-
-        self._require_update_dimensions = True
-        self._update_count += 1
 
     def set_results(self, results: list[SearchResult]) -> None:
         self.clear()
         self._results.clear()
-
-        # Measure longest cell values to guide proportional column distribution
-        self._max_title_len = 10
-        self._max_artist_len = 4
-        self._max_album_len = 4
-        for result in results:
-            if result.title:
-                self._max_title_len = max(self._max_title_len, cell_len(result.title))
-            artists = ", ".join(result.artists)
-            self._max_artist_len = max(self._max_artist_len, cell_len(artists))
-            self._max_album_len = max(self._max_album_len, cell_len(result.album or ""))
-
-        self._recalc_column_widths()
-
         for result in results:
             key = result.video_id or result.browse_id
             if not key:
