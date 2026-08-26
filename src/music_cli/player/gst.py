@@ -78,9 +78,8 @@ class GStreamerPlayer:
         cookies: Cookies | None = None,
         fetch_stream: Callable[[StreamInfo], LocalFile] | None = None,
         cache: AudioCache | None = None,
-        download_progress: Callable[
-            [], Callable[[dict[str, Any]], None] | None
-        ] | None = None,
+        download_progress: Callable[[], Callable[[dict[str, Any]], None] | None]
+        | None = None,
     ) -> None:
         self.on_track_end = on_track_end
         self._loop = loop
@@ -127,11 +126,7 @@ class GStreamerPlayer:
             self._title = ""
             return
         self._title = stream.title
-        uri = (
-            local.path
-            if local.path.startswith("file://")
-            else f"file://{local.path}"
-        )
+        uri = local.path if local.path.startswith("file://") else f"file://{local.path}"
         self._pipeline.set_property("uri", uri)
         if local.owned:
             self._local_path = uri.removeprefix("file://")
@@ -240,7 +235,10 @@ class GStreamerPlayer:
     def playing(self) -> bool:
         """Whether a track is loaded and hasn't failed."""
         _, state, pending = self._pipeline.get_state(Gst.CLOCK_TIME_NONE)
-        return state in (Gst.State.PLAYING, Gst.State.PAUSED) or pending == Gst.State.PLAYING
+        return (
+            state in (Gst.State.PLAYING, Gst.State.PAUSED)
+            or pending == Gst.State.PLAYING
+        )
 
     # ------------------------------------------------------------------
     # Internal helpers

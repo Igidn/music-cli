@@ -106,7 +106,9 @@ class TestWatchPlaylist:
         assert len(tracks) >= 5
 
 
-@pytest.mark.skipif(_AVFoundationPlayer is None, reason="pyobjc-avfoundation not installed")
+@pytest.mark.skipif(
+    _AVFoundationPlayer is None, reason="pyobjc-avfoundation not installed"
+)
 class TestAVFoundationPlayback:
     AVFoundationPlayer = _AVFoundationPlayer
 

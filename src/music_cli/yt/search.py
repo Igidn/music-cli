@@ -227,9 +227,7 @@ def _parse_artist_track(item: dict[str, Any]) -> SearchResult:
     return parse_search_result(item)
 
 
-def find_artist_browse_id(
-    api: YTMusic, name: str
-) -> str:
+def find_artist_browse_id(api: YTMusic, name: str) -> str:
     """Search for an artist by name and return their browse ID.
 
     Raises :class:`ArtistNotFound` when no artist matches.

@@ -38,9 +38,8 @@ def create_player(
     cookies: Cookies | None = None,
     cache: AudioCache | None = None,
     fetch_stream: Callable[[StreamInfo], LocalFile] | None = None,
-    download_progress: Callable[
-        [], Callable[[dict[str, Any]], None] | None
-    ] | None = None,
+    download_progress: Callable[[], Callable[[dict[str, Any]], None] | None]
+    | None = None,
 ) -> object:
     """Create a platform-appropriate audio player instance.
 

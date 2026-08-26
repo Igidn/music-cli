@@ -153,7 +153,11 @@ class StreamExtractor:
         )
 
     def download(
-        self, video_id: str, outtmpl: str, *, progress_hook: Callable[[dict[str, Any]], None] | None = None
+        self,
+        video_id: str,
+        outtmpl: str,
+        *,
+        progress_hook: Callable[[dict[str, Any]], None] | None = None,
     ) -> str:
         """Download the best audio for ``video_id`` to a file, returning its path.
 

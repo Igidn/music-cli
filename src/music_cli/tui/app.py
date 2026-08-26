@@ -351,9 +351,7 @@ class MusicTUI(App[None]):
                         if percent is not None
                         else f"Downloading…{size}"
                     )
-                    self.call_from_thread(
-                        self.set_status, self._download_status
-                    )
+                    self.call_from_thread(self.set_status, self._download_status)
 
     def on_unmount(self) -> None:
         self._clear_events_socket()
@@ -522,9 +520,7 @@ class MusicTUI(App[None]):
         if worker.state is WorkerState.SUCCESS:
             results = worker.result or []
             self.query_one(ResultsTable).set_results(results)
-            self.set_status(
-                f"{len(results)} tracks" if results else "No tracks found"
-            )
+            self.set_status(f"{len(results)} tracks" if results else "No tracks found")
         else:
             err = worker.error
             if isinstance(err, ArtistNotFound):
@@ -589,9 +585,7 @@ class MusicTUI(App[None]):
         else:
             self.set_status("Daemon unavailable")
 
-    def _on_lyric_fetched(
-        self, worker: Worker[list[tuple[float, str]]]
-    ) -> None:
+    def _on_lyric_fetched(self, worker: Worker[list[tuple[float, str]]]) -> None:
         if worker.state is WorkerState.SUCCESS:
             self.query_one(NowPlaying).set_lyrics(worker.result or [])
 
@@ -892,7 +886,9 @@ class MusicTUI(App[None]):
         )
 
     @on(LibraryTree.DownloadsExpandRequested)
-    def _on_downloads_expand(self, message: LibraryTree.DownloadsExpandRequested) -> None:
+    def _on_downloads_expand(
+        self, message: LibraryTree.DownloadsExpandRequested
+    ) -> None:
         self.query_one(LibraryTree).show_downloads(self.client.downloads.recent())
 
     @on(LibraryTree.DownloadActivated)
@@ -920,7 +916,9 @@ class MusicTUI(App[None]):
             ),
         )
 
-    def _remove_download(self, video_id: str, title: str, confirmed: bool | None) -> None:
+    def _remove_download(
+        self, video_id: str, title: str, confirmed: bool | None
+    ) -> None:
         if not confirmed:
             return
         self.rpc_worker({"cmd": "remove_download", "video_id": video_id})
@@ -946,9 +944,7 @@ class MusicTUI(App[None]):
     def _hint_slow_download(self, video_id: str) -> None:
         """Nudge the status line when a play is still downloading after a while."""
         if self._pending_play == video_id:
-            self.set_status(
-                "Downloading… may take a while on a slow connection"
-            )
+            self.set_status("Downloading… may take a while on a slow connection")
 
     def _refresh_history(self) -> None:
         self.query_one(HistoryList).set_tracks(self._history_store.recent(15))
@@ -1139,9 +1135,7 @@ class MusicTUI(App[None]):
             return
         self._next_pending = True
         self.set_status("Resolving stream…")
-        self._next_worker = self.rpc_worker(
-            {"cmd": "next"}, timeout=_PLAY_RPC_TIMEOUT
-        )
+        self._next_worker = self.rpc_worker({"cmd": "next"}, timeout=_PLAY_RPC_TIMEOUT)
 
     def action_toggle_auto_next(self) -> None:
         self.state_worker({"cmd": "auto_next", "state": "toggle"})

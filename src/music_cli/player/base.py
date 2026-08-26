@@ -34,7 +34,12 @@ class LocalFile:
     owned: bool = True
 
 
-def download_temp(extractor: StreamExtractor, stream: StreamInfo, *, progress_hook: Callable | None = None) -> LocalFile:
+def download_temp(
+    extractor: StreamExtractor,
+    stream: StreamInfo,
+    *,
+    progress_hook: Callable | None = None,
+) -> LocalFile:
     """Download ``stream`` to a temporary file the player owns and deletes."""
     file = tempfile.NamedTemporaryFile(prefix="music-cli-", delete=False)
     file.close()
@@ -56,7 +61,8 @@ def default_fetch_stream(
     cache: AudioCache | None = None,
     *,
     extractor: StreamExtractor | None = None,
-    download_progress: Callable[[], Callable[[dict[str, Any]], None] | None] | None = None,
+    download_progress: Callable[[], Callable[[dict[str, Any]], None] | None]
+    | None = None,
 ) -> Callable[[StreamInfo], LocalFile]:
     """Build the default stream fetcher: cache-aware, else a temp download.
 

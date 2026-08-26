@@ -260,7 +260,7 @@ def main(argv: list[str] | None = None) -> None:
 
 
 def _download_hook(
-    subscribers: dict[socket.socket, deque[bytes]]
+    subscribers: dict[socket.socket, deque[bytes]],
 ) -> Callable[[dict[str, Any]], None]:
     """A yt-dlp progress hook that pushes the download percent to subscribers.
 
@@ -332,9 +332,7 @@ _ASYNC_PLAY_TARGETS = ("video_id", "query")
 
 def _is_async_play(request: dict[str, Any]) -> bool:
     """Whether ``request`` can run on the async single-track play path."""
-    has_playlist = any(
-        k in request for k in ("playlist_id", "album_id", "queue_index")
-    )
+    has_playlist = any(k in request for k in ("playlist_id", "album_id", "queue_index"))
     return ("video_id" in request or "query" in request) and not has_playlist
 
 
@@ -620,7 +618,12 @@ def _serve(
             last_heartbeat = time.monotonic()
             _push(subscribers, status)
         if _idle(
-            session, subscribers, pending_plays, pending_downloads, last_activity, idle_timeout
+            session,
+            subscribers,
+            pending_plays,
+            pending_downloads,
+            last_activity,
+            idle_timeout,
         ):
             return
         session.client.player.pump()

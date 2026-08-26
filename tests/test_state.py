@@ -22,9 +22,7 @@ class TestPlayHistoryStore:
         assert store.most_recent() is None
 
         store.record(
-            PlayedTrack(
-                video_id="v1", title="Song", artists=("A", "B"), duration=213.0
-            )
+            PlayedTrack(video_id="v1", title="Song", artists=("A", "B"), duration=213.0)
         )
         loaded = store.most_recent()
         assert loaded.video_id == "v1"

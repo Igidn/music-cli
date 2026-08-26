@@ -94,18 +94,24 @@ class PlayHistoryStore:
 
     def most_recent(self) -> PlayedTrack | None:
         """The most recently played track, for resuming playback."""
-        row = self._ensure_open().execute(
-            "SELECT * FROM play_history ORDER BY last_played DESC LIMIT 1"
-        ).fetchone()
+        row = (
+            self._ensure_open()
+            .execute("SELECT * FROM play_history ORDER BY last_played DESC LIMIT 1")
+            .fetchone()
+        )
         return self._from_row(row) if row is not None else None
 
     def top(self, limit: int = 50) -> list[PlayedTrack]:
         """The most-played tracks, highest count first."""
-        rows = self._ensure_open().execute(
-            "SELECT * FROM play_history ORDER BY played DESC, last_played DESC "
-            "LIMIT ?",
-            (limit,),
-        ).fetchall()
+        rows = (
+            self._ensure_open()
+            .execute(
+                "SELECT * FROM play_history ORDER BY played DESC, last_played DESC "
+                "LIMIT ?",
+                (limit,),
+            )
+            .fetchall()
+        )
         return [self._from_row(row) for row in rows]
 
     def recent(self, limit: int = 15) -> list[PlayedTrack]:
@@ -114,10 +120,14 @@ class PlayHistoryStore:
         One row per track (``record`` upserts on ``video_id``), so this is
         already deduplicated — a repeated track simply moves to the top.
         """
-        rows = self._ensure_open().execute(
-            "SELECT * FROM play_history ORDER BY last_played DESC LIMIT ?",
-            (limit,),
-        ).fetchall()
+        rows = (
+            self._ensure_open()
+            .execute(
+                "SELECT * FROM play_history ORDER BY last_played DESC LIMIT ?",
+                (limit,),
+            )
+            .fetchall()
+        )
         return [self._from_row(row) for row in rows]
 
     def close(self) -> None:
@@ -193,9 +203,13 @@ class DownloadsStore:
 
     def recent(self, limit: int = 100) -> list[DownloadedTrack]:
         """All downloaded tracks, newest first (same shape as playlists)."""
-        rows = self._ensure_open().execute(
-            "SELECT * FROM downloads ORDER BY downloaded_at DESC LIMIT ?", (limit,)
-        ).fetchall()
+        rows = (
+            self._ensure_open()
+            .execute(
+                "SELECT * FROM downloads ORDER BY downloaded_at DESC LIMIT ?", (limit,)
+            )
+            .fetchall()
+        )
         return [self._from_row(row) for row in rows]
 
     def remove(self, video_id: str) -> None:
@@ -237,9 +251,11 @@ class SettingsStore:
         self._conn: sqlite3.Connection | None = None
 
     def get(self, key: str, default: str | None = None) -> str | None:
-        row = self._ensure_open().execute(
-            "SELECT value FROM settings WHERE key = ?", (key,)
-        ).fetchone()
+        row = (
+            self._ensure_open()
+            .execute("SELECT value FROM settings WHERE key = ?", (key,))
+            .fetchone()
+        )
         return row["value"] if row is not None else default
 
     def get_int(self, key: str, default: int = 0) -> int:

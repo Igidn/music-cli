@@ -142,15 +142,18 @@ class LibraryTree(Tree[dict[str, Any] | None], inherit_bindings=False):
 
     @property
     def downloads_loaded(self) -> bool:
-        return bool(self.downloads_node.data.get("loaded")) if isinstance(
-            self.downloads_node.data, dict
-        ) else False
+        return (
+            bool(self.downloads_node.data.get("loaded"))
+            if isinstance(self.downloads_node.data, dict)
+            else False
+        )
 
     def update_downloads_count(self, count: int) -> None:
         """Refresh just the Downloads node's label, keeping its collapse state."""
         node = self.downloads_node
         suffix = f" ({count})" if count else ""
         node.set_label(Text(f"⬇ Downloads{suffix}"))
+
     def set_playlists(self, playlists: list[LibraryPlaylist]) -> None:
         downloads = self.downloads_node
         for node in list(self.root.children):

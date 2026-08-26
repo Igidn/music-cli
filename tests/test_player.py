@@ -49,7 +49,7 @@ try:
     from gi.repository import Gst  # noqa: F401
 
     _HAS_GSTREAMER = True
-except (ImportError, ValueError):
+except ImportError, ValueError:
     pass
 
 # ------------------------------------------------------------------
@@ -228,9 +228,9 @@ class TestStreamExtractor:
             def extract_info(self, url, download=False):
                 return result
 
-        StreamExtractor(ydl_factory=lambda opts: seen.update(opts) or HookYDL({})).download(
-            "abc", str(out), progress_hook=hook
-        )
+        StreamExtractor(
+            ydl_factory=lambda opts: seen.update(opts) or HookYDL({})
+        ).download("abc", str(out), progress_hook=hook)
         assert seen["progress_hooks"] == [hook]
 
     def test_download_omits_hook_by_default(self, tmp_path):
@@ -242,9 +242,9 @@ class TestStreamExtractor:
             def extract_info(self, url, download=False):
                 return result
 
-        StreamExtractor(ydl_factory=lambda opts: seen.update(opts) or HookYDL({})).download(
-            "abc", str(out)
-        )
+        StreamExtractor(
+            ydl_factory=lambda opts: seen.update(opts) or HookYDL({})
+        ).download("abc", str(out))
         assert "progress_hooks" not in seen
 
     def test_download_wraps_download_error(self, tmp_path):
@@ -342,7 +342,6 @@ if _HAS_AVFOUNDATION:
     from music_cli.player.audio import AVFoundationPlayer
     from music_cli.player.base import LocalFile
 
-
     class FakeAVPlayer:
         """Minimal stand-in for AVPlayer exposing the pyobjc call surface used."""
 
@@ -392,7 +391,6 @@ if _HAS_AVFOUNDATION:
         def currentItem(self):
             return self._item
 
-
     class FakeItem:
         """Stand-in for AVPlayerItem, controllable per test."""
 
@@ -410,10 +408,8 @@ if _HAS_AVFOUNDATION:
         def setAudioMix_(self, mix):
             self.audio_mix = mix
 
-
     def _local(stream: StreamInfo) -> LocalFile:
         return LocalFile(path="file:///tmp/fake-audio.m4a")
-
 
     @pytest.mark.skipif(
         not _HAS_AVFOUNDATION, reason="pyobjc-avfoundation not installed (not macOS)"
@@ -439,7 +435,9 @@ if _HAS_AVFOUNDATION:
 
         def test_play_sets_item_and_starts(self):
             fake = FakeAVPlayer()
-            player = AVFoundationPlayer(player_factory=lambda: fake, fetch_stream=_local)
+            player = AVFoundationPlayer(
+                player_factory=lambda: fake, fetch_stream=_local
+            )
             stream = StreamInfo(
                 video_id="v",
                 title="T",
@@ -472,14 +470,18 @@ if _HAS_AVFOUNDATION:
                     self._drop_next = False
 
             fake = DroppingAVPlayer()
-            player = AVFoundationPlayer(player_factory=lambda: fake, fetch_stream=_local)
+            player = AVFoundationPlayer(
+                player_factory=lambda: fake, fetch_stream=_local
+            )
             player.play(StreamInfo(video_id="v", title="T", stream_url="https://u"))
             assert fake.play_calls >= 2
             assert fake.rate() == 1.0
 
         def test_transport_controls(self):
             fake = FakeAVPlayer()
-            player = AVFoundationPlayer(player_factory=lambda: fake, fetch_stream=_local)
+            player = AVFoundationPlayer(
+                player_factory=lambda: fake, fetch_stream=_local
+            )
             assert player.paused is True
             player.play(StreamInfo(video_id="v", title="T", stream_url="https://u"))
             assert player.paused is False
@@ -501,7 +503,9 @@ if _HAS_AVFOUNDATION:
 
         def test_seek_relative(self):
             fake = FakeAVPlayer()
-            player = AVFoundationPlayer(player_factory=lambda: fake, fetch_stream=_local)
+            player = AVFoundationPlayer(
+                player_factory=lambda: fake, fetch_stream=_local
+            )
             player.play(StreamInfo(video_id="v", title="T", stream_url="https://u"))
             fake._time = CMTimeMakeWithSeconds(30.0, 600)
             player.seek_relative(-5)
@@ -509,7 +513,9 @@ if _HAS_AVFOUNDATION:
 
         def test_metadata_properties(self):
             fake = FakeAVPlayer()
-            player = AVFoundationPlayer(player_factory=lambda: fake, fetch_stream=_local)
+            player = AVFoundationPlayer(
+                player_factory=lambda: fake, fetch_stream=_local
+            )
             player.play(StreamInfo(video_id="v", title="T", stream_url="https://u"))
             player._current_item = FakeItem(duration=100.0, status=1)
             assert player.duration == 100.0
@@ -524,7 +530,9 @@ if _HAS_AVFOUNDATION:
 
         def test_playing_state_follows_item_status(self):
             fake = FakeAVPlayer()
-            player = AVFoundationPlayer(player_factory=lambda: fake, fetch_stream=_local)
+            player = AVFoundationPlayer(
+                player_factory=lambda: fake, fetch_stream=_local
+            )
             player.play(StreamInfo(video_id="v", title="T", stream_url="https://u"))
             player._current_item = FakeItem(status=1)
             assert player.playing
@@ -621,12 +629,13 @@ if _HAS_AVFOUNDATION:
 
         def test_close_stops_and_unloads(self):
             fake = FakeAVPlayer()
-            player = AVFoundationPlayer(player_factory=lambda: fake, fetch_stream=_local)
+            player = AVFoundationPlayer(
+                player_factory=lambda: fake, fetch_stream=_local
+            )
             player.play(StreamInfo(video_id="v", title="T", stream_url="https://u"))
             player.close()
             assert fake._item is None
             assert player._observer_token is None
-
 
     class TestFileOwnership:
         def test_unowned_file_survives_stop(self, tmp_path):
@@ -692,10 +701,8 @@ if _HAS_GSTREAMER:
     from music_cli.player.base import LocalFile
     from music_cli.player.gst import GStreamerPlayer
 
-
     def _gst_local(stream: StreamInfo) -> LocalFile:
         return LocalFile(path="file:///tmp/gst-fake-audio.m4a")
-
 
     @pytest.mark.skipif(
         not _HAS_GSTREAMER, reason="GStreamer not available (gi.repository.Gst)"

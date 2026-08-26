@@ -68,13 +68,13 @@ def _default_player() -> AVPlayer:
     return AVPlayer.alloc().init()
 
 
-
 def _default_fetch_stream(
     cookies: Cookies | None,
     cache: AudioCache | None = None,
     *,
     extractor: StreamExtractor | None = None,
-    download_progress: Callable[[], Callable[[dict[str, Any]], None] | None] | None = None,
+    download_progress: Callable[[], Callable[[dict[str, Any]], None] | None]
+    | None = None,
 ) -> Callable[[StreamInfo], LocalFile]:
     """Build the default stream fetcher via :func:`base.default_fetch_stream`.
 
@@ -82,7 +82,9 @@ def _default_fetch_stream(
     is kept so ``AVFoundationPlayer``'s constructor signature stays
     the same and existing tests continue to work.
     """
-    return default_fetch_stream(cookies, cache=cache, extractor=extractor, download_progress=download_progress)
+    return default_fetch_stream(
+        cookies, cache=cache, extractor=extractor, download_progress=download_progress
+    )
 
 
 class AVFoundationPlayer:
@@ -104,7 +106,8 @@ class AVFoundationPlayer:
         player_factory: Callable[[], AVPlayer] = _default_player,
         fetch_stream: Callable[[StreamInfo], LocalFile] | None = None,
         cache: AudioCache | None = None,
-        download_progress: Callable[[], Callable[[dict[str, Any]], None] | None] | None = None,
+        download_progress: Callable[[], Callable[[dict[str, Any]], None] | None]
+        | None = None,
     ) -> None:
         self.on_track_end = on_track_end
         self._loop = loop

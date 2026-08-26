@@ -570,8 +570,7 @@ def _cmd_download(args: argparse.Namespace) -> int:
         track = status_data.get("track")
         if track is None:
             _errors.print(
-                "music-cli: nothing is playing — "
-                "specify a track id to download",
+                "music-cli: nothing is playing — specify a track id to download",
                 style="bold red",
             )
             return 1

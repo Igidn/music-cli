@@ -277,9 +277,7 @@ class MusicClient:
             hook = progress or self._download_progress
 
             def downloader(target: Path) -> DownloadResult:
-                filepath = extractor.download(
-                    video_id, str(target), progress_hook=hook
-                )
+                filepath = extractor.download(video_id, str(target), progress_hook=hook)
                 return DownloadResult(
                     path=filepath,
                     meta=TrackMeta(

@@ -397,7 +397,9 @@ class TestNextTrack:
         assert client.current.video_id == "d2"
         assert session._downloads_context is not None  # keeps looping
 
-    def test_on_track_end_auto_advances_inside_downloads(self, client, session, tmp_path):
+    def test_on_track_end_auto_advances_inside_downloads(
+        self, client, session, tmp_path
+    ):
         """Regress: natural track end (on_track_end clears ``client.current``
         before next_track) must still advance within Downloads, not stop/pause.
         Both fixes are required together."""
@@ -428,7 +430,10 @@ class TestNextTrack:
         from music_cli.storage.state import DownloadsStore
 
         client.downloads = DownloadsStore(tmp_path / "downloads.db")
-        client.downloads.record("d2", "Two",)
+        client.downloads.record(
+            "d2",
+            "Two",
+        )
         client.downloads.record("d1", "One")
 
         session.play_download("d2", "Two")
@@ -468,7 +473,6 @@ class TestNextTrack:
         assert client.current.video_id == "d3"
         assert [t["video_id"] for t in session.queue()] == []  # d3 was last
 
-
     def test_on_track_end_respects_auto_next_off(self, client, session):
         session.set_auto_next("off")
         client.current = StreamInfo(video_id="v0", title="T", stream_url="u")
@@ -496,9 +500,7 @@ def _wait_cached(cache, video_id, timeout=2.0):
 class TestPrefetchNext:
     def test_prefetches_only_next_up_track(self, client, session):
         client.queue = [make_track("next1"), make_track("next2")]
-        session.record(
-            StreamInfo(video_id="cur", title="Cur", stream_url="u")
-        )
+        session.record(StreamInfo(video_id="cur", title="Cur", stream_url="u"))
         assert _wait_cached(client.cache, "next1")
         assert client.cache.path_for("next2") is None
 

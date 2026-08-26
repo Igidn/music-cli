@@ -108,9 +108,7 @@ class PlaybackSession:
             self.client.downloads.recent() if request.get("from_downloads") else None
         )
         if target == "video_id":
-            return self.client.prepare_playable(
-                request["video_id"], progress=progress
-            )
+            return self.client.prepare_playable(request["video_id"], progress=progress)
         if target == "query":
             result = next(
                 (r for r in self.client.search(request["query"]) if r.video_id), None
@@ -398,9 +396,7 @@ class PlaybackSession:
 
     def queue(self) -> list[dict]:
         source = (
-            self._downloads_up_next()
-            if self._downloads_context
-            else self.client.queue
+            self._downloads_up_next() if self._downloads_context else self.client.queue
         )
         return [self._queue_entry(track) for track in source]
 

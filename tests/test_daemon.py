@@ -421,14 +421,14 @@ def test_spawn_async_play_stops_current_track():
         def prepare_play(self, target, request, progress=None):
             raise PlayerError("not prepared in test")
 
-    slot = _spawn_async_play(
-        Session(), {"cmd": "play", "video_id": "v"}, conn=object()
-    )
+    slot = _spawn_async_play(Session(), {"cmd": "play", "video_id": "v"}, conn=object())
     # The stop happens synchronously at spawn, on the serve-loop thread.
     assert slot.client.player.stops == 1
     # And the background worker still runs (and fails cleanly) afterwards.
     assert slot.ready.wait(2)
-    assert _is_async_play({"cmd": "play", "video_id": "v", "playlist_id": "PL"}) is False
+    assert (
+        _is_async_play({"cmd": "play", "video_id": "v", "playlist_id": "PL"}) is False
+    )
 
 
 def test_download_hook_skips_unknown_total_and_other_statuses():
