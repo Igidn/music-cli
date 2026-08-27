@@ -92,11 +92,11 @@ def register_subcommands(subparsers: argparse._SubParsersAction) -> None:
 
     for name, help_text in (
         ("mute", "mute or unmute"),
-        ("loop", "turn loop on or off"),
-        ("auto-next", "turn auto-next on or off"),
+        ("loop", "turn loop on or off (default: toggle)"),
+        ("auto-next", "turn auto-next on or off (default: toggle)"),
     ):
         state_parser = subparsers.add_parser(name, help=help_text)
-        state_parser.add_argument("state", choices=STATES)
+        state_parser.add_argument("state", choices=STATES, nargs="?", default="toggle")
 
     _add_json(subparsers.add_parser("status", help="show what is playing"))
     _add_json(subparsers.add_parser("queue", help="show the up-next queue"))
