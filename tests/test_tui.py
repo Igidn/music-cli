@@ -1248,6 +1248,57 @@ def test_narrow_layout_hides_side_panes(monkeypatch):
     _run(scenario())
 
 
+def test_results_table_columns_responsive_to_viewport(monkeypatch):
+    from music_cli.tui.app import MusicTUI
+    from music_cli.tui.components import ResultsTable
+
+    install_daemon(monkeypatch)
+
+    async def scenario():
+        client = make_client()
+        app = MusicTUI(client)
+        async with app.run_test(size=(200, 50)) as pilot:
+            await pilot.pause()
+            table = app.query_one(ResultsTable)
+            table.focus()
+            table.set_results([make_result(i, f"v{i}") for i in range(5)])
+            await pilot.pause()
+            await pilot.press("down", "down", "down")  # highlight v3
+
+            def snapshot():
+                return {str(col.key.value): col.width for col in table.columns.values()}
+
+            def rendered_total(widths):
+                # every column costs its cells plus 2*cell_padding
+                return sum(widths.values()) + 2 * table.cell_padding * len(widths)
+
+            wide = snapshot()
+            assert set(wide) == {"type", "title", "artist", "album", "duration"}
+            # spare width flows into title first, and everything fits the pane
+            assert wide["title"] > 34 or rendered_total(wide) <= (
+                table.scrollable_content_region.width
+            )
+            assert rendered_total(wide) <= table.scrollable_content_region.width
+
+            await pilot.resize_terminal(40, 50)
+            await pilot.pause()
+            narrow = snapshot()
+            # fewer columns on a tiny viewport, and no horizontal overflow
+            assert len(narrow) < len(wide)
+            assert rendered_total(narrow) <= table.scrollable_content_region.width
+            assert {"title", "duration"} <= set(narrow)
+
+            # highlighted row survives reflow
+            assert table.selected_result().video_id == "v3"
+
+            await pilot.resize_terminal(200, 50)
+            await pilot.pause()
+            assert snapshot() == wide
+            assert table.selected_result().video_id == "v3"
+
+    _run(scenario())
+
+
 def test_search_edges_jump_to_side_panes(monkeypatch):
     from music_cli.tui.app import MusicTUI
     from music_cli.tui.components import LibraryTree, QueueList, ResultsTable
