@@ -2,9 +2,9 @@
 
 <p align="center">An ad-free YouTube Music player for the terminal.</p>
 
-music-cli got both TUI and CLI; both of them are in sync, allowing agent controls (you can run CLI without the TUI and keeping it run in the background).
-
 ![screenshot](screenshot/pic1.png)
+
+music-cli got both TUI and CLI; both of them are in sync, allowing agent controls (you can run CLI without the TUI and keeping it run in the background).
 
 ## Installation
 
