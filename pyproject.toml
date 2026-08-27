@@ -6,7 +6,7 @@ readme = "README.md"
 authors = [
     { name = "Igidn", email = "pongkhun553@gmail.com" }
 ]
-requires-python = ">=3.14"
+requires-python = ">=3.10"
 dependencies = [
     "playwright>=1.50",
     "pygobject>=3.50; sys_platform != 'darwin'",
@@ -32,7 +32,7 @@ dev = [
 
 [tool.ruff]
 line-length = 88
-target-version = "py314"
+target-version = "py310"
 src = ["src"]
 
 [tool.ruff.lint]

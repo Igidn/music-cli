@@ -49,7 +49,7 @@ try:
     from gi.repository import Gst  # noqa: F401
 
     _HAS_GSTREAMER = True
-except ImportError, ValueError:
+except (ImportError, ValueError):
     pass
 
 # ------------------------------------------------------------------

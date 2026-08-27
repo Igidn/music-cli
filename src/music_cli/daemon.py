@@ -672,7 +672,7 @@ def _flush_subscriber(
         chunk = buffer[0]
         try:
             sent = conn.send(chunk)
-        except BlockingIOError, ConnectionError, OSError:
+        except (BlockingIOError, ConnectionError, OSError):
             _drop_subscriber(conn, subscribers)
             return
         if sent == 0:

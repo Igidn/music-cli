@@ -8,13 +8,16 @@ music-cli got both TUI and CLI; both of them are in sync, allowing agent control
 
 ## Installation
 
-Requires **Python 3.14**.
+```sh
+curl -fsSL https://raw.githubusercontent.com/Igidn/music-cli/main/install.sh | sh
+```
+
+Requires **Python 3.10+** To install manually:
 
 ```sh
-cd &&
-git clone https://github.com/Igidn/music-cli.git &&
-cd music-cli/ && 
-uv tool install --python 3.14 .
+git clone https://github.com/Igidn/music-cli.git ~/music-cli &&
+cd ~/music-cli &&
+uv tool install .
 ```
 
 On **Linux**, you also need GStreamer MP4/AAC plugins:
