@@ -1,6 +1,6 @@
 <h2 align="center">music-cli</h2>
 
-<p align="center">An ad-free YouTube Music player for the terminal.</p>
+<p align="center">An ad-free YouTube Music player for your terminal.</p>
 
 ![screenshot](screenshot/pic1.png)
 
