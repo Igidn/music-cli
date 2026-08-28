@@ -133,29 +133,15 @@ def fake_client(monkeypatch):
 
 
 class TestArgParsing:
-    def test_play_query(self):
-        args = parse("play", "never gonna")
-        assert args.command == "play"
-        assert args.query == "never gonna"
-        assert args.video_id is None
-        assert args.playlist is None
-        assert args.loop is False
-        assert args.auto_next is None
-        assert args.play_volume is None
-
-    def test_play_video_id(self):
-        args = parse("play", "--video-id", "abc")
-        assert args.video_id == "abc"
-        assert args.query is None
+    # Only the grammar not exercised by the command tests below: the
+    # playlist target with its flags, seek/volume value syntax and the
+    # rejects. Everything else is covered by running the command.
 
     def test_play_playlist_with_flags(self):
         args = parse("play", "--playlist", "PL1", "--no-auto-next", "--volume", "50")
         assert args.playlist == "PL1"
         assert args.auto_next is False
         assert args.play_volume == 50
-
-    def test_play_loop(self):
-        assert parse("play", "x", "--loop").loop is True
 
     def test_seek_values(self):
         assert parse("seek", "+5").value == ("offset", 5.0)
@@ -166,54 +152,6 @@ class TestArgParsing:
         assert parse("volume", "65").value == ("level", 65)
         assert parse("volume", "+5").value == ("delta", 5)
         assert parse("volume", "-5").value == ("delta", -5)
-
-    def test_state_commands(self):
-        assert parse("mute", "on").state == "on"
-        assert parse("loop", "off").state == "off"
-        args = parse("auto-next", "toggle")
-        assert args.command == "auto-next"
-        assert args.state == "toggle"
-
-    def test_status_json(self):
-        assert parse("status", "--json").json is True
-        assert parse("status").json is False
-
-    def test_search(self):
-        args = parse("search", "a", "b", "--limit", "5", "--filter", "songs")
-        assert args.query == ["a", "b"]
-        assert args.limit == 5
-        assert args.filter == "songs"
-        assert args.json is False
-
-    def test_playlists_subcommands(self):
-        args = parse("playlists", "list", "--json")
-        assert (args.command, args.playlists_command, args.json) == (
-            "playlists",
-            "list",
-            True,
-        )
-        assert parse("playlists", "tracks", "PL1").id == "PL1"
-        assert parse("playlists", "create", "My Mix").name == "My Mix"
-        args = parse("playlists", "rename", "PL1", "New Name")
-        assert (args.id, args.name) == ("PL1", "New Name")
-        args = parse("playlists", "add", "PL1", "v1", "v2")
-        assert args.video_ids == ["v1", "v2"]
-        args = parse("playlists", "remove", "PL1", "v1")
-        assert (args.id, args.video_id) == ("PL1", "v1")
-
-    def test_history(self):
-        args = parse("history", "--limit", "3")
-        assert args.limit == 3
-        assert args.json is False
-
-    def test_download(self):
-        args = parse("download", "dQw4w9WgXcQ")
-        assert args.video_id == "dQw4w9WgXcQ"
-
-    def test_playlists_downloaded(self):
-        args = parse("playlists", "downloaded", "--json")
-        assert args.playlists_command == "downloaded"
-        assert args.json is True
 
     def test_play_requires_a_target(self):
         with pytest.raises(SystemExit) as error:

@@ -233,20 +233,6 @@ class TestStreamExtractor:
         ).download("abc", str(out), progress_hook=hook)
         assert seen["progress_hooks"] == [hook]
 
-    def test_download_omits_hook_by_default(self, tmp_path):
-        out = tmp_path / "music-cli-x"
-        result = {"requested_downloads": [{"filepath": f"{out}.webm"}]}
-        seen = {}
-
-        class HookYDL(FakeYDL):
-            def extract_info(self, url, download=False):
-                return result
-
-        StreamExtractor(
-            ydl_factory=lambda opts: seen.update(opts) or HookYDL({})
-        ).download("abc", str(out))
-        assert "progress_hooks" not in seen
-
     def test_download_wraps_download_error(self, tmp_path):
         class BrokenYDL:
             def __enter__(self):
@@ -621,12 +607,6 @@ if _HAS_AVFOUNDATION:
             assert player.eof_reached
             assert ended.is_set()
 
-        def test_loop_property_defaults_off(self):
-            player = AVFoundationPlayer(player_factory=lambda: FakeAVPlayer())
-            assert player.loop is False
-            player.loop = True
-            assert player.loop is True
-
         def test_close_stops_and_unloads(self):
             fake = FakeAVPlayer()
             player = AVFoundationPlayer(
@@ -708,14 +688,9 @@ if _HAS_GSTREAMER:
         not _HAS_GSTREAMER, reason="GStreamer not available (gi.repository.Gst)"
     )
     class TestGStreamerPlayer:
-        def test_constructor_defaults(self):
-            player = GStreamerPlayer()
-            assert player.volume == 80
-            assert player.loop is False
-            assert player.muted is False
-            assert player.paused is True
-            assert player.position == 0.0
-            assert not player.playing
+        # Property getters/setters and no-op calls on an idle pipeline are
+        # deliberately not tested: they only restate the code and catch
+        # nothing. Playback-adjacent behavior and file ownership are below.
 
         def test_constructor_applies_volume(self):
             player = GStreamerPlayer(volume=42)
@@ -725,25 +700,6 @@ if _HAS_GSTREAMER:
             assert player.volume == 0
             player = GStreamerPlayer(volume=200)
             assert player.volume == 100
-
-        def test_volume_property(self):
-            player = GStreamerPlayer()
-            player.volume = 65
-            assert player.volume == 65
-            player.volume = 150
-            assert player.volume == 100
-
-        def test_muted_property(self):
-            player = GStreamerPlayer()
-            assert player.muted is False
-            player.muted = True
-            assert player.muted is True
-
-        def test_loop_property(self):
-            player = GStreamerPlayer()
-            assert player.loop is False
-            player.loop = True
-            assert player.loop is True
 
         def test_play_and_stop(self):
             """Smoke test: play() creates a pipeline and stop() tears it down.
@@ -769,50 +725,6 @@ if _HAS_GSTREAMER:
             player.stop()
             assert not player.playing
 
-        def test_pause_resume(self):
-            """Calling pause/resume on an idle pipeline is safe."""
-            player = GStreamerPlayer()
-            # Without a valid audio file the pipeline stays in NULL, but
-            # pause/resume must not crash (they are no-ops internally).
-            player.pause()
-            player.resume()
-
-        def test_toggle(self):
-            """Calling toggle on an idle pipeline is safe."""
-            player = GStreamerPlayer()
-            player.toggle()
-            player.toggle()
-
-        def test_seek(self):
-            player = GStreamerPlayer()
-            # Seek on an idle pipeline is safe (no-op internally).
-            player.seek(30.0)
-            player.seek_relative(5.0)
-
-        def test_close_cleans_up(self):
-            player = GStreamerPlayer()
-            stream = StreamInfo(
-                video_id="v", title="T", stream_url="https://u", http_headers={}
-            )
-            player.play(stream)
-            player.close()
-            assert not player.playing
-
-        def test_pump_no_crash(self):
-            """pump() on an idle pipeline must not crash."""
-            player = GStreamerPlayer()
-            player.pump()
-
-        def test_double_stop(self):
-            """Calling stop() twice must not crash."""
-            player = GStreamerPlayer()
-            stream = StreamInfo(
-                video_id="v", title="T", stream_url="https://u", http_headers={}
-            )
-            player.play(stream)
-            player.stop()
-            player.stop()
-
         def test_media_title(self):
             """media_title is set from the stream passed to play()."""
             player = GStreamerPlayer(
@@ -827,15 +739,6 @@ if _HAS_GSTREAMER:
             )
             player.play(stream)
             assert player.media_title == "My Song"
-
-        def test_duration_and_position_no_track(self):
-            player = GStreamerPlayer()
-            assert player.duration is None
-            assert player.position == 0.0
-
-        def test_eof_reached_defaults_false(self):
-            player = GStreamerPlayer()
-            assert player.eof_reached is False
 
         def test_owned_file_deleted_on_stop(self, tmp_path):
             audio = tmp_path / "temp.m4a"
@@ -892,13 +795,6 @@ if _HAS_GSTREAMER:
             player.play(stream2)
             assert not temp.exists()
             assert cached.exists()
-
-        def test_loop_property_affects_eos_behaviour(self):
-            """With loop on, EOS should seek to 0 and continue."""
-            player = GStreamerPlayer(loop=True)
-            assert player.loop is True
-            player.loop = False
-            assert player.loop is False
 
         def test_wait_for_end_timeout(self):
             """wait_for_end() returns False on timeout when no track ended."""

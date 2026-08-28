@@ -194,16 +194,11 @@ def test_play_with_multiple_targets_fails(session):
     assert session.calls == []
 
 
-def test_play_by_queue_index(session):
-    response = handle_request(session, {"cmd": "play", "queue_index": 2})
+@pytest.mark.parametrize("index", [0, 2])
+def test_play_by_queue_index(session, index):
+    response = handle_request(session, {"cmd": "play", "queue_index": index})
     assert response["ok"] is True
-    assert session.calls == [("play_queue_track", (2,), {})]
-
-
-def test_play_by_queue_index_zero(session):
-    response = handle_request(session, {"cmd": "play", "queue_index": 0})
-    assert response["ok"] is True
-    assert session.calls == [("play_queue_track", (0,), {})]
+    assert session.calls == [("play_queue_track", (index,), {})]
 
 
 def test_play_queue_index_with_another_target_fails(session):

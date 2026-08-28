@@ -109,10 +109,9 @@ class ResultsTable(DataTable, inherit_bindings=False):
         # much width the columns get to divide up.
         self.call_after_refresh(self._refit)
 
-    def _fill_rows(self) -> None:
+    def _fill_rows(self, highlighted: str | None = None) -> None:
         """(Re)populate rows from the stored results for the current layout."""
-        highlighted = None
-        if self.row_count:
+        if highlighted is None and self.row_count:
             coordinate = self.coordinate_to_cell_key(self.cursor_coordinate)
             highlighted = str(coordinate.row_key.value)
 
@@ -153,13 +152,21 @@ class ResultsTable(DataTable, inherit_bindings=False):
         if order != list(widths):
             # The set of visible columns changed. DataTable has no column
             # hiding and re-added columns go to the end, so recreate them all.
+            # Save the highlighted row before rebuilding, since _rebuild_columns
+            # clears rows and _fill_rows would lose the cursor.
+            highlighted = None
+            if self.row_count:
+                try:
+                    coordinate = self.coordinate_to_cell_key(self.cursor_coordinate)
+                    highlighted = str(coordinate.row_key.value)
+                except Exception:  # noqa: BLE001
+                    pass
             self._rebuild_columns(widths)
+            self._fill_rows(highlighted=highlighted)
         else:
             for key, width in widths.items():
                 self.columns[key].width = width
-        # Cell values were truncated against the old widths — refill so
-        # wider columns use their new room and narrower ones clip again.
-        self._fill_rows()
+            self._fill_rows()
         self._applied_layout = tuple(widths.items())
 
     def _rebuild_columns(self, widths: dict[str, int]) -> None:

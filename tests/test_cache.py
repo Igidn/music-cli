@@ -228,7 +228,8 @@ class TestAudioCache:
 
         with pytest.raises(OSError, match="boom"):
             cache.get_or_download("v1", downloader)
-        assert cache._inflight == {}
+        # The failed download left no temp litter, and the slot is free: a
+        # retry downloads again and succeeds.
         assert not list(cache._tracks_dir.glob(".v1-*"))
         assert cache.get_or_download("v1", downloader) is not None
         assert len(attempts) == 2
