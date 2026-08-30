@@ -258,9 +258,9 @@ class GStreamerPlayer:
 
     def _stop_pipeline(self) -> None:
         """Stop the pipeline: set to NULL and clear the URI."""
+        self._set_state(Gst.State.NULL)
         with self._eos_lock:
             self._eos_received = False
-        self._set_state(Gst.State.NULL)
 
     def _remove_local_file(self) -> None:
         """Delete an owned local file, if present."""
@@ -273,6 +273,14 @@ class GStreamerPlayer:
 
     def _handle_message(self, msg: Gst.Message) -> None:
         """Dispatch a single GStreamer bus message."""
+        # Ignore messages from previous tracks: when play() transitions the
+        # pipeline to NULL, pending EOS/ERROR messages from the old track are
+        # still on the bus. Processing them would set _ended and fire
+        # on_track_end for a track the caller just replaced.
+        _, state, _ = self._pipeline.get_state(Gst.CLOCK_TIME_NONE)
+        if state not in (Gst.State.PLAYING, Gst.State.PAUSED):
+            return
+
         if msg.type == Gst.MessageType.EOS:
             self._on_eos()
         elif msg.type == Gst.MessageType.ERROR:
