@@ -2,6 +2,8 @@
 
 <p align="center">An ad-free YouTube Music player for your terminal.</p>
 
+> **Note:** music-cli currently supports **macOS** and **Linux** only.
+
 ![screenshot](screenshot/pic1.png)
 
 music-cli got both TUI and CLI; both of them are in sync, allowing agent controls (you can play music though CLI without the TUI and keeping it run in the background).
