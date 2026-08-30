@@ -533,10 +533,6 @@ class MusicTUI(App[None]):
                     severity="error",
                 )
 
-    # ------------------------------------------------------------------
-    # Daemon IPC: actions run off the UI thread and render from responses.
-    # ------------------------------------------------------------------
-
     @work(thread=True, exit_on_error=False)
     def rpc_worker(self, request: object, timeout: float = 30.0) -> dict:
         return ipc.send_request(request, timeout=timeout)
@@ -680,9 +676,6 @@ class MusicTUI(App[None]):
         self._refresh_downloads()
         self.set_status("Download ready")
 
-    # ------------------------------------------------------------------
-    # Event-driven rendering from pushed daemon status.
-    # ------------------------------------------------------------------
 
     def _render_status(self, status: dict) -> None:
         now_playing = self.query_one(NowPlaying)
@@ -769,9 +762,6 @@ class MusicTUI(App[None]):
             duration=format_duration(entry.get("duration")),
         )
 
-    # ------------------------------------------------------------------
-    # Query side (unchanged): search results, library, history, settings.
-    # ------------------------------------------------------------------
 
     @on(ResultsTable.RowSelected)
     def _on_result_selected(self, event: ResultsTable.RowSelected) -> None:
@@ -1120,10 +1110,6 @@ class MusicTUI(App[None]):
         if self._library_worker is not None and self._library_worker.is_running:
             self._library_worker.cancel()
         self._library_worker = self.library_worker()
-
-    # ------------------------------------------------------------------
-    # Transport / settings actions → IPC workers.
-    # ------------------------------------------------------------------
 
     def action_next_track(self) -> None:
         """Advance to the next track; drop a second press while one is in flight.

@@ -98,9 +98,6 @@ class GStreamerPlayer:
         # Apply initial volume — applied via property setter below.
         self._apply_volume()
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
 
     def pump(self) -> None:
         """Process pending GStreamer bus messages without blocking.
@@ -165,10 +162,6 @@ class GStreamerPlayer:
 
     def wait_for_end(self, timeout: float | None = None) -> bool:
         return self._ended.wait(timeout)
-
-    # ------------------------------------------------------------------
-    # Properties
-    # ------------------------------------------------------------------
 
     @property
     def volume(self) -> int:
@@ -240,9 +233,6 @@ class GStreamerPlayer:
             or pending == Gst.State.PLAYING
         )
 
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
 
     def _apply_volume(self) -> None:
         """Push the current volume/mute state onto the pipeline."""
