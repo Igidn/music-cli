@@ -230,6 +230,10 @@ class MusicTUI(App[None]):
         self._queue_video_ids: tuple[str, ...] = ()
         self._history_track_id: str | None = None
         self._lyrics_video_id: str | None = None
+        # History-aware directional focus: maps widget_id -> {direction: origin_id}.
+        # Records the last widget we entered from each direction, so pressing the
+        # opposite direction returns along the same path rather than the static default.
+        self._focus_history: dict[str, dict[str, str]] = {}
         # A raw socket for daemon push events; None until we've connected.
         self._events_socket: socket.socket | None = None
         self._events_thread: threading.Thread | None = None
@@ -1206,20 +1210,83 @@ class MusicTUI(App[None]):
     def action_pane_down(self) -> None:
         self._move_pane("down")
 
+    # Opposite direction lookup for history tracking.
+    _OPPOSITE: ClassVar[dict[str, str]] = {
+        "left": "right",
+        "right": "left",
+        "up": "down",
+        "down": "up",
+    }
+
+    def _resolve_history_target(self, widget_id: str, direction: str) -> str | None:
+        """Resolve a target id from focus history, or None if stale."""
+        entry = self._focus_history.get(widget_id, {}).get(direction)
+        if entry is None:
+            return None
+        # Verify the target widget still exists and is visible.
+        try:
+            w = self.query_one(f"#{entry}")
+        except Exception:  # noqa: BLE001 — widget removed from DOM
+            self._prune_history(widget_id)
+            return None
+        if not w.display:
+            return None
+        return entry
+
+    def _prune_history(self, widget_id: str) -> None:
+        """Remove all history entries for a widget (e.g. it left the DOM)."""
+        self._focus_history.pop(widget_id, None)
+        # Also purge any edges pointing to this widget.
+        for edges in list(self._focus_history.values()):
+            for direction, target_id in list(edges.items()):
+                if target_id == widget_id:
+                    del edges[direction]
+
     def _move_pane(self, direction: str) -> None:
         focused = self.focused
-        if focused is None:
+        if focused is None or focused.id is None:
             return
-        target = self.PANE_NAV.get(focused.id, {}).get(direction)
+        source_id = focused.id
+
+        # 1. History takes priority: return along the path we came from.
+        target = self._resolve_history_target(source_id, direction)
+
+        # 2. Fall back to the static PANE_NAV on first traversal.
+        if target is None:
+            target = self.PANE_NAV.get(source_id, {}).get(direction)
+
         if target is None:
             return
+
         widget = self.query_one(f"#{target}")
         if not widget.display:
             return
-        # Panes may be containers (e.g. #playlist-pane); sink to their first
-        # focusable child.
-        child = next((c for c in widget.walk_children(Widget) if c.focusable), widget)
-        child.focus()
+
+        # 3. Record the reverse edge so the target knows how to return.
+        rev = self._OPPOSITE.get(direction)
+        if rev is not None:
+            if target not in self._focus_history:
+                self._focus_history[target] = {}
+            self._focus_history[target][rev] = source_id
+
+        # 4. Also update the forward edge on the source so the same direction
+        #    later goes to the same place (not clobbered by a stale default).
+        if source_id not in self._focus_history:
+            self._focus_history[source_id] = {}
+        self._focus_history[source_id][direction] = target
+
+        # Focus the target widget directly if it's focusable; otherwise sink
+        # to its first focusable child (e.g. #playlist-pane → LibraryTree).
+        if widget.focusable:
+            child = widget
+            widget.focus()
+        else:
+            child = next(
+                (c for c in widget.walk_children(Widget) if c.focusable),
+                widget,
+            )
+            child.focus()
+
         if direction == "up" and isinstance(child, ResultsTable) and child.row_count:
             child.move_cursor(row=child.row_count - 1)
 

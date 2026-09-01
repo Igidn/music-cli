@@ -399,9 +399,15 @@ def test_arrow_key_pane_navigation(monkeypatch):
             await pilot.press("right")
             assert app.focused is queue
             await pilot.press("left")
-            assert app.focused is results
+            assert app.focused is filter_select
 
             playlist = app.query_one("#library-tree")
+            # From filter_select, left goes to search (PANE_NAV), then left to playlist
+            await pilot.press("left")
+            assert app.focused is app.query_one("#search-input")
+            # Clear search text so left arrow triggers pane navigation, not cursor move
+            app.query_one("#search-input").value = ""
+            await pilot.pause()
             await pilot.press("left")
             assert app.focused is playlist
             await pilot.press("right")
@@ -1303,12 +1309,12 @@ def test_search_edges_jump_to_side_panes(monkeypatch):
             search.value = "hello"
             await pilot.press("right")  # at end of text → up next
             assert app.focused is queue
+            # History-aware: queue → left returns to search (the origin), not results
             await pilot.press("left")
-            assert app.focused is app.query_one(ResultsTable)
+            assert app.focused is search
+            assert search.cursor_position == 5  # end of "hello"
 
             # Mid-text, left/right still move the cursor.
-            search.focus()
-            await pilot.pause()
             search.cursor_position = 2
             await pilot.press("left")
             assert app.focused is search
