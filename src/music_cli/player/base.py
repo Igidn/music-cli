@@ -17,7 +17,6 @@ from typing import Any
 
 from ..core.errors import PlayerError
 from ..storage.cache import AudioCache, DownloadResult, TrackMeta
-from ..yt.cookies import Cookies
 from ..yt.extract import StreamExtractor, StreamInfo
 
 
@@ -57,7 +56,6 @@ def download_temp(
 
 
 def default_fetch_stream(
-    cookies: Cookies | None,
     cache: AudioCache | None = None,
     *,
     extractor: StreamExtractor | None = None,
@@ -70,8 +68,10 @@ def default_fetch_stream(
     the rest are downloaded with yt-dlp into the cache, with concurrent
     requests for the same video sharing one download. Without a cache,
     downloads go to temporary files the player deletes after playback.
+
+    Extraction is anonymous — cookies are never used for playback.
     """
-    extractor = extractor or StreamExtractor(cookies)
+    extractor = extractor or StreamExtractor()
     get_hook = download_progress or (lambda: None)
 
     def fetch(stream: StreamInfo) -> LocalFile:

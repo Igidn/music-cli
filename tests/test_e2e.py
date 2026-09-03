@@ -59,7 +59,7 @@ def cookies():
 
 @pytest.fixture(scope="module")
 def extractor(cookies):
-    return StreamExtractor(cookies)
+    return StreamExtractor()
 
 
 @pytest.fixture(scope="module")
@@ -115,7 +115,7 @@ class TestAVFoundationPlayback:
     def test_plays_real_audio(self, cookies, stream, extractor):
         candidate = stream
         for _attempt in range(3):
-            player = self.AVFoundationPlayer(cookies=cookies)
+            player = self.AVFoundationPlayer()
             try:
                 player.play(candidate)
                 deadline = time.monotonic() + 30
@@ -134,7 +134,7 @@ class TestAVFoundationPlayback:
     def test_end_of_track_event(self, cookies, stream, extractor):
         """Seek to the last seconds and expect the end-of-track notification."""
         for _attempt in range(3):
-            player = self.AVFoundationPlayer(cookies=cookies)
+            player = self.AVFoundationPlayer()
             try:
                 player.play(stream)
                 deadline = time.monotonic() + 30

@@ -40,7 +40,6 @@ from Foundation import (
 
 from ..core.errors import PlayerError
 from ..storage.cache import AudioCache
-from ..yt.cookies import Cookies
 from ..yt.extract import StreamExtractor, StreamInfo
 from .base import LocalFile, default_fetch_stream
 
@@ -69,7 +68,6 @@ def _default_player() -> AVPlayer:
 
 
 def _default_fetch_stream(
-    cookies: Cookies | None,
     cache: AudioCache | None = None,
     *,
     extractor: StreamExtractor | None = None,
@@ -83,7 +81,7 @@ def _default_fetch_stream(
     the same and existing tests continue to work.
     """
     return default_fetch_stream(
-        cookies, cache=cache, extractor=extractor, download_progress=download_progress
+        cache, extractor=extractor, download_progress=download_progress
     )
 
 
@@ -102,7 +100,6 @@ class AVFoundationPlayer:
         volume: int = 80,
         loop: bool = False,
         on_track_end: Callable[[], None] | None = None,
-        cookies: Cookies | None = None,
         player_factory: Callable[[], AVPlayer] = _default_player,
         fetch_stream: Callable[[StreamInfo], LocalFile] | None = None,
         cache: AudioCache | None = None,
@@ -117,7 +114,7 @@ class AVFoundationPlayer:
         self._current_item: AVPlayerItem | None = None
         self._local_url: str | None = None
         self._fetch_stream = fetch_stream or _default_fetch_stream(
-            cookies, cache=cache, download_progress=download_progress
+            cache, download_progress=download_progress
         )
         self._player = player_factory()
         # Volume lives on the track's audio mix, not the player: AVPlayer.volume

@@ -81,17 +81,21 @@ class _QuietLogger:
 
 
 class StreamExtractor:
-    """Resolves playable audio stream URLs with yt-dlp."""
+    """Resolves playable audio stream URLs with yt-dlp.
+
+    Extraction always runs anonymously (no account cookies): authenticated
+    requests get YouTube's SABR-only streaming experiment served to the
+    account, where every format comes back without a direct URL and no
+    audio can be played (yt-dlp issue #12482).
+    """
 
     def __init__(
         self,
-        cookies: Cookies | None = None,
         *,
         player_client: str = DEFAULT_PLAYER_CLIENT,
         format_selector: str = AUDIO_FORMAT,
         ydl_factory: Callable[[dict[str, Any]], yt_dlp.YoutubeDL] = yt_dlp.YoutubeDL,
     ) -> None:
-        self._cookies = cookies
         self._player_client = player_client
         self._format_selector = format_selector
         self._ydl_factory = ydl_factory
@@ -122,8 +126,6 @@ class StreamExtractor:
         runtime = self._js_runtime()
         if runtime and runtime != "deno":
             opts["js_runtimes"] = {runtime: {}}
-        if self._cookies and self._cookies.enabled:
-            opts.update(self._cookies.ydl_options())
         return opts
 
     def resolve(self, video_id: str) -> StreamInfo:

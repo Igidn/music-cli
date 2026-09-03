@@ -24,9 +24,9 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="FILE",
         default=os.environ.get("MUSIC_CLI_COOKIE_FILE")
         or _existing_default_cookie_file(),
-        help="Netscape-format cookie file for account-aware playback "
-        "(default: $MUSIC_CLI_COOKIE_FILE, or the file created by "
-        "'music-cli login')",
+        help="Netscape-format cookie file for signed-in search, library "
+        "and autoplay (playback itself is always anonymous; default: "
+        "$MUSIC_CLI_COOKIE_FILE, or the file created by 'music-cli login')",
     )
     parser.add_argument(
         "--volume",

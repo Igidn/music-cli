@@ -151,7 +151,7 @@ class TestStreamExtractor:
         assert stream.format_id == "251"
         assert stream.http_headers == {"User-Agent": "curl/8"}
 
-    def test_resolve_sets_cookies_and_client(self, cookie_file):
+    def test_resolve_stays_anonymous(self):
         info = {"id": "abc", "title": "T", "url": "https://u"}
         seen = {}
 
@@ -159,9 +159,12 @@ class TestStreamExtractor:
             seen.update(opts)
             return FakeYDL(info)
 
-        extractor = StreamExtractor(Cookies.from_file(cookie_file), ydl_factory=factory)
+        extractor = StreamExtractor(ydl_factory=factory)
         extractor.resolve("abc")
-        assert seen["cookiefile"] == cookie_file
+        # Playback must never carry account cookies: authenticated requests
+        # get YouTube's SABR-only experiment and yield no playable formats.
+        assert "cookiefile" not in seen
+        assert "cookiesfrombrowser" not in seen
         # "default" player client: yt-dlp picks its own maintained clients.
         assert "extractor_args" not in seen
         assert seen["format"] == "bestaudio[ext=m4a]/bestaudio[acodec=aac]/bestaudio"
@@ -875,7 +878,6 @@ class TestCachedFetch:
 
         ydl = WritingYDL()
         fetch = default_fetch_stream(
-            None,
             cache=cache,
             extractor=StreamExtractor(ydl_factory=WritingYDL.factory(ydl)),
         )
@@ -889,7 +891,6 @@ class TestCachedFetch:
         cache = AudioCache(directory=tmp_path / "cache")
         ydl = WritingYDL()
         fetch = default_fetch_stream(
-            None,
             cache=cache,
             extractor=StreamExtractor(ydl_factory=WritingYDL.factory(ydl)),
         )
@@ -906,7 +907,6 @@ class TestCachedFetch:
     def test_without_cache_falls_back_to_temp_download(self, tmp_path):
         ydl = WritingYDL()
         fetch = default_fetch_stream(
-            None,
             extractor=StreamExtractor(ydl_factory=WritingYDL.factory(ydl)),
         )
         local = fetch(StreamInfo(video_id="abc", title="T", stream_url="https://u"))

@@ -19,7 +19,6 @@ from .base import LocalFile, default_fetch_stream, download_temp
 
 if TYPE_CHECKING:
     from ..storage.cache import AudioCache
-    from ..yt.cookies import Cookies
     from ..yt.extract import StreamInfo
 
 __all__ = [
@@ -35,7 +34,6 @@ def create_player(
     volume: int = 80,
     loop: bool = False,
     on_track_end: Callable[[], None] | None = None,
-    cookies: Cookies | None = None,
     cache: AudioCache | None = None,
     fetch_stream: Callable[[StreamInfo], LocalFile] | None = None,
     download_progress: Callable[[], Callable[[dict[str, Any]], None] | None]
@@ -48,7 +46,6 @@ def create_player(
     * ``volume`` — initial volume (0-100, default 80)
     * ``loop`` — whether to loop the current track (default False)
     * ``on_track_end`` — callback invoked when a track finishes
-    * ``cookies`` — :class:`~music_cli.yt.cookies.Cookies` for stream auth
     * ``cache`` — :class:`~music_cli.storage.cache.AudioCache`
     * ``fetch_stream`` — callable that resolves a :class:`~.yt.extract.StreamInfo`
       to a local file (:class:`~.player.base.LocalFile`). Defaults to
@@ -67,7 +64,6 @@ def create_player(
         volume=volume,
         loop=loop,
         on_track_end=on_track_end,
-        cookies=cookies,
         cache=cache,
         fetch_stream=fetch_stream,
         download_progress=download_progress,

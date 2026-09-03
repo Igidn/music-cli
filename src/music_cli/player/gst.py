@@ -23,7 +23,6 @@ from gi.repository import Gst  # noqa: E402
 
 from ..core.errors import PlayerError  # noqa: E402
 from ..storage.cache import AudioCache  # noqa: E402
-from ..yt.cookies import Cookies  # noqa: E402
 from ..yt.extract import StreamInfo  # noqa: E402
 from .base import LocalFile, default_fetch_stream  # noqa: E402
 
@@ -75,7 +74,6 @@ class GStreamerPlayer:
         volume: int = 80,
         loop: bool = False,
         on_track_end: Callable[[], None] | None = None,
-        cookies: Cookies | None = None,
         fetch_stream: Callable[[StreamInfo], LocalFile] | None = None,
         cache: AudioCache | None = None,
         download_progress: Callable[[], Callable[[dict[str, Any]], None] | None]
@@ -88,7 +86,7 @@ class GStreamerPlayer:
         self._pipeline = _make_pipeline()
         self._bus = self._pipeline.get_bus()
         self._fetch_stream = fetch_stream or default_fetch_stream(
-            cookies, cache=cache, download_progress=download_progress
+            cache, download_progress=download_progress
         )
         self._volume = max(0, min(100, int(volume)))
         self._muted = False

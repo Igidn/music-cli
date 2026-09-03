@@ -41,12 +41,11 @@ class MusicClient:
         cache: AudioCache | None = None,
         downloads: DownloadsStore | None = None,
     ) -> None:
-        self._cookies = cookies
         self._extractor_factory = extractor_factory
         self.cache = cache or AudioCache()
         self.downloads = downloads or DownloadsStore()
         self.search_api = YTmusicSearch()
-        self.extractor = extractor_factory(cookies)
+        self.extractor = extractor_factory()
         self.watch = WatchPlaylist(cookies=cookies)
         self.library = Library(cookies=cookies)
         self.queue: list[PlaylistTrack] = []
@@ -60,7 +59,6 @@ class MusicClient:
         self.player = create_player(
             volume=volume,
             on_track_end=on_track_end,
-            cookies=cookies,
             cache=self.cache,
             download_progress=lambda: self._download_progress,
         )
@@ -165,9 +163,7 @@ class MusicClient:
             attempts = PRIMARY_PLAY_ATTEMPTS if client_name is None else 1
             extractor = self.extractor
             if client_name is not None:
-                extractor = self._extractor_factory(
-                    self._cookies, player_client=client_name
-                )
+                extractor = self._extractor_factory(player_client=client_name)
             for _ in range(attempts):
                 try:
                     stream = extractor.resolve(video_id)
@@ -270,7 +266,7 @@ class MusicClient:
         extractor = (
             self.extractor
             if client_name is None
-            else self._extractor_factory(self._cookies, player_client=client_name)
+            else self._extractor_factory(player_client=client_name)
         )
         stream = extractor.resolve(video_id)
         if self.cache is not None:
