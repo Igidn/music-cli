@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from .history_list import HistoryList
 from .library_tree import LibraryTree
-from .messages import AddToPlaylistRequested
+from .messages import AddToPlaylistRequested, QueueAddRequested
 from .now_playing import NowPlaying
 from .queue_list import QueueList
 from .results_table import TYPE_COLORS, ResultsTable
@@ -19,6 +19,7 @@ __all__ = [
     "HistoryList",
     "LibraryTree",
     "NowPlaying",
+    "QueueAddRequested",
     "QueueList",
     "ResultsTable",
     "SearchInput",

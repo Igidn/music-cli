@@ -13,7 +13,7 @@ from textual.widgets import DataTable, Input
 
 from music_cli.yt.search import SearchResult
 
-from .messages import AddToPlaylistRequested
+from .messages import AddToPlaylistRequested, QueueAddRequested
 
 TYPE_COLORS = {
     "SONG": "#a78bfa",
@@ -77,6 +77,7 @@ class ResultsTable(DataTable, inherit_bindings=False):
         Binding("ctrl+home", "scroll_top", "Top", show=False),
         Binding("ctrl+end", "scroll_bottom", "Bottom", show=False),
         Binding("s", "add_to_playlist", "Add to playlist"),
+        Binding("ctrl+n", "queue_add", "Queue next"),
     ]
 
     def __init__(self, *args, **kwargs) -> None:
@@ -251,6 +252,8 @@ class ResultsTable(DataTable, inherit_bindings=False):
                 self.app.client.library.authenticated
                 and self.selected_result() is not None
             )
+        if action == "queue_add":
+            return self.selected_result() is not None
         return super().check_action(action, parameters)
 
     def action_add_to_playlist(self) -> None:
@@ -261,6 +264,11 @@ class ResultsTable(DataTable, inherit_bindings=False):
                     result.video_id, result.title, tuple(result.artists)
                 )
             )
+
+    def action_queue_add(self) -> None:
+        result = self.selected_result()
+        if result is not None:
+            self.post_message(QueueAddRequested(result.video_id, result.title))
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         # refresh_bindings() recomposes the whole footer — too costly per

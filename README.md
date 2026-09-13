@@ -55,6 +55,7 @@ music-cli login
 | `volume 50` / `volume +10` | Set or adjust the volume |
 | `mute on` / `loop on` / `auto-next on` | Toggle settings |
 | `status` / `queue` | Current track and up-next list |
+| `queue add <query>` / `queue add --video-id <id>` | Queue a track to play next |
 | `search "..."` | Search YouTube Music |
 | `playlists list` / `playlists play <id>` | List and play playlists |
 | `playlists downloaded` | List offline downloads |
@@ -68,6 +69,7 @@ music-cli login
 | `Space` | Play / Pause |
 | `Alt+←` / `Alt+→` | Seek ±5s |
 | `n` | Next track |
+| `Ctrl+n` | Queue selected track next |
 | `a` / `l` / `m` | Auto-next / Loop / Mute |
 | `+` / `-` | Volume |
 | `Ctrl+d` | Download current track |

@@ -168,6 +168,18 @@ class TestArgParsing:
             parse("seek", "junk")
         assert error.value.code == 2
 
+    def test_queue_add_grammar(self):
+        args = parse("queue", "add", "some", "song")
+        assert args.queue_command == "add"
+        assert args.query == ["some", "song"]
+        assert args.video_id is None
+
+    def test_queue_add_video_id_grammar(self):
+        args = parse("queue", "add", "--video-id", "vid")
+        assert args.queue_command == "add"
+        assert args.query == []
+        assert args.video_id == "vid"
+
 
 class TestDaemonCommands:
     def test_play_with_video_id_and_loop(self, daemon, capsys):
@@ -227,6 +239,43 @@ class TestDaemonCommands:
         assert cli.run(parse("stop")) == 0
         assert daemon.requests == [{"cmd": "stop"}]
         assert "Stopped" in capsys.readouterr().out
+
+    def test_queue_add_query(self, daemon, capsys):
+        daemon.data = {
+            "video_id": "abc",
+            "title": "Some Song",
+            "artists": ["Some Artist"],
+        }
+        assert cli.run(parse("queue", "add", "some", "song")) == 0
+        assert daemon.requests == [{"cmd": "queue_add", "query": "some song"}]
+        out = capsys.readouterr().out
+        assert "Queued next" in out
+        assert "Some Song" in out
+
+    def test_queue_add_video_id(self, daemon, capsys):
+        daemon.data = {"video_id": "vid", "title": "", "artists": []}
+        assert cli.run(parse("queue", "add", "--video-id", "vid")) == 0
+        assert daemon.requests == [{"cmd": "queue_add", "video_id": "vid"}]
+        assert "Unknown" in capsys.readouterr().out
+
+    def test_queue_add_rejects_double_target(self, daemon, capsys):
+        assert cli.run(parse("queue", "add", "song", "--video-id", "vid")) == 2
+        assert daemon.requests == []
+        assert "not both" in capsys.readouterr().err
+
+    def test_queue_add_rejects_no_target(self, daemon, capsys):
+        assert cli.run(parse("queue", "add")) == 2
+        assert daemon.requests == []
+        assert "not both" in capsys.readouterr().err
+
+    def test_queue_still_lists(self, daemon, capsys):
+        """The add subcommand must not break the bare listing command."""
+        daemon.data = [STATUS["queue"][0]]
+        assert cli.run(parse("queue")) == 0
+        assert daemon.requests == [{"cmd": "queue"}]
+        out = capsys.readouterr().out
+        assert "Up next" in out
+        assert "Next One" in out
 
     def test_seek_offset(self, daemon, capsys):
         daemon.data = {"position": 102.0}

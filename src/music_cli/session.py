@@ -1,7 +1,8 @@
 """The shared playback engine used by the TUI and the headless daemon.
 
-``PlaybackSession`` owns the auto-next engine (queue, then playlist loop,
-then a radio refill) plus play-history recording and settings persistence,
+``PlaybackSession`` owns the auto-next engine (manual queue, then the
+auto-generated queue, then playlist loop, then a radio refill) plus
+play-history recording and settings persistence,
 so both frontends behave identically and a single set of preferences
 follows the player around.
 """
@@ -60,6 +61,13 @@ class PlaybackSession:
         # Set when a play started from the Downloads list: auto-next then walks
         # this snapshot of the Downloads list instead of the queue/radio.
         self._downloads_context: list[DownloadedTrack] | None = None
+        # Position in that snapshot of the last played download, so a manually
+        # queued track can interrupt the walk and it resumes right after.
+        self._downloads_pos: int | None = None
+        # Tracks the user queued by hand (TUI ctrl+n, `queue add`). Inserted at
+        # the front so the last added plays first, popped before the auto
+        # queue; the watch-playlist refreshes never touch this list.
+        self._next_queue: list[PlaylistTrack] = []
         # Saved settings always win over the player's construction defaults.
         player = client.player
         player.volume = self._settings.get_int(SETTING_VOLUME, player.volume)
@@ -126,7 +134,10 @@ class PlaybackSession:
         """
         if not self.client.start_playable(stream):
             raise PlayerError(f"Playback did not start for {stream.video_id}")
-        self._load_up_next(stream.video_id)
+        if self._downloads_context is None:
+            self._load_up_next(stream.video_id)
+        else:
+            self._bookmark_download(stream.video_id)
         self.record(stream)
 
     def play_video(
@@ -147,7 +158,13 @@ class PlaybackSession:
             self.client.downloads.recent() if from_download else None
         )
         stream = self.client.play_video(video_id, title)
-        self._load_up_next(video_id)
+        if from_download:
+            # The downloads walk is driven by the snapshot alone: a watch
+            # playlist fetch here would be wasted network and its result is
+            # never read while the context is active.
+            self._bookmark_download(video_id)
+        else:
+            self._load_up_next(video_id)
         self.record(stream)
         return stream
 
@@ -156,21 +173,83 @@ class PlaybackSession:
         return self.play_video(video_id, title, from_download=True)
 
     def play_queue_track(self, index: int) -> StreamInfo:
-        """Play the queued track at ``index`` and record it.
+        """Play the track shown at ``index`` in the Up-Next panel and record it.
 
-        Inside the Downloads context (see :meth:`_downloads_up_next`) ``index``
-        addresses the remaining downloads list instead of the network queue,
-        so the Up-Next panel's click-to-play matches what it shows.
+        ``index`` addresses the merged view :meth:`queue` returns: manually
+        queued tracks first, then the remaining downloads (inside the
+        Downloads context) or the auto queue. A failed play re-inserts the
+        track where it was, like the client does for its own queue.
         """
+        manual = len(self._next_queue)
         if self._downloads_context:
             up_next = self._downloads_up_next()
-            if not 0 <= index < len(up_next):
+            if not 0 <= index < manual + len(up_next):
                 raise PlayerError(f"No track at queue index {index}")
-            return self.play_download(up_next[index].video_id, up_next[index].title)
+            if index < manual:
+                return self._play_manual_at(index)
+            target = up_next[index - manual]
+            return self.play_download(target.video_id, target.title)
+        if not 0 <= index < manual + len(self.client.queue):
+            raise PlayerError(f"No track at queue index {index}")
+        if index < manual:
+            return self._play_manual_at(index)
         self._downloads_context = None
-        stream = self.client.play_queue_track(index)
+        stream = self.client.play_queue_track(index - manual)
         self.record(stream)
         return stream
+
+    def queue_add(
+        self,
+        *,
+        video_id: str = "",
+        title: str = "",
+        query: str = "",
+    ) -> dict:
+        """Put a track at the front of the manual queue; last added plays first.
+
+        Accepts a resolved ``video_id`` (``title`` is the display name and may
+        be empty) or a ``query``, resolved through search like
+        :meth:`play_query`. The manual queue outlives every watch-playlist
+        refresh and plays before the auto queue. Returns the added track in
+        the :meth:`queue` entry shape.
+        """
+        if bool(video_id) == bool(query):
+            raise PlayerError("queue add needs a query or a video id, not both")
+        artists: list[str] = []
+        duration = ""
+        if query:
+            result = next((r for r in self.client.search(query) if r.video_id), None)
+            if result is None:
+                raise PlayerError(f"No playable results for {query!r}")
+            video_id, title = result.video_id, result.title
+            artists, duration = list(result.artists), result.duration
+        track = PlaylistTrack(
+            video_id=video_id,
+            title=title,
+            artists=artists,
+            duration=duration,
+        )
+        self._next_queue.insert(0, track)
+        return self._queue_entry(track)
+
+    def _play_manual_at(self, index: int) -> StreamInfo:
+        """Play and drop the manually queued track at ``index``.
+
+        A track that refuses to play goes back where it was, so the manual
+        queue stays intact — same failure handling as the client's queue.
+        """
+        self._pop_manual(index)
+        return self.client.current  # type: ignore[return-value]
+
+    def _pop_manual(self, index: int) -> PlaylistTrack:
+        track = self._next_queue.pop(index)
+        try:
+            self.client.play_track(track)
+        except PlayerError:
+            self._next_queue.insert(index, track)
+            raise
+        self.record(self.client.current)  # type: ignore[arg-type]
+        return track
 
     def play_playlist(self, playlist_id: str, start_index: int = 0) -> StreamInfo:
         """Play a playlist from ``start_index``; the client queues the remainder."""
@@ -195,6 +274,7 @@ class PlaybackSession:
         self.client.player.stop()
         self.client.current = None
         self.client.queue = []
+        self._next_queue = []
 
     def resume_last(self) -> StreamInfo | None:
         """Replay the most recent history entry, if any."""
@@ -230,9 +310,15 @@ class PlaybackSession:
         """
         # Loop mode replays the current track on end; it never advances to
         # queue[0], so a speculative download there would be wasted network.
-        if not self.auto_next or self.client.loop or not self.client.queue:
+        if not self.auto_next or self.client.loop:
             return
-        target = self.client.queue[0].video_id
+        if self._next_queue:
+            target = self._next_queue[0].video_id
+        elif self._downloads_context or not self.client.queue:
+            # Inside Downloads every candidate is already cached locally.
+            return
+        else:
+            target = self.client.queue[0].video_id
         threading.Thread(
             target=self.client.prefetch, args=(target,), daemon=True, name="prefetch"
         ).start()
@@ -260,13 +346,17 @@ class PlaybackSession:
     def next_track(self) -> PlaylistTrack | None:
         """Play the next track, refilling the queue when it runs dry.
 
-        Playing from the Downloads list wraps to the first track at the end,
-        so the list plays continuously like a normal playlist. Otherwise the
-        active playlist loops, then a radio refill off the last played track.
-        Returns ``None`` when there is nothing to play anywhere;
+        A manually queued track (see :meth:`queue_add`) always plays first;
+        it may interrupt a Downloads walk, which then resumes where it left
+        off. Playing from the Downloads list wraps to the first track at the
+        end, so the list plays continuously like a normal playlist. Otherwise
+        the active playlist loops, then a radio refill off the last played
+        track. Returns ``None`` when there is nothing to play anywhere;
         stream-resolution errors propagate.
         """
         client = self.client
+        if self._next_queue:
+            return self._pop_manual(0)
         if self._downloads_context:
             return self._next_download()
         if not client.queue:
@@ -286,25 +376,40 @@ class PlaybackSession:
         """Play the next track in the Downloads snapshot, wrapping to the first
         at the end so the list plays continuously (like a normal playlist).
 
-        Uses the currently playing track's id to find its position in the list.
-        On natural track end :meth:`on_track_end` clears ``client.current``
-        before this runs, so fall back to ``last_video_id`` (the just-finished
-        track's id, recorded when it started) to still find the next entry.
+        Walks from ``_downloads_pos``, the snapshot index of the last played
+        download, so a manually queued track (never a member of the snapshot)
+        can interrupt the walk without losing the position. Without a
+        bookmark, locate the currently playing track; on natural track end
+        :meth:`on_track_end` clears ``client.current`` before this runs, so
+        fall back to ``last_video_id``.
         """
         tracks = self._downloads_context or ()
         if not tracks:
             self._downloads_context = None
             return None
-        current = self.client.current
-        current_vid = current.video_id if current is not None else self.last_video_id
-        for i, track in enumerate(tracks):
-            if track.video_id != current_vid:
-                continue
-            nxt = tracks[i + 1] if i + 1 < len(tracks) else tracks[0]
-            return self.play_video(nxt.video_id, nxt.title, from_download=True)
-        # current track isn't in the snapshot (e.g. removed mid-play); stop.
-        self._downloads_context = None
-        return None
+        if self._downloads_pos is None:
+            current = self.client.current
+            current_vid = (
+                current.video_id if current is not None else self.last_video_id
+            )
+            self._downloads_pos = next(
+                (i for i, track in enumerate(tracks) if track.video_id == current_vid),
+                None,
+            )
+        if self._downloads_pos is None:
+            # No bookmark and the current track isn't in the snapshot; stop.
+            self._downloads_context = None
+            return None
+        nxt = tracks[(self._downloads_pos + 1) % len(tracks)]
+        return self.play_video(nxt.video_id, nxt.title, from_download=True)
+
+    def _bookmark_download(self, video_id: str) -> None:
+        """Remember where the Downloads walk is, so it can resume after a
+        manually queued track interrupts it."""
+        for i, track in enumerate(self._downloads_context or ()):
+            if track.video_id == video_id:
+                self._downloads_pos = i
+                return
 
     def pause(self) -> None:
         self.client.player.pause()
@@ -395,23 +500,38 @@ class PlaybackSession:
         }
 
     def queue(self) -> list[dict]:
-        source = (
-            self._downloads_up_next() if self._downloads_context else self.client.queue
-        )
+        """The Up-Next view: manual queue first, then the auto queue."""
+        if self._downloads_context:
+            source: list[PlaylistTrack | DownloadedTrack] = [
+                *self._next_queue,
+                *self._downloads_up_next(),
+            ]
+        else:
+            source = [*self._next_queue, *self.client.queue]
         return [self._queue_entry(track) for track in source]
 
     def _downloads_up_next(self) -> list[DownloadedTrack]:
-        """The remaining tracks of the active Downloads list, after the current.
+        """The remaining tracks of the active Downloads list.
 
-        Mirrors the order :meth:`_next_download` walks, so the Up-Next panel
-        shows exactly what auto-advance will play.
+        Mirrors the order :meth:`_next_download` walks (from the bookmark, or
+        the currently playing track before the first bookmark), so the
+        Up-Next panel shows exactly what auto-advance will play.
         """
         tracks = list(self._downloads_context or ())
-        current = self.client.current
-        if current is not None:
-            for i, track in enumerate(tracks):
-                if track.video_id == current.video_id:
-                    return tracks[i + 1 :]
+        pos = self._downloads_pos
+        if pos is None:
+            current = self.client.current
+            if current is not None:
+                pos = next(
+                    (
+                        i
+                        for i, track in enumerate(tracks)
+                        if track.video_id == current.video_id
+                    ),
+                    None,
+                )
+        if pos is not None:
+            return tracks[pos + 1 :]
         return tracks
 
     @staticmethod

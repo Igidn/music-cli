@@ -99,7 +99,17 @@ def register_subcommands(subparsers: argparse._SubParsersAction) -> None:
         state_parser.add_argument("state", choices=STATES, nargs="?", default="toggle")
 
     _add_json(subparsers.add_parser("status", help="show what is playing"))
-    _add_json(subparsers.add_parser("queue", help="show the up-next queue"))
+    queue = subparsers.add_parser("queue", help="show the up-next queue, or add to it")
+    _add_json(queue)
+    queue_commands = queue.add_subparsers(dest="queue_command")
+    queue_add = queue_commands.add_parser("add", help="queue a track to play next")
+    queue_add.add_argument(
+        "query", nargs="*", metavar="QUERY", help="search terms for the track"
+    )
+    queue_add.add_argument(
+        "--video-id", metavar="ID", help="video id of the track to queue"
+    )
+    _add_json(queue_add)
 
     search = subparsers.add_parser("search", help="search YouTube Music")
     search.add_argument("query", nargs="+", help="search terms")
@@ -402,6 +412,8 @@ def _cmd_status(args: argparse.Namespace) -> int:
 
 def _cmd_queue(args: argparse.Namespace) -> int:
     _ensure_daemon(args)
+    if getattr(args, "queue_command", None) == "add":
+        return _cmd_queue_add(args)
     tracks = _send(args, {"cmd": "queue"})
     if tracks is None:
         return 1
@@ -417,6 +429,35 @@ def _cmd_queue(args: argparse.Namespace) -> int:
         duration = format_duration(track.get("duration")) or "--:--"
         line.append(f" — {artists} ({duration})", style="dim")
         _console.print(line)
+    return 0
+
+
+def _cmd_queue_add(args: argparse.Namespace) -> int:
+    """Send one queue_add and confirm the track that will play next."""
+    if bool(args.query) == bool(args.video_id):
+        _errors.print(
+            "music-cli: queue add needs a query or --video-id, not both",
+            style="bold red",
+        )
+        return 2
+    request: dict[str, Any] = {"cmd": "queue_add"}
+    if args.query:
+        request["query"] = " ".join(args.query)
+    else:
+        request["video_id"] = args.video_id
+    entry = _send(args, request)
+    if entry is None:
+        return 1
+    if args.json:
+        _print_json(entry)
+        return 0
+    line = Text()
+    line.append("Queued next", style="bold green")
+    line.append(f"  {entry.get('title') or 'Unknown'}", style="bold")
+    artists = ", ".join(entry.get("artists") or [])
+    if artists:
+        line.append(f" — {artists}", style="dim")
+    _console.print(line)
     return 0
 
 

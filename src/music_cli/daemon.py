@@ -92,6 +92,15 @@ def _dispatch(session: PlaybackSession, request: dict) -> dict:
         return _toggle_state(session, cmd, request)
     elif cmd == "queue":
         return {"ok": True, "data": session.queue()}
+    elif cmd == "queue_add":
+        return {
+            "ok": True,
+            "data": session.queue_add(
+                video_id=request.get("video_id", ""),
+                title=request.get("title", ""),
+                query=request.get("query", ""),
+            ),
+        }
     elif cmd == "stop":
         session.stop()
         return {"ok": True, "data": session.status()}

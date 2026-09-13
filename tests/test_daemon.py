@@ -76,6 +76,10 @@ class FakeSession:
     def play_queue_track(self, index):
         self._record("play_queue_track", index)
 
+    def queue_add(self, *, video_id="", title="", query=""):
+        self._record("queue_add", video_id=video_id, title=title, query=query)
+        return {"video_id": video_id or query, "title": title or "Found"}
+
     def stop(self):
         self._record("stop")
 
@@ -207,6 +211,24 @@ def test_play_queue_index_with_another_target_fails(session):
     )
     assert response["ok"] is False
     assert session.calls == []
+
+
+def test_queue_add_dispatch(session):
+    response = handle_request(
+        session, {"cmd": "queue_add", "video_id": "v1", "title": "Song"}
+    )
+    assert response["ok"] is True
+    assert response["data"] == {"video_id": "v1", "title": "Song"}
+    assert session.calls == [
+        ("queue_add", (), {"video_id": "v1", "title": "Song", "query": ""})
+    ]
+
+
+def test_queue_add_reports_session_errors(session):
+    session.fail_with = PlayerError("queue add needs a query or a video id")
+    response = handle_request(session, {"cmd": "queue_add", "query": "song"})
+    assert response["ok"] is False
+    assert "queue add needs" in response["error"]
 
 
 def test_play_playlist_with_start_index(session):
