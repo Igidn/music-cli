@@ -21,6 +21,7 @@ from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
+from textual.screen import ActiveBinding, Screen
 from textual.theme import Theme
 from textual.timer import Timer
 from textual.widget import Widget
@@ -139,6 +140,45 @@ _PLAY_RPC_TIMEOUT = 600.0
 _SLOW_DOWNLOAD_HINT_SECS = 15.0
 
 
+class MainScreen(Screen[None]):
+    """Default screen with a footer sorted by key priority.
+
+    Textual inherits the App-level `ctrl+q` system binding ahead of our
+    subclass bindings and keeps its position, so it would always render as
+    the *first* footer key. The Footer shows `active_bindings` in dict order,
+    so sort here instead: keys listed in FOOTER_ORDER render in that order,
+    and everything else (contextual pane keys) keeps its natural position
+    ahead of them.
+    """
+
+    # Transport, playback modes, volume, track management, pane navigation,
+    # then the two exits from lightest to heaviest: `q` detaches and keeps
+    # the daemon playing, `ctrl+q` also stops it.
+    FOOTER_ORDER: ClassVar[tuple[str, ...]] = (
+        "slash",
+        "space",
+        "n",
+        "alt+right",
+        "alt+left",
+        "a",
+        "l",
+        "minus",
+        "plus",
+        "m",
+        "ctrl+d",
+        "left",
+        "right",
+        "q",
+        "ctrl+q",
+    )
+
+    @property
+    def active_bindings(self) -> dict[str, ActiveBinding]:
+        bindings = super().active_bindings
+        rank = {key: index for index, key in enumerate(self.FOOTER_ORDER)}
+        return dict(sorted(bindings.items(), key=lambda item: rank.get(item[0], -1)))
+
+
 class MusicTUI(App[None]):
     """The music-cli terminal user interface."""
 
@@ -170,12 +210,18 @@ class MusicTUI(App[None]):
         "history-pane": {"right": "results", "up": "library-tree"},
     }
 
+    # Footer display order is pinned by MainScreen.FOOTER_ORDER; this list is
+    # grouped the same way (transport, modes, volume, track management, then
+    # the exits) and is what actually handles the keys. `q` detaches and
+    # keeps the daemon playing; `ctrl+q` is Textual's system quit, which our
+    # binding shadows so it shows in the footer — on_unmount sends "stop"
+    # unless we detached, making it the full "quit & stop".
     BINDINGS: ClassVar[list[Binding]] = [
         Binding("slash", "focus_search", "Search"),
         Binding("space", "toggle_playback", "Play/Pause"),
+        Binding("n", "next_track", "Next"),
         Binding("alt+right", "seek_forward", "Seek +5s", key_display="alt+→"),
         Binding("alt+left", "seek_back", "Seek -5s", key_display="alt+←"),
-        Binding("n", "next_track", "Next"),
         Binding("a", "toggle_auto_next", "Auto next"),
         Binding("l", "toggle_loop", "Loop"),
         Binding("minus", "volume_down", "Vol -"),
@@ -183,6 +229,7 @@ class MusicTUI(App[None]):
         Binding("m", "toggle_mute", "Mute"),
         Binding("ctrl+d", "download_track", "Download track"),
         Binding("q", "detach", "Quit"),
+        Binding("ctrl+q", "quit", "Quit & stop", priority=True),
         Binding("escape", "focus_results", show=False),
         Binding("left", "pane_left", "Prev pane"),
         Binding("right", "pane_right", "Next pane"),
@@ -257,6 +304,10 @@ class MusicTUI(App[None]):
             now_playing = self.query_one(NowPlaying)
             now_playing._apply_theme()
             now_playing.refresh()
+
+    def get_default_screen(self) -> Screen[None]:
+        """Use the footer-sorted screen as the main screen."""
+        return MainScreen(id="_default")
 
     def on_mount(self) -> None:
         self.query_one("#search-input", Input).focus()
