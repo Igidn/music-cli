@@ -513,6 +513,11 @@ class MusicTUI(App[None]):
         self._cancel_artist_tracks()
 
     def _start_search(self, query: str) -> None:
+        # The debounced timer can fire while the app is shutting down (its
+        # callback is queued on the pump even after Timer.stop), and the DOM is
+        # gone by then — bail out instead of raising NoMatches from set_status.
+        if not self.screen_stack:
+            return
         self._cancel_search()
 
         # Detect artist: query syntax
