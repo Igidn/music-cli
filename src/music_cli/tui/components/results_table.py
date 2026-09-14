@@ -10,6 +10,7 @@ from rich.text import Text
 from textual import events
 from textual.binding import Binding
 from textual.widgets import DataTable, Input
+from textual.widgets.data_table import CellDoesNotExist
 
 from music_cli.yt.search import SearchResult
 
@@ -160,8 +161,8 @@ class ResultsTable(DataTable, inherit_bindings=False):
                 try:
                     coordinate = self.coordinate_to_cell_key(self.cursor_coordinate)
                     highlighted = str(coordinate.row_key.value)
-                except Exception:  # noqa: BLE001
-                    pass
+                except CellDoesNotExist:
+                    highlighted = None
             self._rebuild_columns(widths)
             self._fill_rows(highlighted=highlighted)
         else:
