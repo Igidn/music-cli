@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import os
+import shutil
 import subprocess
 import time
 
@@ -37,17 +38,28 @@ except ImportError:
 
 COOKIE_FILE = os.environ.get("MUSIC_CLI_COOKIE_FILE", "cookie.txt")
 
-STREAM_CMD = [
-    ".venv/bin/yt-dlp",
-    "--cookies",
-    COOKIE_FILE,
-    "--extractor-args",
-    "youtube:player_client=web_embedded",
-    "-f",
-    "bestaudio[ext=m4a]/bestaudio",
-    "-o",
-    "-",
-]
+
+def _stream_cmd() -> list[str]:
+    """yt-dlp CLI invocation mirroring StreamExtractor: yt-dlp only
+    auto-enables deno, so pass an explicit --js-runtimes override when
+    deno is absent."""
+    cmd = [".venv/bin/yt-dlp"]
+    if not shutil.which("deno"):
+        for runtime in ("node", "bun"):
+            if shutil.which(runtime):
+                cmd += ["--js-runtimes", runtime]
+                break
+    return [
+        *cmd,
+        "--cookies",
+        COOKIE_FILE,
+        "--extractor-args",
+        "youtube:player_client=web_embedded",
+        "-f",
+        "bestaudio[ext=m4a]/bestaudio",
+        "-o",
+        "-",
+    ]
 
 
 @pytest.fixture(scope="module")
@@ -78,7 +90,7 @@ class TestStreamExtraction:
 
     def test_stream_delivers_real_audio_bytes(self):
         proc = subprocess.run(
-            [*STREAM_CMD, f"https://www.youtube.com/watch?v={KNOWN_VIDEO}"],
+            [*_stream_cmd(), f"https://www.youtube.com/watch?v={KNOWN_VIDEO}"],
             capture_output=True,
             timeout=120,
             check=True,
@@ -277,40 +289,80 @@ class TestCacheEndToEnd:
 
 
 class TestTuiIntegration:
-    """The TUI wired to the real client: search, play and queue end to end."""
+    """The TUI wired to the daemon: search, play and queue end to end."""
 
-    def test_tui_searches_plays_and_queues(self, cookies):
+    def test_tui_searches_plays_and_queues(self, cookies, tmp_path, monkeypatch):
         import asyncio
 
+        from music_cli import ipc
         from music_cli.client import MusicClient
         from music_cli.tui.app import MusicTUI
         from music_cli.tui.components import QueueList, ResultsTable
         from music_cli.tui.components.now_playing import NowPlaying
 
+        # The TUI resolves playback over IPC against the daemon, which owns
+        # the player. Isolate that daemon's sockets and state under tmp_path
+        # so the test never talks to (or spawns into) the user's live setup.
+        monkeypatch.setenv("MUSIC_CLI_CONFIG_DIR", str(tmp_path / "config"))
+
         async def scenario():
             client = MusicClient(cookies=cookies)
             app = MusicTUI(client)
-            async with app.run_test(size=(120, 40)) as pilot:
-                await pilot.pause()
-                app.query_one("#search-input").value = "never gonna give you up"
-                await pilot.pause(3.0)
-                results = app.query_one(ResultsTable)
-                assert results.row_count > 0
-                result = results._results.get(KNOWN_VIDEO)
-                assert result is not None, "known video missing from results"
-                app.play_result(result)
-                deadline = time.monotonic() + 180
-                while time.monotonic() < deadline and client.player.position < 1.0:
-                    await pilot.pause(1.0)
-                assert client.player.position >= 1.0, "TUI playback did not start"
-                now_playing = app.query_one(NowPlaying)
-                assert (
-                    str(now_playing.query_one("#np-title").content)
-                    == client.current.title
-                )
-                await pilot.pause(8.0)
-                assert len(client.queue) > 0, "autoplay queue was not loaded"
-                assert len(app.query_one(QueueList).children) > 0
+            try:
+                async with app.run_test(size=(120, 40)) as pilot:
+                    await pilot.pause()
+                    app.query_one("#search-input").value = "never gonna give you up"
+                    await pilot.pause(3.0)
+                    results = app.query_one(ResultsTable)
+                    assert results.row_count > 0
+                    result = results._results.get(KNOWN_VIDEO)
+                    assert result is not None, "known video missing from results"
+                    app.play_result(result)
+                    # Playback happens in the daemon process; the TUI mirrors
+                    # it through state pushes. Poll the daemon's status.
+                    deadline = time.monotonic() + 180
+                    status: dict = {"state": "stopped"}
+                    while time.monotonic() < deadline:
+                        await pilot.pause(1.0)
+                        response = ipc.send_request({"cmd": "status"}, timeout=5.0)
+                        assert response.get("ok"), response.get("error")
+                        status = response["data"]
+                        if (
+                            status.get("state") == "playing"
+                            and status.get("position", 0.0) >= 1.0
+                        ):
+                            break
+                    assert status.get("state") == "playing", (
+                        "TUI playback did not start"
+                    )
+                    assert status["position"] >= 1.0
+                    assert status["track"]["video_id"] == KNOWN_VIDEO
+                    now_playing = app.query_one(NowPlaying)
+                    assert (
+                        str(now_playing.query_one("#np-title").content)
+                        == status["track"]["title"]
+                    )
+                    # Autoplay queue is built by the daemon after playback
+                    # starts; the TUI renders it from pushed state events.
+                    deadline = time.monotonic() + 30
+                    queue: list = []
+                    while time.monotonic() < deadline:
+                        await pilot.pause(1.0)
+                        response = ipc.send_request({"cmd": "queue"}, timeout=10.0)
+                        assert response.get("ok"), response.get("error")
+                        queue = response["data"]
+                        if queue:
+                            break
+                    assert len(queue) > 0, "autoplay queue was not loaded"
+                    assert len(app.query_one(QueueList).children) > 0
+            finally:
                 client.player.close()
 
-        asyncio.run(scenario())
+        try:
+            ipc.ensure_daemon(cookies=os.path.abspath(COOKIE_FILE))
+            asyncio.run(scenario())
+        finally:
+            try:
+                ipc.send_request({"cmd": "quit"}, timeout=5.0)
+            except Exception:  # noqa: BLE001, S110 — daemon may already be gone
+                pass
