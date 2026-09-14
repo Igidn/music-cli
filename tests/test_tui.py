@@ -885,6 +885,44 @@ def test_transport_actions_send_ipc(monkeypatch):
     _run(scenario())
 
 
+def test_quit_key_detaches_and_keeps_daemon_playing(monkeypatch):
+    """q quits the TUI without stopping the daemon: the queue survives."""
+    from music_cli.tui.app import MusicTUI
+
+    fake = install_daemon(monkeypatch)
+
+    async def scenario():
+        app = MusicTUI(make_client())
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _settle(pilot)
+            await pilot.press("escape")  # leave the search input
+            await pilot.press("q")
+            await _settle(pilot)
+            assert app.return_code == 0
+        assert [r["cmd"] for r in fake.requests].count("stop") == 0
+
+    _run(scenario())
+
+
+def test_ctrl_q_quits_and_stops_playback(monkeypatch):
+    """ctrl+q is the full quit: stop playback, then exit."""
+    from music_cli.tui.app import MusicTUI
+
+    fake = install_daemon(monkeypatch)
+
+    async def scenario():
+        app = MusicTUI(make_client())
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _settle(pilot)
+            # Works even while the search input holds the focus.
+            await pilot.press("ctrl+q")
+            await _settle(pilot)
+            assert app.return_code == 0
+        assert [r["cmd"] for r in fake.requests].count("stop") == 1
+
+    _run(scenario())
+
+
 def test_next_guard_collapses_double_press(monkeypatch):
     from music_cli.tui.app import MusicTUI
 

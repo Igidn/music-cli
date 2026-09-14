@@ -182,7 +182,8 @@ class MusicTUI(App[None]):
         Binding("plus", "volume_up", "Vol +"),
         Binding("m", "toggle_mute", "Mute"),
         Binding("ctrl+d", "download_track", "Download track"),
-        Binding("q", "quit", "Quit", show=False),
+        Binding("q", "detach", "Quit"),
+        Binding("ctrl+q", "quit", "Quit & stop", priority=True),
         Binding("escape", "focus_results", show=False),
         Binding("left", "pane_left", "Prev pane"),
         Binding("right", "pane_right", "Next pane"),
@@ -235,6 +236,8 @@ class MusicTUI(App[None]):
         # Records the last widget we entered from each direction, so pressing the
         # opposite direction returns along the same path rather than the static default.
         self._focus_history: dict[str, dict[str, str]] = {}
+        # Set by action_detach: quit the TUI without stopping the daemon.
+        self._detach = False
         # A raw socket for daemon push events; None until we've connected.
         self._events_socket: socket.socket | None = None
         self._events_thread: threading.Thread | None = None
@@ -358,16 +361,27 @@ class MusicTUI(App[None]):
                     )
                     self.call_from_thread(self.set_status, self._download_status)
 
+    def action_detach(self) -> None:
+        """Quit the TUI and leave the daemon playing in the background.
+
+        The daemon owns playback, not this UI, so the queue survives for the
+        CLI or the next TUI session; it idles out on its own once drained.
+        """
+        self._detach = True
+        self.exit()
+
     def on_unmount(self) -> None:
         self._clear_events_socket()
         if self._search_timer is not None:
             self._search_timer.stop()
-        # Best-effort stop: quitting the TUI ends playback; the daemon stays
-        # alive and idles out on its own. Never blocks on a dead daemon.
-        try:
-            ipc.send_request({"cmd": "stop"}, timeout=_EVENTS_RECONNECT_SECS)
-        except Exception:  # noqa: BLE001, S110 — shutdown path must never raise
-            pass
+        # Full quit (ctrl+q) stops playback best-effort; the daemon stays
+        # alive and idles out on its own. Detach (q) skips this so the queue
+        # survives. Never blocks on a dead daemon.
+        if not self._detach:
+            try:
+                ipc.send_request({"cmd": "stop"}, timeout=_EVENTS_RECONNECT_SECS)
+            except Exception:  # noqa: BLE001, S110 — shutdown must never raise
+                pass
         self.client.close()
         self._history_store.close()
         self._settings_store.close()
