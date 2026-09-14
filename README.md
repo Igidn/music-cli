@@ -73,6 +73,8 @@ music-cli login
 | `a` / `l` / `m` | Auto-next / Loop / Mute |
 | `+` / `-` | Volume |
 | `Ctrl+d` | Download current track |
+| `q` | Quit, music keeps playing in the background |
+| `Ctrl+q` | Quit and stop playback |
 
 ## License
 
