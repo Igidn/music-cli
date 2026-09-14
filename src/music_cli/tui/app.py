@@ -361,6 +361,17 @@ class MusicTUI(App[None]):
                     )
                     self.call_from_thread(self.set_status, self._download_status)
 
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        """Hide the detach binding while the search input holds the focus.
+
+        `q` must type a literal "q" into search, not quit; ctrl+q stays
+        available everywhere.
+        """
+        if action == "detach":
+            search = self.query("#search-input")
+            return not (search and self.focused is search.first())
+        return True
+
     def action_detach(self) -> None:
         """Quit the TUI and leave the daemon playing in the background.
 

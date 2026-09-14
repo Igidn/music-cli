@@ -923,6 +923,29 @@ def test_ctrl_q_quits_and_stops_playback(monkeypatch):
     _run(scenario())
 
 
+def test_detach_binding_hidden_while_search_focused(monkeypatch):
+    """q must type into search, not detach; the footer hides it accordingly."""
+    from music_cli.tui.app import MusicTUI
+
+    install_daemon(monkeypatch)
+
+    async def scenario():
+        app = MusicTUI(make_client())
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _settle(pilot)
+            search = app.query_one("#search-input")
+            assert app.check_action("detach", ()) is False
+            await pilot.press("escape")  # move focus out of the search box
+            assert app.check_action("detach", ()) is True
+            # Typing still lands in the input; nothing is consumed as a binding.
+            search.focus()
+            await pilot.press("q")
+            await _settle(pilot)
+            assert search.value == "q"
+
+    _run(scenario())
+
+
 def test_next_guard_collapses_double_press(monkeypatch):
     from music_cli.tui.app import MusicTUI
 
