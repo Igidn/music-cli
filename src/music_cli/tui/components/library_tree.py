@@ -14,7 +14,7 @@ from music_cli.storage.state import DownloadedTrack
 from music_cli.yt.extract import PlaylistTrack
 from music_cli.yt.playlists import LibraryPlaylist
 
-from .messages import AddToPlaylistRequested
+from .messages import AddToPlaylistRequested, QueueAddRequested
 
 
 class LibraryTree(Tree[dict[str, Any] | None], inherit_bindings=False):
@@ -34,6 +34,7 @@ class LibraryTree(Tree[dict[str, Any] | None], inherit_bindings=False):
         Binding("home", "scroll_home", "Home", show=False),
         Binding("end", "scroll_end", "End", show=False),
         Binding("s", "add_to_playlist", "Add to playlist"),
+        Binding("ctrl+n", "queue_add", "Queue next"),
         Binding("d", "remove_from_playlist", "Remove from playlist"),
         Binding("c", "create_playlist", "Create playlist"),
         Binding("r", "rename_playlist", "Rename playlist"),
@@ -303,6 +304,8 @@ class LibraryTree(Tree[dict[str, Any] | None], inherit_bindings=False):
             return self.app.client.library.authenticated and kind != "track"
         if action in ("add_to_playlist", "remove_from_playlist"):
             return self.app.client.library.authenticated and kind == "track"
+        if action == "queue_add":
+            return kind in ("track", "download")
         if action == "rename_playlist":
             return self.app.client.library.authenticated and kind == "playlist"
         if action == "remove_download":
@@ -323,6 +326,11 @@ class LibraryTree(Tree[dict[str, Any] | None], inherit_bindings=False):
                     track.video_id, track.title, tuple(track.artists)
                 )
             )
+
+    def action_queue_add(self) -> None:
+        selected = self.selected_track()
+        if selected is not None:
+            self.post_message(QueueAddRequested(selected[0], selected[1]))
 
     def action_remove_from_playlist(self) -> None:
         data = self._cursor_data()

@@ -18,7 +18,7 @@ from pathlib import Path
 
 import music_cli.ipc as ipc
 from music_cli.client import MusicClient
-from music_cli.storage.state import DownloadsStore
+from music_cli.storage.state import DownloadsStore, PlayedTrack
 from music_cli.yt.extract import PlaylistTrack, StreamInfo
 from music_cli.yt.playlists import LibraryPlaylist
 from music_cli.yt.search import SearchResult
@@ -556,6 +556,63 @@ def test_queue_select_sends_queue_index(monkeypatch):
             plays = [r for r in fake.requests if r["cmd"] == "play"]
             assert len(plays) == 1
             assert plays[0]["queue_index"] == 1
+
+    _run(scenario())
+
+
+def test_results_ctrl_n_queues_next(monkeypatch):
+    """ctrl+n on a selected search result sends one queue_add request."""
+    from music_cli.tui.app import MusicTUI
+    from music_cli.tui.components import ResultsTable
+
+    fake = install_daemon(monkeypatch)
+
+    async def scenario():
+        app = MusicTUI(make_client())
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _settle(pilot)
+            table = app.query_one(ResultsTable)
+            table.set_results([make_result(1, "v1")])
+            table.focus()
+            await pilot.pause()
+            await pilot.press("ctrl+n")
+            await _settle(pilot)
+
+            adds = [r for r in fake.requests if r["cmd"] == "queue_add"]
+            assert len(adds) == 1
+            assert adds[0]["video_id"] == "v1"
+            assert adds[0]["title"] == "Song 1"
+
+    _run(scenario())
+
+
+def test_history_ctrl_n_queues_next(monkeypatch):
+    """ctrl+n queues the highlighted history track; no request without one."""
+    from music_cli.tui.app import MusicTUI
+    from music_cli.tui.components import HistoryList
+
+    fake = install_daemon(monkeypatch)
+
+    async def scenario():
+        app = MusicTUI(make_client())
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _settle(pilot)
+            history = app.query_one(HistoryList)
+            history.focus()
+            await pilot.pause()
+            await pilot.press("ctrl+n")
+            await _settle(pilot)
+            assert not [r for r in fake.requests if r["cmd"] == "queue_add"]
+
+            history.set_tracks([PlayedTrack(video_id="h1", title="Old Song")])
+            await pilot.pause()
+            await pilot.press("ctrl+n")
+            await _settle(pilot)
+
+            adds = [r for r in fake.requests if r["cmd"] == "queue_add"]
+            assert len(adds) == 1
+            assert adds[0]["video_id"] == "h1"
+            assert adds[0]["title"] == "Old Song"
 
     _run(scenario())
 

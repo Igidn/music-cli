@@ -51,6 +51,7 @@ from .components import (
     HistoryList,
     LibraryTree,
     NowPlaying,
+    QueueAddRequested,
     QueueList,
     ResultsTable,
     SearchInput,
@@ -1013,6 +1014,18 @@ class MusicTUI(App[None]):
             AddToPlaylistScreen(self._library_playlists, message.title),
             lambda selected: self._add_to_playlists(message.video_id, selected),
         )
+
+    @on(QueueAddRequested)
+    def _on_queue_add_requested(self, message: QueueAddRequested) -> None:
+        """ctrl+n anywhere a track is selected: that track plays next."""
+        self.rpc_worker(
+            {
+                "cmd": "queue_add",
+                "video_id": message.video_id,
+                "title": message.title,
+            }
+        )
+        self.set_status(f"Queued next: {message.title}")
 
     def _add_to_playlists(self, video_id: str, selected: set[str] | None) -> None:
         if not selected:

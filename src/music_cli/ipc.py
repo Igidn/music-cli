@@ -44,6 +44,7 @@ COMMANDS = (
     "auto_next",
     "status",
     "queue",
+    "queue_add",
     "stop",
     "quit",
 )

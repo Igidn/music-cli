@@ -488,10 +488,180 @@ class TestNextTrack:
         assert client.player.played[-1].video_id == "t1"
 
 
+class TestManualQueue:
+    def test_queue_add_puts_last_added_first(self, client, session):
+        session.queue_add(video_id="q1", title="First")
+        session.queue_add(video_id="q2", title="Second")
+        assert [t["video_id"] for t in session.queue()] == ["q2", "q1"]
+
+    def test_queue_add_resolves_query(self, client, session):
+        client.search_api = FakeSearch([make_result("vq", "Found")])
+        entry = session.queue_add(query="some song")
+        assert entry["video_id"] == "vq"
+        assert entry["title"] == "Found"
+        assert [t["video_id"] for t in session.queue()] == ["vq"]
+
+    def test_queue_add_skips_unplayable_results(self, client, session):
+        client.search_api = FakeSearch([make_result(video_id="")])
+        with pytest.raises(PlayerError, match="No playable results"):
+            session.queue_add(query="artist only")
+        assert session.queue() == []
+
+    def test_queue_add_rejects_missing_and_double_targets(self, session):
+        with pytest.raises(PlayerError):
+            session.queue_add()
+        with pytest.raises(PlayerError):
+            session.queue_add(video_id="q1", query="song")
+
+    def test_manual_queue_plays_before_the_auto_queue(self, client, session, history):
+        client.queue = [make_track("t1")]
+        session.queue_add(video_id="q1", title="Q1")
+        session.queue_add(video_id="q2", title="Q2")
+        assert session.next_track().video_id == "q2"  # last added first
+        assert session.next_track().video_id == "q1"
+        assert session.next_track().video_id == "t1"  # auto queue follows
+        assert client.queue == []
+        assert history.most_recent().video_id == "t1"
+
+    def test_manual_queue_survives_a_watch_playlist_refresh(self, client, session):
+        """Every play rebuilds the auto queue from the watch playlist; manual
+        entries sit outside it and outlive the refresh."""
+        client.watch = FakeWatch([make_track("w1")])
+        session.queue_add(video_id="q1", title="Q1")
+        session.play_video("v9", "New")
+        assert _wait_queue(client, ["w1"])
+        assert session.next_track().video_id == "q1"
+        assert [t.video_id for t in client.queue] == ["w1"]
+        assert [t["video_id"] for t in session.queue()] == ["w1"]
+
+    def test_failed_manual_play_stays_queued(self, client, session):
+        class BrokenExtractor:
+            def resolve(self, video_id):
+                raise PlayerError("nope")
+
+        client.extractor = BrokenExtractor()
+        client._extractor_factory = lambda *args, **kwargs: BrokenExtractor()
+        session.queue_add(video_id="q1", title="Q1")
+        with pytest.raises(PlayerError):
+            session.next_track()
+        assert [t["video_id"] for t in session.queue()] == ["q1"]
+
+    def test_click_to_play_addresses_the_merged_view(self, client, session):
+        client.queue = [make_track("t1"), make_track("t2")]
+        session.queue_add(video_id="q1", title="Q1")
+        session.queue_add(video_id="q2", title="Q2")
+        # Merged Up-Next: q2, q1, t1, t2 — index 2 is the auto queue's head.
+        stream = session.play_queue_track(2)
+        assert stream.video_id == "t1"
+        assert [t.video_id for t in client.queue] == ["t2"]
+        assert [t["video_id"] for t in session.queue()] == ["q2", "q1", "t2"]
+        stream = session.play_queue_track(0)
+        assert stream.video_id == "q2"
+        assert [t["video_id"] for t in session.queue()] == ["q1", "t2"]
+
+    def test_play_queue_track_out_of_range(self, client, session):
+        session.queue_add(video_id="q1", title="Q1")
+        with pytest.raises(PlayerError, match="No track at queue index"):
+            session.play_queue_track(5)
+
+    def test_stop_clears_the_manual_queue(self, client, session):
+        client.current = StreamInfo(video_id="v0", title="T", stream_url="u")
+        session.queue_add(video_id="q1", title="Q1")
+        session.stop()
+        assert session.queue() == []
+        assert client.current is None
+
+    def test_prefetch_targets_the_manual_queue_front(self, client, session):
+        session.queue_add(video_id="q1", title="Q1")
+        client.queue = [make_track("t1")]
+        session.record(StreamInfo(video_id="cur", title="Cur", stream_url="u"))
+        assert _wait_cached(client.cache, "q1")
+        assert client.cache.path_for("t1") is None
+
+    def test_manual_track_interrupts_downloads_and_the_walk_resumes(
+        self, client, session, tmp_path
+    ):
+        from music_cli.storage.state import DownloadsStore
+
+        client.downloads = DownloadsStore(tmp_path / "downloads.db")
+        client.downloads.record("d3", "Third")
+        client.downloads.record("d1", "First")
+        client.downloads.record("d2", "Second")  # newest-first: d2, d1, d3
+
+        session.play_download("d1", "First")
+        session.queue_add(video_id="q1", title="Q1")
+        session.queue_add(video_id="q2", title="Q2")
+
+        assert session.next_track().video_id == "q2"  # manual jumps the queue
+        assert session.next_track().video_id == "q1"
+        assert session.next_track().video_id == "d3"  # walk resumes after d1
+        assert session.next_track().video_id == "d2"  # then wraps
+        assert session._downloads_context is not None
+
+    def test_walk_stops_when_the_played_download_is_not_in_the_snapshot(
+        self, client, session, tmp_path
+    ):
+        """A download outside the snapshot (e.g. beyond the recent-100 cut)
+        must not inherit a bookmark from a previous walk's position."""
+        from music_cli.storage.state import DownloadsStore
+
+        client.downloads = DownloadsStore(tmp_path / "downloads.db")
+        client.downloads.record("d3", "Third")
+        client.downloads.record("d1", "First")
+        client.downloads.record("d2", "Second")  # newest-first: d2, d1, d3
+
+        session.play_download("d1", "First")
+        session.play_download("ghost", "Not In Snapshot")
+        assert session.next_track() is None
+        assert session._downloads_context is None
+
+    def test_up_next_shows_manual_then_remaining_downloads(
+        self, client, session, tmp_path
+    ):
+        from music_cli.storage.state import DownloadsStore
+
+        client.downloads = DownloadsStore(tmp_path / "downloads.db")
+        client.downloads.record("d3", "Third")
+        client.downloads.record("d1", "First")
+        client.downloads.record("d2", "Second")  # newest-first: d2, d1, d3
+
+        session.play_download("d1", "First")
+        session.queue_add(video_id="q1", title="Q1")
+        assert [t["video_id"] for t in session.queue()] == ["q1", "d3"]
+
+    def test_downloads_playback_never_fetches_the_watch_playlist(
+        self, client, session, tmp_path
+    ):
+        """The downloads walk is driven by the local snapshot; the watch
+        playlist fetch that used to run on every advance was wasted network."""
+        from music_cli.storage.state import DownloadsStore
+
+        client.downloads = DownloadsStore(tmp_path / "downloads.db")
+        client.downloads.record("d3", "Third")
+        client.downloads.record("d1", "First")
+        client.downloads.record("d2", "Second")
+        client.watch = FakeWatch([make_track("w1")])
+
+        session.play_download("d1", "First")
+        session.next_track()
+        assert client.watch.calls == []
+        assert client.queue == []
+
+
 def _wait_cached(cache, video_id, timeout=2.0):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if cache.path_for(video_id) is not None:
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def _wait_queue(client, ids, timeout=2.0):
+    """Wait for the background watch-playlist fetch to land in the queue."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if [t.video_id for t in client.queue] == ids:
             return True
         time.sleep(0.02)
     return False
