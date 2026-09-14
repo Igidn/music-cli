@@ -183,7 +183,6 @@ class MusicTUI(App[None]):
         Binding("m", "toggle_mute", "Mute"),
         Binding("ctrl+d", "download_track", "Download track"),
         Binding("q", "detach", "Quit"),
-        Binding("ctrl+q", "quit", "Quit & stop", priority=True),
         Binding("escape", "focus_results", show=False),
         Binding("left", "pane_left", "Prev pane"),
         Binding("right", "pane_right", "Next pane"),
@@ -385,9 +384,9 @@ class MusicTUI(App[None]):
         self._clear_events_socket()
         if self._search_timer is not None:
             self._search_timer.stop()
-        # Full quit (ctrl+q) stops playback best-effort; the daemon stays
-        # alive and idles out on its own. Detach (q) skips this so the queue
-        # survives. Never blocks on a dead daemon.
+        # Full quit (ctrl+q, Textual's built-in binding) stops playback
+        # best-effort; the daemon stays alive and idles out on its own. Detach
+        # (q) skips this so the queue survives. Never blocks on a dead daemon.
         if not self._detach:
             try:
                 ipc.send_request({"cmd": "stop"}, timeout=_EVENTS_RECONNECT_SECS)
