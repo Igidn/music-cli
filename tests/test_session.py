@@ -598,6 +598,23 @@ class TestManualQueue:
         assert session.next_track().video_id == "d2"  # then wraps
         assert session._downloads_context is not None
 
+    def test_walk_stops_when_the_played_download_is_not_in_the_snapshot(
+        self, client, session, tmp_path
+    ):
+        """A download outside the snapshot (e.g. beyond the recent-100 cut)
+        must not inherit a bookmark from a previous walk's position."""
+        from music_cli.storage.state import DownloadsStore
+
+        client.downloads = DownloadsStore(tmp_path / "downloads.db")
+        client.downloads.record("d3", "Third")
+        client.downloads.record("d1", "First")
+        client.downloads.record("d2", "Second")  # newest-first: d2, d1, d3
+
+        session.play_download("d1", "First")
+        session.play_download("ghost", "Not In Snapshot")
+        assert session.next_track() is None
+        assert session._downloads_context is None
+
     def test_up_next_shows_manual_then_remaining_downloads(
         self, client, session, tmp_path
     ):

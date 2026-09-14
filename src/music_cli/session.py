@@ -238,18 +238,17 @@ class PlaybackSession:
         A track that refuses to play goes back where it was, so the manual
         queue stays intact — same failure handling as the client's queue.
         """
-        self._pop_manual(index)
-        return self.client.current  # type: ignore[return-value]
+        return self._pop_manual(index)
 
-    def _pop_manual(self, index: int) -> PlaylistTrack:
+    def _pop_manual(self, index: int) -> StreamInfo:
         track = self._next_queue.pop(index)
         try:
-            self.client.play_track(track)
+            stream = self.client.play_track(track)
         except PlayerError:
             self._next_queue.insert(index, track)
             raise
-        self.record(self.client.current)  # type: ignore[arg-type]
-        return track
+        self.record(stream)
+        return stream
 
     def play_playlist(self, playlist_id: str, start_index: int = 0) -> StreamInfo:
         """Play a playlist from ``start_index``; the client queues the remainder."""
@@ -406,6 +405,7 @@ class PlaybackSession:
     def _bookmark_download(self, video_id: str) -> None:
         """Remember where the Downloads walk is, so it can resume after a
         manually queued track interrupts it."""
+        self._downloads_pos = None
         for i, track in enumerate(self._downloads_context or ()):
             if track.video_id == video_id:
                 self._downloads_pos = i
