@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import threading
+import time
 from collections import deque
 
 import pytest
 
+from music_cli import daemon as daemon_module
 from music_cli.core.errors import PlayerError
 from music_cli.daemon import (
     _download_hook,
+    _flush_subscriber,
     _is_async_play,
     _spawn_async_play,
     handle_request,
@@ -394,6 +398,53 @@ class _FakeSub:
     def send(self, chunk: bytes) -> int:
         self.lines.append(chunk)
         return len(chunk)
+
+
+class _SlowSub:
+    """Subscriber whose send is slow, so flushes overlap across threads."""
+
+    def __init__(self):
+        self.lines = []
+
+    def send(self, chunk: bytes) -> int:
+        time.sleep(0.001)
+        self.lines.append(chunk)
+        return len(chunk)
+
+
+def test_concurrent_push_and_flush_never_pops_empty():
+    """Worker-thread pushes racing the serve loop's flush must not crash.
+
+    Regression: a long track's download progress hook flushes subscriber
+    buffers on the worker thread while the serve loop drains them between
+    requests; the unsynchronised check-then-pop raised
+    ``IndexError: pop from an empty deque`` and aborted the download.
+    """
+    sub = _SlowSub()
+    subscribers = {sub: deque()}
+    hook = _download_hook(subscribers)
+    stop = threading.Event()
+    errors: list[Exception] = []
+
+    def hammer():
+        while not stop.is_set():
+            try:
+                hook({"status": "downloading", "downloaded_bytes": 1})
+            except Exception as error:  # noqa: BLE001 — the assertion reports it
+                errors.append(error)
+                return
+
+    worker = threading.Thread(target=hammer, daemon=True)
+    worker.start()
+    try:
+        for _ in range(200):
+            with daemon_module._subscriber_lock:
+                for conn in list(subscribers.keys()):
+                    _flush_subscriber(conn, subscribers)
+    finally:
+        stop.set()
+        worker.join(5)
+    assert errors == []
 
 
 def test_download_hook_pushes_percent():
