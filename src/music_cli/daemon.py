@@ -38,6 +38,14 @@ _MAX_SUBSCRIBER_BYTES = 1 << 20
 #: Heartbeat interval at which the current status is re-pushed.
 _HEARTBEAT = 0.5
 
+# Guards the subscriber deques and their sends. Worker threads (download
+# progress hooks) flush the same buffers the serve loop drains; without the
+# lock two threads can both pass the ``while buffer`` check and one pops an
+# empty deque (IndexError), or their sends interleave and corrupt the stream.
+# Held for whole flush/push operations, never around blocking calls: the
+# sends inside are non-blocking.
+_subscriber_lock = threading.Lock()
+
 
 def _push_download_progress(
     subscribers: dict[socket.socket, deque[bytes]], status: dict
@@ -49,10 +57,11 @@ def _push_download_progress(
     Each hook call pushes straight onto the wire instead.
     """
     payload = json.dumps(status).encode() + b"\n"
-    for _conn, buffer in list(subscribers.items()):
-        buffer.append(payload)
-    for conn in list(subscribers.keys()):
-        _flush_subscriber(conn, subscribers)
+    with _subscriber_lock:
+        for _conn, buffer in list(subscribers.items()):
+            buffer.append(payload)
+        for conn in list(subscribers.keys()):
+            _flush_subscriber(conn, subscribers)
 
 
 def handle_request(session: PlaybackSession, request: dict) -> dict:
@@ -606,7 +615,8 @@ def _serve(
                     _drop_subscriber(sock, subscribers)
         for sock in writable:
             if sock in subscribers:
-                _flush_subscriber(sock, subscribers)
+                with _subscriber_lock:
+                    _flush_subscriber(sock, subscribers)
         # Start playback for any finished background downloads (main thread).
         _resolve_pending_plays(session, pending_plays)
         # Reply to finished offline downloads and tell subscribers to refresh.
@@ -657,25 +667,32 @@ def _push_event(
 ) -> None:
     """Fan one non-status event (e.g. ``downloads`` refresh) to subscribers."""
     payload = json.dumps(event).encode() + b"\n"
-    for conn, buffer in list(subscribers.items()):
-        buffer.append(payload)
-        if sum(len(chunk) for chunk in buffer) > _MAX_SUBSCRIBER_BYTES:
-            _drop_subscriber(conn, subscribers)
+    with _subscriber_lock:
+        for conn, buffer in list(subscribers.items()):
+            buffer.append(payload)
+            if sum(len(chunk) for chunk in buffer) > _MAX_SUBSCRIBER_BYTES:
+                _drop_subscriber(conn, subscribers)
 
 
 def _push(subscribers: dict[socket.socket, deque[bytes]], status: dict) -> None:
     """Enqueue the current status as an event for every subscriber."""
     payload = json.dumps({"event": "state", "status": status}).encode() + b"\n"
-    for conn, buffer in list(subscribers.items()):
-        buffer.append(payload)
-        if sum(len(chunk) for chunk in buffer) > _MAX_SUBSCRIBER_BYTES:
-            _drop_subscriber(conn, subscribers)
+    with _subscriber_lock:
+        for conn, buffer in list(subscribers.items()):
+            buffer.append(payload)
+            if sum(len(chunk) for chunk in buffer) > _MAX_SUBSCRIBER_BYTES:
+                _drop_subscriber(conn, subscribers)
 
 
 def _flush_subscriber(
     conn: socket.socket, subscribers: dict[socket.socket, deque[bytes]]
 ) -> None:
-    """Non-blockingly drain a subscriber's pending events; drop it when stuck."""
+    """Non-blockingly drain a subscriber's pending events; drop it when stuck.
+
+    Caller must hold ``_subscriber_lock``: the check-then-pop loop is not
+    atomic against worker-thread pushes, and concurrent ``send`` calls on the
+    same socket would interleave bytes.
+    """
     buffer = subscribers[conn]
     while buffer:
         chunk = buffer[0]
@@ -694,7 +711,10 @@ def _flush_subscriber(
 
 
 def _drop_subscriber(conn: socket.socket, subscribers: dict) -> None:
-    """Remove and close a dead, slow, or unreadable subscriber."""
+    """Remove and close a dead, slow, or unreadable subscriber.
+
+    Caller must hold ``_subscriber_lock``.
+    """
     if subscribers.pop(conn, None) is not None:
         try:
             conn.close()
