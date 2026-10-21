@@ -573,6 +573,7 @@ class MusicTUI(App[None]):
             "run_artist_tracks_by_id": self._on_artist_tracks_fetched,
             "rpc_worker": self._on_rpc_finished,
             "play_rpc_worker": self._on_rpc_finished,
+            "next_rpc_worker": self._on_rpc_finished,
             "state_worker": self._on_state_finished,
             "download_worker": self._on_download_finished,
             "init_status_worker": self._on_init_status_finished,
@@ -624,6 +625,10 @@ class MusicTUI(App[None]):
 
     @work(thread=True, exit_on_error=False)
     def play_rpc_worker(self, request: dict, timeout: float = 1200.0) -> dict:
+        return ipc.send_play_request(request, timeout=timeout)
+
+    @work(thread=True, exit_on_error=False)
+    def next_rpc_worker(self, request: dict, timeout: float = 1200.0) -> dict:
         return ipc.send_play_request(request, timeout=timeout)
 
     @work(thread=True, exit_on_error=False)
@@ -686,14 +691,24 @@ class MusicTUI(App[None]):
         # (toggle, seek, …) settling mid-download must not, or the stale track's
         # heartbeat would slip back into the bar and transport actions would
         # hit the track the pending play is replacing.
-        if worker is self._play_worker:
+        if worker.name == "play_rpc_worker":
+            if worker is not self._play_worker:
+                # A newer selection replaced this play; its result is stale and
+                # must not render over the track the user picked afterwards.
+                return
             self._play_worker = None
             self._pending_play = None
-        if worker is self._next_worker:
+        if worker.name == "next_rpc_worker":
+            if worker is not self._next_worker:
+                return  # superseded by a newer play/next
             self._next_worker = None
             self._next_pending = False
         if worker.state is WorkerState.SUCCESS:
             response = worker.result or {}
+            if response.get("superseded"):
+                # The daemon cancelled this fetch for a newer selection; the
+                # request that replaced it owns the status line.
+                return
             if response.get("ok"):
                 self._render_status(response.get("data"))
             else:
@@ -1003,8 +1018,19 @@ class MusicTUI(App[None]):
         self, video_id: str, title: str, subtitle: str, request: dict
     ) -> None:
         """Send one play request, skipping duplicates already on or in flight."""
-        if video_id == self._current_video_id or video_id == self._pending_play:
+        if video_id == self._pending_play:
             return
+        # Re-selecting the loaded track while another request is in flight is
+        # a real choice (revert), so only ignore a click on the current track
+        # when nothing else is pending.
+        idle = self._play_worker is None and self._next_worker is None
+        if video_id == self._current_video_id and idle:
+            return
+        # The new selection outranks an in-flight next: stop the UI from
+        # waiting on (or rendering) that older response.
+        if self._next_worker is not None:
+            self._next_worker = None
+            self._next_pending = False
         self._pending_play = video_id
         self.query_one(NowPlaying).set_track(title, subtitle)
         self.set_status("Resolving stream…")
@@ -1213,12 +1239,20 @@ class MusicTUI(App[None]):
 
         The daemon also advances on track-end, so a queued double skip would
         otherwise fire twice; the guard collapses a double press into one.
+        A pending play is abandoned: ``next`` replaces what it was fetching.
         """
         if self._next_pending:
             return
+        if self._play_worker is not None:
+            # Abandon the in-flight play in the UI; the daemon cancels it when
+            # the next request arrives, and its late response is ignored.
+            self._play_worker = None
+            self._pending_play = None
         self._next_pending = True
         self.set_status("Resolving stream…")
-        self._next_worker = self.rpc_worker({"cmd": "next"}, timeout=_PLAY_RPC_TIMEOUT)
+        self._next_worker = self.next_rpc_worker(
+            {"cmd": "next"}, timeout=_PLAY_RPC_TIMEOUT
+        )
 
     def action_toggle_auto_next(self) -> None:
         self.state_worker({"cmd": "auto_next", "state": "toggle"})

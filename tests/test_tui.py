@@ -216,6 +216,52 @@ class DelayedDaemon(FakeDaemon):
         return super().respond(request, timeout)
 
 
+class NextDelayedDaemon(FakeDaemon):
+    """FakeDaemon whose next response waits for the test to release it."""
+
+    def __init__(self, status=None):
+        super().__init__(status)
+        self.next_release = threading.Event()
+
+    def respond(self, request, timeout=30.0):
+        if request["cmd"] == "next":
+            self.next_release.wait(min(timeout, 10))
+        return super().respond(request, timeout)
+
+
+class PerTrackDelayedDaemon(FakeDaemon):
+    """A play response waits per video id, so two selections can overlap.
+
+    Models the real daemon: an older fetch can finish after the track the
+    user selected while it was still resolving.
+    """
+
+    def __init__(self, status=None):
+        super().__init__(status)
+        self.releases: dict[str, threading.Event] = {}
+        self.started: dict[str, threading.Event] = {}
+
+    def release(self, video_id: str) -> None:
+        self.releases.setdefault(video_id, threading.Event()).set()
+
+    def respond(self, request, timeout=30.0):
+        if request["cmd"] == "play" and request.get("video_id"):
+            video_id = request["video_id"]
+            self.started.setdefault(video_id, threading.Event()).set()
+            # Cap the wait so a failing test cannot stall teardown for the
+            # full 600s IPC play timeout.
+            self.releases.setdefault(video_id, threading.Event()).wait(min(timeout, 10))
+            status = dict(self.status)
+            status["track"] = {
+                "video_id": video_id,
+                "title": f"Track {video_id}",
+                "artists": ["Artist"],
+                "duration": 200.0,
+            }
+            return {"ok": True, "data": status}
+        return super().respond(request, timeout)
+
+
 def make_client() -> MusicClient:
     client = MusicClient.__new__(MusicClient)
     client.search_api = FakeSearch()
@@ -851,6 +897,168 @@ def test_pending_play_survives_stale_pushes_and_other_rpcs(monkeypatch):
             assert app._pending_play is None
             assert str(np.query_one("#np-title").content) == "Song 0"
             assert str(np.query_one("#np-status").content) == "Playing"
+
+    _run(scenario())
+
+
+def test_late_play_response_cannot_replace_newer_selection(monkeypatch):
+    """The last track the user picked owns the bar, however fetches finish.
+
+    Offline, a track that isn't downloaded can keep resolving for a long time.
+    Selecting a downloaded track meanwhile must play it and must not be
+    replaced (or errored over) when the stale fetch eventually answers.
+    """
+    from music_cli.tui.app import MusicTUI
+    from music_cli.tui.components import NowPlaying
+
+    fake = PerTrackDelayedDaemon(STATUS)
+    monkeypatch.setattr(ipc, "events_socket_path", _unused_socket_path, raising=False)
+    monkeypatch.setattr(
+        ipc, "ensure_daemon", lambda cookies=None, volume=None: None, raising=False
+    )
+    monkeypatch.setattr(ipc, "send_request", fake.respond)
+    monkeypatch.setattr(ipc, "send_play_request", fake.respond)
+
+    async def scenario():
+        app = MusicTUI(make_client())
+        async with app.run_test(size=(120, 40)) as pilot:
+            try:
+                await _settle(pilot, 6)
+
+                # Slow (offline, not downloaded) fetch starts first.
+                slow_started = fake.started.setdefault("slow", threading.Event())
+                app.play_result(make_result(0, "slow"))
+                await _settle(pilot, 2)
+                assert slow_started.wait(2)
+
+                # User switches to a downloaded track while it is still fetching.
+                downloaded_started = fake.started.setdefault(
+                    "downloaded", threading.Event()
+                )
+                app.play_result(make_result(1, "downloaded"))
+                await _settle(pilot, 2)
+                assert downloaded_started.wait(2)
+
+                fake.release("downloaded")
+                await _settle(pilot, 8)
+                assert app._pending_play is None
+                assert app._current_video_id == "downloaded"
+
+                # The stale fetch finally answers: it must not take over.
+                fake.release("slow")
+                await _settle(pilot, 8)
+                assert app._current_video_id == "downloaded"
+                title = app.query_one(NowPlaying).query_one("#np-title")
+                assert str(title.content) == "Track downloaded"
+            finally:
+                # Never leave a fake IPC worker blocking app teardown.
+                fake.release("slow")
+                fake.release("downloaded")
+
+    _run(scenario())
+
+
+def test_reselecting_loaded_track_cancels_pending_play(monkeypatch):
+    """Going back to the loaded track while another fetch is in flight works.
+
+    The "already on that track" guard must only apply when nothing else is
+    pending; otherwise a user cannot revert to what is playing while a slow
+    (offline) fetch is still resolving.
+    """
+    from music_cli.tui.app import MusicTUI
+    from music_cli.tui.components import NowPlaying
+
+    fake = PerTrackDelayedDaemon(STATUS)
+    monkeypatch.setattr(ipc, "events_socket_path", _unused_socket_path, raising=False)
+    monkeypatch.setattr(
+        ipc, "ensure_daemon", lambda cookies=None, volume=None: None, raising=False
+    )
+    monkeypatch.setattr(ipc, "send_request", fake.respond)
+    monkeypatch.setattr(ipc, "send_play_request", fake.respond)
+
+    async def scenario():
+        app = MusicTUI(make_client())
+        async with app.run_test(size=(120, 40)) as pilot:
+            try:
+                await _settle(pilot, 6)
+                _push(app, STATUS)  # "abc" is loaded and playing
+                await _settle(pilot)
+
+                # A slow fetch for another track is still resolving.
+                slow_started = fake.started.setdefault("slow", threading.Event())
+                app.play_result(make_result(0, "slow"))
+                await _settle(pilot, 2)
+                assert slow_started.wait(2)
+
+                # The user re-selects the track that is currently playing.
+                abc_started = fake.started.setdefault("abc", threading.Event())
+                app.play_result(make_result(0, "abc"))
+                await _settle(pilot, 2)
+                assert abc_started.wait(2), "re-selecting the loaded track was ignored"
+
+                fake.release("abc")
+                await _settle(pilot, 8)
+                assert app._pending_play is None
+                assert app._current_video_id == "abc"
+
+                # The abandoned fetch answers later and must be ignored.
+                fake.release("slow")
+                await _settle(pilot, 8)
+                assert app._current_video_id == "abc"
+                title = app.query_one(NowPlaying).query_one("#np-title")
+                assert str(title.content) == "Track abc"
+            finally:
+                fake.release("slow")
+                fake.release("abc")
+
+    _run(scenario())
+
+
+def test_reselecting_loaded_track_cancels_pending_next(monkeypatch):
+    """Clicking the loaded track while a skip resolves keeps it playing.
+
+    ``next`` is also an in-flight selection: the "already on that track" guard
+    must not swallow a revert to it just because no play worker is running.
+    """
+    from music_cli.tui.app import MusicTUI
+
+    fake = NextDelayedDaemon(STATUS)
+    monkeypatch.setattr(ipc, "events_socket_path", _unused_socket_path, raising=False)
+    monkeypatch.setattr(
+        ipc, "ensure_daemon", lambda cookies=None, volume=None: None, raising=False
+    )
+    monkeypatch.setattr(ipc, "send_request", fake.respond)
+    monkeypatch.setattr(ipc, "send_play_request", fake.respond)
+
+    async def scenario():
+        app = MusicTUI(make_client())
+        async with app.run_test(size=(120, 40)) as pilot:
+            try:
+                await _settle(pilot, 6)
+                _push(app, STATUS)  # "abc" is loaded
+                await _settle(pilot)
+                assert app._current_video_id == "abc"
+
+                app.action_next_track()
+                await _settle(pilot, 2)
+                assert app._next_worker is not None
+
+                # The user reverts to the loaded track while next resolves.
+                app.play_result(make_result(0, "abc"))
+                await _settle(pilot, 4)
+                assert any(
+                    request["cmd"] == "play" and request.get("video_id") == "abc"
+                    for request in fake.requests
+                ), "re-selecting the loaded track was ignored"
+                assert app._next_worker is None
+                assert not app._next_pending
+
+                # The abandoned skip answers late and must be ignored.
+                fake.next_release.set()
+                await _settle(pilot, 6)
+                assert app._current_video_id == "abc"
+            finally:
+                fake.next_release.set()
 
     _run(scenario())
 

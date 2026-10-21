@@ -11,10 +11,17 @@ import pytest
 from music_cli import daemon as daemon_module
 from music_cli.core.errors import PlayerError
 from music_cli.daemon import (
+    _AsyncPlay,
     _download_hook,
     _flush_subscriber,
     _is_async_play,
+    _is_cached_play,
+    _PlaySuperseded,
+    _resolve_pending_plays,
+    _should_async_play,
     _spawn_async_play,
+    _starts_or_replaces_playback,
+    _supersede_pending_plays,
     handle_request,
 )
 
@@ -28,6 +35,7 @@ class FakeClient:
     def __init__(self):
         self.current = None
         self.player = FakePlayer()
+        self.cache = None
 
 
 class FakeSession:
@@ -145,6 +153,29 @@ class FakeSession:
 
     def remove_download(self, video_id):
         self._record("remove_download", video_id)
+
+    def commit_play(self, stream):
+        self._record("commit_play", stream)
+        self.client.current = stream
+
+
+class FakeConn:
+    """A socket stand-in: records sent responses and whether it was closed."""
+
+    def __init__(self):
+        self.sent = []
+        self.closed = False
+
+    def sendall(self, payload: bytes) -> None:
+        self.sent.append(payload)
+
+    def close(self) -> None:
+        self.closed = True
+
+    def messages(self) -> list[dict]:
+        import json
+
+        return [json.loads(payload) for payload in self.sent]
 
 
 @pytest.fixture
@@ -497,6 +528,88 @@ def test_spawn_async_play_stops_current_track():
     assert (
         _is_async_play({"cmd": "play", "video_id": "v", "playlist_id": "PL"}) is False
     )
+
+
+def test_cached_play_is_detected_without_network(session, tmp_path):
+    video = tmp_path / "track.m4a"
+
+    class Cache:
+        def path_for(self, video_id):
+            return video if video_id == "downloaded" else None
+
+    session.client.cache = Cache()
+    assert _is_cached_play(session, {"cmd": "play", "video_id": "downloaded"})
+    assert not _is_cached_play(session, {"cmd": "play", "video_id": "missing"})
+    # A query needs a search first, so it is never a direct cached play.
+    assert not _is_cached_play(session, {"cmd": "play", "query": "downloaded"})
+    # The serve loop must start a cached track inline, never on the worker.
+    assert not _should_async_play(session, {"cmd": "play", "video_id": "downloaded"})
+    assert _should_async_play(session, {"cmd": "play", "video_id": "missing"})
+    # No cache at all (tests/headless clients): fall back to the async path.
+    session.client.cache = None
+    assert not _is_cached_play(session, {"cmd": "play", "video_id": "downloaded"})
+    assert _should_async_play(session, {"cmd": "play", "video_id": "downloaded"})
+
+
+@pytest.mark.parametrize(
+    "cmd,payload,expected",
+    [
+        ("play", {"cmd": "play", "video_id": "v"}, True),
+        ("play", {"cmd": "play", "query": "q"}, True),
+        ("play", {"cmd": "play", "queue_index": 0}, True),
+        ("play", {"cmd": "play"}, False),
+        ("play", {"cmd": "play", "video_id": "v", "query": "q"}, False),
+        ("next", {"cmd": "next"}, True),
+        ("stop", {"cmd": "stop"}, True),
+        ("resume", {"cmd": "resume"}, True),
+        ("download", {"cmd": "download", "video_id": "v"}, False),
+        ("status", {"cmd": "status"}, False),
+    ],
+)
+def test_starts_or_replaces_playback(cmd, payload, expected):
+    assert _starts_or_replaces_playback(cmd, payload) is expected
+
+
+def test_superseded_play_never_commits(session):
+    """A fetch that finishes after the user picked another track is dropped.
+
+    Regression: plays resolved in the background and committed in completion
+    order, so a slow (offline) fetch could replace the downloaded track the
+    user selected while it was still trying.
+    """
+    conn = FakeConn()
+    slot = _AsyncPlay(conn, {"cmd": "play", "video_id": "slow"}, generation=1)
+    slot.stream = object()
+    slot.ready.set()
+
+    _resolve_pending_plays(session, {conn: slot}, generation=2)
+
+    assert "commit_play" not in session.names()
+    assert conn.messages() == [
+        {"ok": False, "error": "superseded by a newer play request", "superseded": True}
+    ]
+    assert conn.closed
+
+
+def test_supersede_pending_plays_cancels_and_replies():
+    conn = FakeConn()
+    slot = _AsyncPlay(conn, {"cmd": "play", "video_id": "slow"}, generation=1)
+    pending = {conn: slot}
+
+    _supersede_pending_plays(pending)
+
+    assert slot.cancelled.is_set()
+    assert pending == {}
+    assert conn.messages()[0]["superseded"] is True
+    assert conn.closed
+
+
+def test_cancelled_slot_aborts_download_progress():
+    """Cancelling stops a yt-dlp download instead of fetching it for nothing."""
+    slot = _AsyncPlay(FakeConn(), {"cmd": "play", "video_id": "slow"})
+    slot.cancelled.set()
+    with pytest.raises(_PlaySuperseded):
+        slot.progress({"status": "downloading", "downloaded_bytes": 1})
 
 
 def test_download_hook_skips_unknown_total_and_other_statuses():
