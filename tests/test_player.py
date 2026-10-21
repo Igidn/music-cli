@@ -15,7 +15,7 @@ import yt_dlp
 
 from music_cli.core.errors import PlayerError
 from music_cli.storage.cache import AudioCache, TrackMeta
-from music_cli.yt.cookies import Cookies
+from music_cli.yt.cookies import HTTP_TIMEOUT, Cookies
 from music_cli.yt.extract import (
     PlaylistTrack,
     StreamExtractor,
@@ -105,6 +105,23 @@ class TestCookies:
         names = {c.name for c in session.cookies}
         assert {"__Secure-3PSID", "SID", "SOCS"} <= names
         assert session.headers["User-Agent"]
+
+    def test_requests_session_has_default_timeout(self, cookie_file):
+        """Offline, an unbounded request would hang a daemon fetch forever.
+
+        ytmusicapi only timeouts sessions it creates itself, so the cookie
+        session must carry the timeout on its own.
+        """
+        session = Cookies.from_file(cookie_file).requests_session()
+        seen = {}
+
+        def fake_send(request, **kwargs):
+            seen.update(kwargs)
+            return object()
+
+        session.send = fake_send
+        session.get("https://music.youtube.com")
+        assert seen["timeout"] == HTTP_TIMEOUT
 
     def test_requests_session_missing_file(self, tmp_path):
         with pytest.raises(PlayerError, match="Cookie file not found"):

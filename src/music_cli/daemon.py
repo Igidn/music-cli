@@ -305,6 +305,14 @@ def _download_hook(
     return hook
 
 
+class _PlaySuperseded(Exception):
+    """Abort a fetch whose track a newer play request has replaced.
+
+    Raised from the yt-dlp progress hook so a superseded download stops
+    writing bytes instead of finishing just to be thrown away.
+    """
+
+
 class _AsyncPlay:
     """A single-track ``play`` running in the background.
 
@@ -312,11 +320,23 @@ class _AsyncPlay:
     cache) so the serve loop keeps answering other requests; the ready file is
     handed to the main thread, where player playback actually starts.
     Download progress is streamed to the client so its socket stays alive.
+
+    Each request carries the play generation it was started under. A newer
+    play request supersedes (cancels) every older one: the user's latest
+    selection must win, even when the stale fetch finishes later.
     """
 
-    def __init__(self, conn: socket.socket, request: dict[str, Any]) -> None:
+    def __init__(
+        self, conn: socket.socket, request: dict[str, Any], generation: int = 0
+    ) -> None:
         self.conn = conn
         self.request = request
+        self.generation = generation
+        self.cancelled = threading.Event()
+        # Serialises worker progress lines with the serve loop's superseded
+        # response on the same connection; interleaved writes would corrupt
+        # the newline-delimited JSON stream.
+        self.send_lock = threading.Lock()
         self.client: Any = None
         self.ready = threading.Event()
         self.stream: Any = None
@@ -327,8 +347,11 @@ class _AsyncPlay:
 
         The subscriber feed drives the TUI's live "Downloading… N%" status
         during an async play; the client connection carries the plain
-        ``type: progress`` lines for headless callers.
+        ``type: progress`` lines for headless callers. A cancelled slot
+        aborts the download immediately.
         """
+        if self.cancelled.is_set():
+            raise _PlaySuperseded
         if self.client is not None:
             events = self.client.download_progress
             if events is not None:
@@ -340,12 +363,16 @@ class _AsyncPlay:
         percent = round(downloaded / total * 100) if total else None
         try:
             payload = json.dumps({"type": "progress", "percent": percent}).encode()
-            self.conn.sendall(payload + b"\n")
+            with self.send_lock:
+                self.conn.sendall(payload + b"\n")
         except OSError:
             pass  # client gave up; keep downloading so the track is still cached
 
 
 _ASYNC_PLAY_TARGETS = ("video_id", "query")
+#: Commands that express a new playback intent and therefore supersede any
+#: background play that is still fetching/downloading.
+_SUPERSEDING_COMMANDS = ("next", "stop", "resume")
 
 
 def _is_async_play(request: dict[str, Any]) -> bool:
@@ -354,11 +381,26 @@ def _is_async_play(request: dict[str, Any]) -> bool:
     return ("video_id" in request or "query" in request) and not has_playlist
 
 
+def _starts_or_replaces_playback(cmd: Any, request: dict[str, Any]) -> bool:
+    """Whether this request begins/changes playback and must preempt fetches.
+
+    A malformed ``play`` (no target, or several) is left alone: it is a bad
+    request, not a selection, and must not cancel what the user is fetching.
+    """
+    if cmd in _SUPERSEDING_COMMANDS:
+        return True
+    return cmd == "play" and sum(key in request for key in _PLAY_TARGETS) == 1
+
+
 def _spawn_async_play(
-    session: PlaybackSession, request: dict[str, Any], conn: socket.socket
+    session: PlaybackSession,
+    request: dict[str, Any],
+    conn: socket.socket,
+    *,
+    generation: int = 0,
 ) -> _AsyncPlay:
     """Apply launch flags and start the background resolve+download for a play."""
-    slot = _AsyncPlay(conn, request)
+    slot = _AsyncPlay(conn, request, generation)
     slot.client = session.client
     # The requested track replaces whatever is playing now: stop it up front
     # (exactly like the synchronous play path) so the old audio doesn't keep
@@ -390,20 +432,89 @@ def _async_play_worker(
 ) -> None:
     """Thread body: network-only resolve+download; the serve loop starts playback."""
     try:
-        slot.stream = session.prepare_play(target, request, progress=slot.progress)
+        stream = session.prepare_play(target, request, progress=slot.progress)
+        # A newer play may have superseded this one while it was resolving;
+        # never hand a stale stream to the main thread.
+        if not slot.cancelled.is_set():
+            slot.stream = stream
+    except _PlaySuperseded:
+        pass  # user picked another track; drop this fetch silently
     except Exception as error:  # noqa: BLE001 — daemon boundary; report to client
         slot.error = error
     finally:
         slot.ready.set()
 
 
-def _resolve_pending_plays(session, pending_plays: dict) -> None:
+def _is_cached_play(session: PlaybackSession, request: dict[str, Any]) -> bool:
+    """Whether a single-track play can start from the local cache right now.
+
+    Cached tracks (including offline downloads) need no network at all, so
+    they are started synchronously on the serve loop instead of being queued
+    behind a possibly slow or hanging background fetch.
+    """
+    video_id = request.get("video_id")
+    if not video_id:
+        return False
+    cache = getattr(session.client, "cache", None)
+    return cache is not None and cache.path_for(video_id) is not None
+
+
+def _should_async_play(session: PlaybackSession, request: dict[str, Any]) -> bool:
+    """Whether this play needs the background resolve+download worker.
+
+    Cached tracks (including offline downloads) start synchronously instead:
+    the user's selection must never wait behind a network fetch.
+    """
+    return _is_async_play(request) and not _is_cached_play(session, request)
+
+
+def _reject_superseded(
+    conn: socket.socket, slot: _AsyncPlay, pending_plays: dict
+) -> None:
+    """Cancel a replaced play, answer its client, and forget the slot.
+
+    The response tells a headless caller its request was replaced (rather than
+    failed), and cancelling the slot stops the download instead of finishing
+    it for nothing.
+    """
+    slot.cancelled.set()
+    # Serialise with the worker's progress lines on the same connection.
+    with slot.send_lock:
+        try:
+            ipc.send_message(
+                conn,
+                {
+                    "ok": False,
+                    "error": "superseded by a newer play request",
+                    "superseded": True,
+                },
+            )
+        except OSError:
+            pass  # client already gone; the worker is cancelled regardless
+        try:
+            conn.close()
+        except OSError:
+            pass
+    pending_plays.pop(conn, None)
+
+
+def _supersede_pending_plays(pending_plays: dict) -> None:
+    """Cancel every background play: a newer selection supersedes them all."""
+    for conn, slot in list(pending_plays.items()):
+        _reject_superseded(conn, slot, pending_plays)
+
+
+def _resolve_pending_plays(session, pending_plays: dict, generation: int = 0) -> None:
     """Start playback for finished downloads and reply to their clients.
 
-    Runs on the main thread so player playback can pump.
+    Runs on the main thread so player playback can pump. A slot from an older
+    play generation is never committed: a newer selection already won.
     """
     for conn, slot in list(pending_plays.items()):
         if not slot.ready.is_set():
+            continue
+        if slot.cancelled.is_set() or slot.generation < generation:
+            _reject_superseded(conn, slot, pending_plays)
             continue
         if slot.error is not None:
             response = {"ok": False, "error": str(slot.error)}
@@ -538,6 +649,10 @@ def _serve(
     subscribers: dict[socket.socket, deque[bytes]] = {}
     pending_plays: dict[socket.socket, _AsyncPlay] = {}
     pending_downloads: dict[socket.socket, _AsyncDownload] = {}
+    # Monotonic "user intent" counter. Every playback selection bumps it and
+    # cancels older background plays, so a slow fetch can never override a
+    # track the user picked afterwards.
+    play_generation = 0
     last_signature: tuple | None = None
     last_heartbeat = time.monotonic()
     last_activity = time.monotonic()
@@ -565,6 +680,12 @@ def _serve(
                     conn.close()
                     continue  # malformed request; keep serving
                 cmd = request.get("cmd")
+                if _starts_or_replaces_playback(cmd, request):
+                    # The user's latest selection wins: cancel every older
+                    # fetch so it cannot commit (or report) over this one.
+                    play_generation += 1
+                    _supersede_pending_plays(pending_plays)
+                    eof.clear()  # supersede any pending track-end
                 if cmd == "download" and request.get("video_id"):
                     # Slow offline download: run off the event loop and reply
                     # (with progress streamed) when the file is on disk.
@@ -573,11 +694,14 @@ def _serve(
                     )
                     last_activity = time.monotonic()
                     continue
-                if cmd == "play" and _is_async_play(request):
+                if cmd == "play" and _should_async_play(session, request):
                     # Run the slow resolve+download off the event loop; the
                     # response is streamed back when playback actually starts.
-                    pending_plays[conn] = _spawn_async_play(session, request, conn)
-                    eof.clear()  # supersede any pending track-end
+                    # Cached tracks fall through and start synchronously below:
+                    # offline downloads must never wait on a network fetch.
+                    pending_plays[conn] = _spawn_async_play(
+                        session, request, conn, generation=play_generation
+                    )
                     last_activity = time.monotonic()
                     continue
                 try:
@@ -618,7 +742,7 @@ def _serve(
                 with _subscriber_lock:
                     _flush_subscriber(sock, subscribers)
         # Start playback for any finished background downloads (main thread).
-        _resolve_pending_plays(session, pending_plays)
+        _resolve_pending_plays(session, pending_plays, play_generation)
         # Reply to finished offline downloads and tell subscribers to refresh.
         _resolve_pending_downloads(session, pending_downloads, subscribers)
         if eof.is_set():

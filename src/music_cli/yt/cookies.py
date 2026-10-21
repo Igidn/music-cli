@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from functools import partial
 from http.cookiejar import MozillaCookieJar
 from typing import Any
 
@@ -18,6 +19,12 @@ USER_AGENT = (
 )
 
 ORIGIN = "https://music.youtube.com"
+
+#: Network timeout for ytmusicapi requests. ytmusicapi applies 30s to the
+#: session it creates itself, but a caller-supplied session (our cookie
+#: sessions) is used verbatim — without an explicit timeout an offline daemon
+#: can block forever in a queue/library fetch.
+HTTP_TIMEOUT = 30.0
 
 
 @dataclass(frozen=True)
@@ -83,7 +90,7 @@ class Cookies:
         session = requests.Session()
         session.cookies = jar
         session.headers.update({"User-Agent": USER_AGENT})
-        return session
+        return _with_timeout(session)
 
 
 def _browser_auth(session: requests.Session) -> dict[str, str]:
@@ -118,6 +125,17 @@ def _browser_auth(session: requests.Session) -> dict[str, str]:
     }
 
 
+def _with_timeout(session: requests.Session) -> requests.Session:
+    """Give ``session`` a default request timeout (ytmusicapi's own default).
+
+    ``YTMusic`` only applies a timeout to the session it creates itself; a
+    supplied session keeps requests' unlimited default. Offline, that turns a
+    queue/library fetch into an indefinite block.
+    """
+    session.request = partial(session.request, timeout=HTTP_TIMEOUT)  # type: ignore[method-assign]
+    return session
+
+
 def _account_session(cookies: Cookies) -> requests.Session:
     """A session carrying the *full* YouTube cookie set.
 
@@ -140,4 +158,4 @@ def _account_session(cookies: Cookies) -> requests.Session:
     session = requests.Session()
     session.cookies = jar
     session.headers.update({"User-Agent": USER_AGENT})
-    return session
+    return _with_timeout(session)
