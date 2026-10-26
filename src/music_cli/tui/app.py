@@ -227,6 +227,7 @@ class MusicTUI(App[None]):
         Binding("minus", "volume_down", "Vol -"),
         Binding("plus", "volume_up", "Vol +"),
         Binding("m", "toggle_mute", "Mute"),
+        Binding("s", "add_to_playlist", "Add to playlist"),
         Binding("ctrl+d", "download_track", "Download track"),
         Binding("q", "detach", "Quit"),
         Binding("ctrl+q", "quit", "Quit & stop", priority=True),
@@ -260,6 +261,8 @@ class MusicTUI(App[None]):
         self._library_playlists: list[LibraryPlaylist] = []
         # Reflect-the-daemon state; the daemon owns the truth and pushes it.
         self._current_video_id: str | None = None
+        self._current_title = ""
+        self._current_artists: tuple[str, ...] = ()
         self._pending_play: str | None = None
         self._play_worker: Worker[dict] | None = None
         self._next_pending = False
@@ -420,7 +423,26 @@ class MusicTUI(App[None]):
         if action == "detach":
             search = self.query("#search-input")
             return not (search and self.focused is search.first())
+        if action == "add_to_playlist":
+            # The focused pane exposes `s` for its selected row; this fallback
+            # targets the current track when no row is selected (for example,
+            # an empty results table).
+            return (
+                self.client.library.authenticated and self._current_video_id is not None
+            )
         return True
+
+    def action_add_to_playlist(self) -> None:
+        """Add the track shown in the now-playing bar to a playlist."""
+        if self._current_video_id is None:
+            return
+        self.post_message(
+            AddToPlaylistRequested(
+                self._current_video_id,
+                self._current_title,
+                self._current_artists,
+            )
+        )
 
     def action_detach(self) -> None:
         """Quit the TUI and leave the daemon playing in the background.
@@ -797,7 +819,12 @@ class MusicTUI(App[None]):
             and track["video_id"] != self._pending_play
         )
         if holds_target:
+            had_current = self._current_video_id is not None
             self._current_video_id = track["video_id"] if track else None
+            self._current_title = track["title"] if track else ""
+            self._current_artists = tuple(track.get("artists") or []) if track else ()
+            if (self._current_video_id is not None) != had_current:
+                self.refresh_bindings()
             if track is None:
                 self._show_last_track_paused()
             else:

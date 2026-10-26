@@ -1830,6 +1830,40 @@ def test_add_to_playlist_from_queue(monkeypatch):
     _run(scenario())
 
 
+def test_add_current_track_to_playlist(monkeypatch):
+    from textual.widgets import SelectionList
+
+    from music_cli.tui.app import MusicTUI
+    from music_cli.tui.components import ResultsTable
+    from music_cli.tui.screens.modals import AddToPlaylistScreen
+
+    install_daemon(monkeypatch)
+
+    async def scenario():
+        client = make_client()
+        app = MusicTUI(client)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            # Nothing selected in the results pane, but a track is playing:
+            # the footer offers `s` for the current track instead.
+            _push(app, STATUS)
+            results = app.query_one(ResultsTable)
+            results.focus()
+            await pilot.pause()
+            assert results.row_count == 0
+            assert "s" in app.screen.active_bindings
+            await pilot.press("s")
+            await pilot.pause()
+            assert isinstance(app.screen, AddToPlaylistScreen)
+            app.screen.query_one(SelectionList).toggle("p1")
+            await pilot.press("escape")
+            for _ in range(4):
+                await pilot.pause()
+            assert client.library.add_calls == [("p1", ["abc"])]
+
+    _run(scenario())
+
+
 def test_remove_track_from_playlist_tree(monkeypatch):
     from textual.widgets import Button
 
@@ -1931,7 +1965,9 @@ def test_playlist_keybinds_show_only_with_selection(monkeypatch):
     from music_cli.tui.app import MusicTUI
     from music_cli.tui.components import LibraryTree, ResultsTable
 
-    install_daemon(monkeypatch)
+    # No current track, so the app-level `s` fallback stays hidden and these
+    # assertions only cover the focused pane's own binding.
+    install_daemon(monkeypatch, status=IDLE_STATUS)
 
     async def scenario():
         client = make_client()
