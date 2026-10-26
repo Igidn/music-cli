@@ -96,7 +96,6 @@ class GStreamerPlayer:
         # Apply initial volume — applied via property setter below.
         self._apply_volume()
 
-
     def pump(self) -> None:
         """Process pending GStreamer bus messages without blocking.
 
@@ -230,7 +229,6 @@ class GStreamerPlayer:
             state in (Gst.State.PLAYING, Gst.State.PAUSED)
             or pending == Gst.State.PLAYING
         )
-
 
     def _apply_volume(self) -> None:
         """Push the current volume/mute state onto the pipeline."""

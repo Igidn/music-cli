@@ -806,7 +806,6 @@ class MusicTUI(App[None]):
         self._refresh_downloads()
         self.set_status("Download ready")
 
-
     def _render_status(self, status: dict) -> None:
         now_playing = self.query_one(NowPlaying)
         track = status.get("track")
@@ -896,7 +895,6 @@ class MusicTUI(App[None]):
             artists=list(entry.get("artists") or []),
             duration=format_duration(entry.get("duration")),
         )
-
 
     @on(ResultsTable.RowSelected)
     def _on_result_selected(self, event: ResultsTable.RowSelected) -> None:
