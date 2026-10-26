@@ -33,6 +33,19 @@ class LocalFile:
     owned: bool = True
 
 
+@dataclass(frozen=True)
+class MediaCommand:
+    """A transport command queued by a platform media-control integration.
+
+    ``name`` is one of ``play``, ``pause``, ``toggle``, ``next``, ``previous``,
+    ``stop`` or ``seek``. ``position`` is the absolute seek target in seconds
+    and is only set for ``seek``.
+    """
+
+    name: str
+    position: float | None = None
+
+
 def download_temp(
     extractor: StreamExtractor,
     stream: StreamInfo,

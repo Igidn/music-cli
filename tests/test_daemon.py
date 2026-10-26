@@ -11,7 +11,9 @@ import pytest
 from music_cli import daemon as daemon_module
 from music_cli.core.errors import PlayerError
 from music_cli.daemon import (
+    _apply_media_commands,
     _AsyncPlay,
+    _dispatch_media_command,
     _download_hook,
     _flush_subscriber,
     _is_async_play,
@@ -24,6 +26,7 @@ from music_cli.daemon import (
     _supersede_pending_plays,
     handle_request,
 )
+from music_cli.player.base import MediaCommand
 
 
 class FakePlayer:
@@ -288,6 +291,109 @@ def test_simple_transport_dispatch(session, cmd):
     assert response == {"ok": True, "data": session._status}
     method = "next_track" if cmd == "next" else cmd
     assert session.calls == [(method, (), {})]
+
+
+@pytest.mark.parametrize(
+    "command,expected",
+    [
+        (MediaCommand("pause"), ("pause", (), {})),
+        (MediaCommand("toggle"), ("toggle", (), {})),
+        (MediaCommand("next"), ("next_track", (), {})),
+        (
+            MediaCommand("previous"),
+            ("seek", (), {"offset": None, "position": 0.0}),
+        ),
+        (MediaCommand("stop"), ("stop", (), {})),
+        (
+            MediaCommand("seek", position=42.5),
+            ("seek", (), {"offset": None, "position": 42.5}),
+        ),
+    ],
+)
+def test_media_command_dispatch(session, command, expected):
+    _dispatch_media_command(session, command)
+    assert session.calls == [expected]
+
+
+def test_media_play_resumes_current_track(session):
+    session.client.current = object()
+    _dispatch_media_command(session, MediaCommand("play"))
+    assert session.calls == [("resume", (), {})]
+
+
+def test_media_play_falls_back_to_history(session):
+    session.resume_last_result = object()
+    _dispatch_media_command(session, MediaCommand("play"))
+    assert session.calls == [("resume_last", (), {})]
+
+
+def test_media_play_with_empty_history_is_a_noop(session):
+    _dispatch_media_command(session, MediaCommand("play"))
+    assert session.calls == [("resume_last", (), {})]
+
+
+def test_media_command_failure_does_not_escape(session):
+    session.fail_with = PlayerError("boom")
+    _dispatch_media_command(session, MediaCommand("toggle"))
+    assert session.calls == [("toggle", (), {})]
+
+
+class FakeMedia:
+    """Minimal MediaControl surface for serve-loop tests."""
+
+    def __init__(self, commands):
+        self.commands = commands
+        self.updates = []
+
+    def drain(self):
+        commands, self.commands = self.commands, []
+        return commands
+
+    def update(self, status):
+        self.updates.append(status)
+
+
+def test_media_next_supersedes_a_pending_play(session):
+    conn = FakeConn()
+    slot = _AsyncPlay(conn, {"cmd": "play", "video_id": "slow"}, generation=1)
+    pending = {conn: slot}
+    eof = threading.Event()
+    eof.set()
+
+    generation, handled = _apply_media_commands(
+        session, FakeMedia([MediaCommand("next")]), pending, eof, 1
+    )
+
+    assert handled is True
+    assert generation == 2
+    assert slot.cancelled.is_set()
+    assert pending == {}
+    assert not eof.is_set()
+    assert session.names() == ["next_track"]
+
+
+def test_media_pause_keeps_a_pending_play(session):
+    conn = FakeConn()
+    slot = _AsyncPlay(conn, {"cmd": "play", "video_id": "slow"}, generation=1)
+    pending = {conn: slot}
+    eof = threading.Event()
+
+    generation, handled = _apply_media_commands(
+        session, FakeMedia([MediaCommand("pause")]), pending, eof, 1
+    )
+
+    assert handled is True
+    assert generation == 1
+    assert not slot.cancelled.is_set()
+    assert pending == {conn: slot}
+    assert session.names() == ["pause"]
+
+
+def test_no_media_commands_reports_nothing_handled(session):
+    generation, handled = _apply_media_commands(
+        session, FakeMedia([]), {}, threading.Event(), 7
+    )
+    assert (generation, handled) == (7, False)
 
 
 def test_resume_with_current_track(session):

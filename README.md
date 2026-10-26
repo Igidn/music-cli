@@ -76,6 +76,19 @@ music-cli login
 | `q` | Quit, music keeps playing in the background |
 | `Ctrl+q` | Quit and stop playback |
 
+## macOS media controls
+
+On macOS, music-cli integrates with Control Center, the Now Playing widget, media keys, and AirPods controls. The background daemon publishes the current track and responds to transport commands even when the TUI is closed.
+
+| Control | Action |
+| --- | --- |
+| Play / Pause | Resume or pause the current track |
+| Next | Skip to the next track |
+| Previous | Restart the current track |
+| Seek | Jump to a position in the track |
+
+The integration uses Apple's public MediaPlayer framework. It needs no `.app` bundle or extra permissions and starts automatically with the daemon. Other platforms are unaffected.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
