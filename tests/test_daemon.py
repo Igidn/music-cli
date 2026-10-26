@@ -372,6 +372,26 @@ def test_media_next_supersedes_a_pending_play(session):
     assert session.names() == ["next_track"]
 
 
+def test_media_play_keeps_a_pending_play(session):
+    # A fetch in flight has already stopped the old player, so resuming it is a
+    # no-op: cancelling the user's selection would leave the daemon silent.
+    session.client.current = object()
+    conn = FakeConn()
+    slot = _AsyncPlay(conn, {"cmd": "play", "video_id": "slow"}, generation=1)
+    pending = {conn: slot}
+    eof = threading.Event()
+
+    generation, handled = _apply_media_commands(
+        session, FakeMedia([MediaCommand("play")]), pending, eof, 1
+    )
+
+    assert handled is True
+    assert generation == 1
+    assert not slot.cancelled.is_set()
+    assert pending == {conn: slot}
+    assert session.names() == ["resume"]
+
+
 def test_media_pause_keeps_a_pending_play(session):
     conn = FakeConn()
     slot = _AsyncPlay(conn, {"cmd": "play", "video_id": "slow"}, generation=1)

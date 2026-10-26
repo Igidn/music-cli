@@ -216,10 +216,10 @@ def _apply_media_commands(
 ) -> tuple[int, bool]:
     """Drain queued system media commands and run them on the serve loop.
 
-    A media command that starts new playback supersedes pending background
-    fetches exactly like the equivalent socket request, so the user's latest
-    intent always wins. Returns the updated play generation and whether any
-    command was handled.
+    A media command that clearly replaces playback (``next``, ``stop``)
+    supersedes pending background fetches exactly like the equivalent socket
+    request, so the user's latest intent always wins. Returns the updated play
+    generation and whether any command was handled.
     """
     commands = media.drain()
     for command in commands:
@@ -449,9 +449,12 @@ _ASYNC_PLAY_TARGETS = ("video_id", "query")
 #: Commands that express a new playback intent and therefore supersede any
 #: background play that is still fetching/downloading.
 _SUPERSEDING_COMMANDS = ("next", "stop", "resume")
-#: System media commands that also express a new playback intent. ``previous``
-#: only restarts the current track, so it does not cancel a pending fetch.
-_MEDIA_SUPERSEDING_COMMANDS = ("play", "next", "stop")
+#: System media commands that clearly replace playback and therefore supersede
+#: a pending background fetch. ``play`` is absent on purpose: a fetch has already
+#: stopped the old player, so resuming it would be a no-op -- cancelling the
+#: user's selection here would leave the daemon silent on a stale paused track.
+#: ``previous`` only restarts the current track, so it does not cancel a fetch.
+_MEDIA_SUPERSEDING_COMMANDS = ("next", "stop")
 
 
 def _is_async_play(request: dict[str, Any]) -> bool:
