@@ -583,7 +583,15 @@ class MusicTUI(App[None]):
     @on(Worker.StateChanged)
     def _on_worker_state_changed(self, event: Worker.StateChanged) -> None:
         worker = event.worker
-        if not worker.is_finished:
+        # Check the event's state, not the worker's current one: a fast worker
+        # can queue PENDING/RUNNING/SUCCESS before the UI drains them, and by
+        # then every message would appear to be the finished one, running the
+        # handler several times for the same worker.
+        if event.state not in (
+            WorkerState.CANCELLED,
+            WorkerState.ERROR,
+            WorkerState.SUCCESS,
+        ):
             return
         # A background worker (e.g. the lyric fetch) can finish after the app
         # has started tearing down; its handler must not touch the widgets then.
