@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import select
 import signal
 import socket
@@ -27,7 +28,10 @@ from . import ipc
 from .core.errors import PlayerError
 
 if TYPE_CHECKING:
+    from .player.base import MediaCommand
     from .session import PlaybackSession
+
+logger = logging.getLogger(__name__)
 
 _STATE_VALUES = ("on", "off", "toggle")
 _PLAY_TARGETS = ("query", "video_id", "playlist_id", "album_id", "queue_index")
@@ -174,6 +178,59 @@ def _resume(session: PlaybackSession) -> dict | None:
     return None
 
 
+def _dispatch_media_command(session: PlaybackSession, command: MediaCommand) -> None:
+    """Run one command from the system Now Playing controls.
+
+    Called on the serve loop, where AVFoundation playback is safe to touch.
+    Failures are contained here: a media key must never take down the daemon.
+    """
+    try:
+        if command.name == "play":
+            _resume(session)
+        elif command.name == "pause":
+            session.pause()
+        elif command.name == "toggle":
+            session.toggle()
+        elif command.name == "next":
+            session.next_track()  # None just means the queue ran out
+        elif command.name == "previous":
+            # No previous-track engine yet: restart the current track, which
+            # is the usual meaning of "previous" on a single-track history.
+            session.seek(position=0.0)
+        elif command.name == "stop":
+            session.stop()
+        elif command.name == "seek" and command.position is not None:
+            session.seek(position=command.position)
+    except PlayerError as error:
+        logger.warning("media command %s failed: %s", command.name, error)
+    except Exception:
+        logger.exception("media command %s crashed", command.name)
+
+
+def _apply_media_commands(
+    session: PlaybackSession,
+    media: Any,
+    pending_plays: dict,
+    eof: threading.Event,
+    play_generation: int,
+) -> tuple[int, bool]:
+    """Drain queued system media commands and run them on the serve loop.
+
+    A media command that clearly replaces playback (``next``, ``stop``)
+    supersedes pending background fetches exactly like the equivalent socket
+    request, so the user's latest intent always wins. Returns the updated play
+    generation and whether any command was handled.
+    """
+    commands = media.drain()
+    for command in commands:
+        if command.name in _MEDIA_SUPERSEDING_COMMANDS:
+            play_generation += 1
+            _supersede_pending_plays(pending_plays)
+            eof.clear()
+        _dispatch_media_command(session, command)
+    return play_generation, bool(commands)
+
+
 def _seek(session: PlaybackSession, request: dict) -> dict:
     if "offset" in request:
         session.seek(offset=request["offset"])
@@ -248,6 +305,7 @@ def _claim_socket(path) -> socket.socket:
 def main(argv: list[str] | None = None) -> None:
     args = _parse_args(argv)
     from .client import MusicClient
+    from .player import create_media_control
     from .session import PlaybackSession  # lazy: absent at module-import time
     from .storage.cache import AudioCache
     from .yt.cookies import Cookies
@@ -255,6 +313,14 @@ def main(argv: list[str] | None = None) -> None:
     cookies = Cookies.from_file(args.cookies) if args.cookies else None
     client = MusicClient(cookies=cookies, volume=args.volume, cache=AudioCache())
     session = PlaybackSession(client)
+    media = create_media_control()
+    if media is not None:
+        try:
+            media.start()
+        except Exception:
+            logger.exception("could not start macOS media controls")
+            media.close()
+            media = None
 
     path = ipc.socket_path()
     server = _claim_socket(path)
@@ -268,12 +334,22 @@ def main(argv: list[str] | None = None) -> None:
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, lambda *a: stop.set())
     try:
-        _serve(session, server, event_server, eof, stop, args.idle_timeout)
+        _serve(
+            session,
+            server,
+            event_server,
+            eof,
+            stop,
+            args.idle_timeout,
+            media=media,
+        )
     finally:
         server.close()
         event_server.close()
         path.unlink(missing_ok=True)
         events_path.unlink(missing_ok=True)
+        if media is not None:
+            media.close()
         session.close()
 
 
@@ -373,6 +449,12 @@ _ASYNC_PLAY_TARGETS = ("video_id", "query")
 #: Commands that express a new playback intent and therefore supersede any
 #: background play that is still fetching/downloading.
 _SUPERSEDING_COMMANDS = ("next", "stop", "resume")
+#: System media commands that clearly replace playback and therefore supersede
+#: a pending background fetch. ``play`` is absent on purpose: a fetch has already
+#: stopped the old player, so resuming it would be a no-op -- cancelling the
+#: user's selection here would leave the daemon silent on a stale paused track.
+#: ``previous`` only restarts the current track, so it does not cancel a fetch.
+_MEDIA_SUPERSEDING_COMMANDS = ("next", "stop")
 
 
 def _is_async_play(request: dict[str, Any]) -> bool:
@@ -638,6 +720,7 @@ def _serve(
     eof: threading.Event,
     stop: threading.Event,
     idle_timeout: float,
+    media: Any | None = None,
 ) -> None:
     """Serve control requests and push state events until quit/idle/signal.
 
@@ -769,7 +852,18 @@ def _serve(
             idle_timeout,
         ):
             return
+        # MediaPlayer callbacks are delivered while the run loop is pumped;
+        # drain them afterwards, then publish the resulting state. Draining
+        # here (rather than inside the callback) keeps AVFoundation access on
+        # the serve loop's thread and lets the handler return immediately.
         session.client.player.pump()
+        if media is not None:
+            play_generation, handled = _apply_media_commands(
+                session, media, pending_plays, eof, play_generation
+            )
+            if handled:
+                last_activity = time.monotonic()
+            media.update(session.status())
 
 
 def _status_signature(status: dict) -> tuple:

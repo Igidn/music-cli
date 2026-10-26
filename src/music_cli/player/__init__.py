@@ -11,6 +11,7 @@ codebase are platform-agnostic.
 
 from __future__ import annotations
 
+import logging
 import sys
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
@@ -23,10 +24,13 @@ if TYPE_CHECKING:
 
 __all__ = [
     "LocalFile",
+    "create_media_control",
     "create_player",
     "default_fetch_stream",
     "download_temp",
 ]
+
+logger = logging.getLogger(__name__)
 
 
 def create_player(
@@ -68,3 +72,20 @@ def create_player(
         fetch_stream=fetch_stream,
         download_progress=download_progress,
     )
+
+
+def create_media_control() -> Any | None:
+    """Create the macOS Now Playing controller, or ``None`` elsewhere.
+
+    The MediaPlayer framework is imported lazily so Linux installs never touch
+    it. A missing framework only disables system media controls; playback
+    itself keeps working.
+    """
+    if sys.platform != "darwin":
+        return None
+    try:
+        from .media_control import MediaControl
+    except ImportError as error:
+        logger.warning("macOS media controls unavailable: %s", error)
+        return None
+    return MediaControl()
