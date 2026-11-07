@@ -495,6 +495,27 @@ class TestPlaylists:
         assert set(obj) == {"video_id", "title", "artists", "duration"}
         assert obj["video_id"] == "t1"
 
+    def test_tracks_accepts_list_number(self, fake_client, capsys):
+        assert cli.run(parse("playlists", "tracks", "1")) == 0
+        assert fake_client.library.calls == [("tracks", "PL1")]
+
+    def test_play_accepts_list_number(self, daemon, fake_client):
+        assert cli.run(parse("playlists", "play", "1", "--track", "2")) == 0
+        assert daemon.requests == [
+            {"cmd": "play", "playlist_id": "PL1", "playlist_index": 1}
+        ]
+
+    def test_play_accepts_explicit_id(self, daemon, fake_client):
+        assert cli.run(parse("playlists", "play", "PLU1df")) == 0
+        assert daemon.requests == [
+            {"cmd": "play", "playlist_id": "PLU1df", "playlist_index": 0}
+        ]
+
+    def test_play_unknown_list_number(self, daemon, fake_client, capsys):
+        assert cli.run(parse("playlists", "play", "2")) == 1
+        assert daemon.requests == []
+        assert "no playlist #2" in capsys.readouterr().err
+
     def test_create(self, fake_client, capsys):
         assert cli.run(parse("playlists", "create", "My Mix")) == 0
         assert fake_client.library.calls == [("create", "My Mix")]
