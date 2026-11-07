@@ -128,21 +128,31 @@ def register_subcommands(subparsers: argparse._SubParsersAction) -> None:
     commands = playlists.add_subparsers(dest="playlists_command", required=True)
     _add_json(commands.add_parser("list", help="list your playlists"))
     tracks = commands.add_parser("tracks", help="list a playlist's tracks")
-    tracks.add_argument("id", metavar="ID", help="playlist id")
+    tracks.add_argument(
+        "id", metavar="ID|#", help="playlist id, or # from 'playlists list'"
+    )
     _add_json(tracks)
     create = commands.add_parser("create", help="create a playlist")
     create.add_argument("name", metavar="NAME")
     rename = commands.add_parser("rename", help="rename a playlist")
-    rename.add_argument("id", metavar="ID")
+    rename.add_argument(
+        "id", metavar="ID|#", help="playlist id, or # from 'playlists list'"
+    )
     rename.add_argument("name", metavar="NAME")
     add = commands.add_parser("add", help="add tracks to a playlist")
-    add.add_argument("id", metavar="ID")
+    add.add_argument(
+        "id", metavar="ID|#", help="playlist id, or # from 'playlists list'"
+    )
     add.add_argument("video_ids", nargs="+", metavar="VIDEO_ID")
     remove = commands.add_parser("remove", help="remove a track from a playlist")
-    remove.add_argument("id", metavar="ID")
+    remove.add_argument(
+        "id", metavar="ID|#", help="playlist id, or # from 'playlists list'"
+    )
     remove.add_argument("video_id", metavar="VIDEO_ID")
     play = commands.add_parser("play", help="play a playlist, optionally from a track")
-    play.add_argument("id", metavar="ID", help="playlist id")
+    play.add_argument(
+        "id", metavar="ID|#", help="playlist id, or # from 'playlists list'"
+    )
     play.add_argument(
         "--track",
         type=int,
@@ -520,20 +530,43 @@ def _cmd_playlists(args: argparse.Namespace) -> int:
     if action == "tracks":
         return _playlists_tracks(args, library)
     if action == "play":
-        return _playlists_play(args)
+        return _playlists_play(args, library)
     if action == "create":
         playlist_id = library.create_playlist(args.name)
         _console.print(f"Created playlist “{escape(args.name)}” ({playlist_id})")
     elif action == "rename":
-        library.rename_playlist(args.id, args.name)
+        playlist_id = _playlist_id(args.id, library)
+        library.rename_playlist(playlist_id, args.name)
         _console.print(f"Renamed playlist to “{escape(args.name)}”")
     elif action == "add":
-        library.add_tracks(args.id, args.video_ids)
-        _console.print(f"Added {len(args.video_ids)} track(s) to playlist {args.id}")
+        playlist_id = _playlist_id(args.id, library)
+        library.add_tracks(playlist_id, args.video_ids)
+        _console.print(
+            f"Added {len(args.video_ids)} track(s) to playlist {playlist_id}"
+        )
     elif action == "remove":
-        library.remove_track(args.id, args.video_id)
-        _console.print(f"Removed {args.video_id} from playlist {args.id}")
+        playlist_id = _playlist_id(args.id, library)
+        library.remove_track(playlist_id, args.video_id)
+        _console.print(f"Removed {args.video_id} from playlist {playlist_id}")
     return 0
+
+
+def _playlist_id(value: str, library: Any) -> str:
+    """Resolve a playlist id or a row number from ``playlists list``.
+
+    The list prints 1-based row numbers, so users can pass one of those
+    instead of the long id. Real playlist ids are never all digits.
+    """
+    if not value.isdigit():
+        return value
+    playlists = library.playlists()
+    index = int(value)
+    if not 1 <= index <= len(playlists):
+        raise PlayerError(
+            f"no playlist #{index} — 'music-cli playlists list' "
+            f"shows {len(playlists)} playlist(s)"
+        )
+    return playlists[index - 1].playlist_id
 
 
 def _playlists_list(args: argparse.Namespace, library: Any) -> int:
@@ -565,7 +598,7 @@ def _playlists_list(args: argparse.Namespace, library: Any) -> int:
 
 
 def _playlists_tracks(args: argparse.Namespace, library: Any) -> int:
-    tracks = library.tracks(args.id)
+    tracks = library.tracks(_playlist_id(args.id, library))
     if args.json:
         for track in tracks:
             _print_json(
@@ -681,16 +714,17 @@ def _playlists_downloaded(args: argparse.Namespace) -> int:
     return 0
 
 
-def _playlists_play(args: argparse.Namespace) -> int:
+def _playlists_play(args: argparse.Namespace, library: Any) -> int:
     """Play a playlist from ``--track`` (1-based) via the daemon.
 
     Only the start index matters here; the daemon queues the rest of the
     playlist for auto-next, so playback continues in order.
     """
+    playlist_id = _playlist_id(args.id, library)
     _ensure_daemon(args)
     request: dict[str, Any] = {
         "cmd": "play",
-        "playlist_id": args.id,
+        "playlist_id": playlist_id,
         "playlist_index": max(args.track - 1, 0),
     }
     with _console.status("Resolving stream…", spinner="dots"):
