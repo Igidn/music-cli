@@ -166,6 +166,7 @@ def client(tmp_path):
     c.queue = []
     c.current = None
     c._playlist = []
+    c._playlist_id = None
     c._cookies = None
     c._extractor_factory = StreamExtractor
     c._in_flight = set()
@@ -279,6 +280,81 @@ class TestPlay:
         assert stream.video_id == "new"
         assert client.player.played[-1].video_id == "new"
         assert history.most_recent().played == 2
+
+
+class TestPlaylistRemovalSync:
+    def test_removed_track_dropped_from_queue_and_loop_snapshot(
+        self, client, session
+    ):
+        client.library = FakeLibrary(
+            [make_track("p1"), make_track("p2"), make_track("p3")]
+        )
+        session.play_playlist("PL")
+        result = session.playlist_track_removed("PL", "p2")
+        assert result == {"updated": True, "queued_removed": 1}
+        assert [t.video_id for t in client.queue] == ["p3"]
+        assert [t.video_id for t in client._playlist] == ["p1", "p3"]
+
+    def test_removed_track_never_plays_again_on_loop(self, client, session):
+        client.library = FakeLibrary([make_track("p1"), make_track("p2")])
+        session.play_playlist("PL")  # plays p1, queues p2
+        session.playlist_track_removed("PL", "p2")
+        played = [session.next_track().video_id, session.next_track().video_id]
+        assert "p2" not in played
+
+    def test_loop_refill_after_removal_requeues_without_the_track(
+        self, client, session
+    ):
+        client.library = FakeLibrary(
+            [make_track("p1"), make_track("p2"), make_track("p3")]
+        )
+        session.play_playlist("PL")
+        session.playlist_track_removed("PL", "p2")
+        client.queue = []
+        track = session.next_track()  # triggers loop_playlist refill
+        assert track.video_id == "p1"
+        assert [t.video_id for t in client.queue] == ["p3"]
+
+    def test_removal_sync_only_applies_to_the_playing_playlist(
+        self, client, session
+    ):
+        client.library = FakeLibrary([make_track("p1"), make_track("p2")])
+        session.play_playlist("PL")
+        result = session.playlist_track_removed("OTHER", "p2")
+        assert result == {"updated": False, "queued_removed": 0}
+        assert [t.video_id for t in client.queue] == ["p2"]
+
+    def test_removal_sync_after_watch_playlist_play_is_a_no_op(self, client, session):
+        client.watch = FakeWatch([make_track("v1"), make_track("t1")])
+        session.play_video("v1", "Title")  # watch/radio queue, not a playlist
+        result = session.playlist_track_removed("PL", "t1")
+        assert result == {"updated": False, "queued_removed": 0}
+        assert [t.video_id for t in client.queue] == ["t1"]
+
+    def test_album_play_is_not_synced_by_playlist_removal(self, client, session):
+        client.library = FakeLibrary([make_track("a1"), make_track("a2")])
+        session.play_album("MPREb_x")
+        result = session.playlist_track_removed("MPREb_x", "a2")
+        assert result == {"updated": False, "queued_removed": 0}
+        assert [t.video_id for t in client.queue] == ["a2"]
+
+    def test_currently_playing_track_is_not_stopped(self, client, session):
+        client.library = FakeLibrary([make_track("p1"), make_track("p2")])
+        session.play_playlist("PL")
+        result = session.playlist_track_removed("PL", "p1")
+        assert result["updated"] is True
+        assert client.current.video_id == "p1"
+        assert client.player.played[-1].video_id == "p1"
+
+    def test_removes_every_occurrence(self, client, session):
+        client.library = FakeLibrary(
+            [make_track("p1"), make_track("p2"), make_track("p2")]
+        )
+        # Simulate a playlist that already holds duplicates by hand.
+        session.play_playlist("PL")  # plays p1; queue is [p2, p2]
+        result = session.playlist_track_removed("PL", "p2")
+        assert result == {"updated": True, "queued_removed": 2}
+        assert client.queue == []
 
 
 class TestAsyncPlay:

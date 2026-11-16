@@ -536,6 +536,22 @@ class TestPlaylists:
         assert fake_client.library.calls == [("remove", "PL1", "v1")]
         assert "Removed v1 from playlist PL1" in capsys.readouterr().out
 
+    def test_remove_syncs_the_daemon_queue(self, fake_client, daemon, capsys):
+        assert cli.run(parse("playlists", "remove", "PL1", "v1")) == 0
+        assert {
+            "cmd": "playlist_track_removed",
+            "playlist_id": "PL1",
+            "video_id": "v1",
+        } in daemon.requests
+
+    def test_remove_works_when_daemon_is_not_running(self, fake_client, monkeypatch, capsys):
+        def dead(request, timeout=30.0):
+            raise PlayerError("the daemon is not running")
+
+        monkeypatch.setattr(ipc, "send_request", dead)
+        assert cli.run(parse("playlists", "remove", "PL1", "v1")) == 0
+        assert fake_client.library.calls == [("remove", "PL1", "v1")]
+
     def test_requires_sign_in(self, fake_client, capsys):
         fake_client.library.authenticated = False
         assert cli.run(parse("playlists", "list")) == 1

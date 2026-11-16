@@ -47,6 +47,7 @@ COMMANDS = (
     "queue_add",
     "stop",
     "quit",
+    "playlist_track_removed",
 )
 
 
@@ -58,6 +59,28 @@ def socket_path() -> Path:
 def events_socket_path() -> Path:
     """The daemon's events socket, where subscribers receive pushed state."""
     return config_dir() / "events.sock"
+
+
+def sync_playlist_removal(playlist_id: str, video_id: str) -> bool:
+    """Best-effort: tell the daemon a track was removed from a playlist.
+
+    The daemon's queue and playlist-loop snapshot are built at play time,
+    so it drops the track too when that playlist is the one playing.
+    Never raises — the remote removal already happened — and returns
+    ``False`` when the daemon isn't running (nothing to sync).
+    """
+    try:
+        response = send_request(
+            {
+                "cmd": "playlist_track_removed",
+                "playlist_id": playlist_id,
+                "video_id": video_id,
+            },
+            timeout=30.0,
+        )
+    except PlayerError:
+        return False
+    return bool(response.get("ok"))
 
 
 def send_request(request: dict[str, Any], timeout: float = 30.0) -> dict[str, Any]:
