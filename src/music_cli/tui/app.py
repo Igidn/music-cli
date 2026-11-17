@@ -1200,6 +1200,9 @@ class MusicTUI(App[None]):
 
     def _do_remove(self, playlist_id: str, video_id: str, title: str) -> str:
         self.client.library.remove_track(playlist_id, video_id)
+        # If the daemon is playing this playlist, drop the track from its
+        # queue and loop snapshot too (runs on the worker thread).
+        ipc.sync_playlist_removal(playlist_id, video_id)
         return f"Removed “{title}” from playlist"
 
     @on(LibraryTree.CreatePlaylistRequested)

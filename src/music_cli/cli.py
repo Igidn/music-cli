@@ -547,6 +547,9 @@ def _cmd_playlists(args: argparse.Namespace) -> int:
     elif action == "remove":
         playlist_id = _playlist_id(args.id, library)
         library.remove_track(playlist_id, args.video_id)
+        # If the daemon is playing this playlist, drop the track from its
+        # queue and loop snapshot too.
+        ipc.sync_playlist_removal(playlist_id, args.video_id)
         _console.print(f"Removed {args.video_id} from playlist {playlist_id}")
     return 0
 

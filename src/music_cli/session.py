@@ -257,6 +257,16 @@ class PlaybackSession:
         self.record(stream)
         return stream
 
+    def playlist_track_removed(self, playlist_id: str, video_id: str) -> dict:
+        """Drop ``video_id`` from the active playlist, if it is playing.
+
+        Called after the user deletes a track from a playlist: the daemon's
+        queue and loop snapshot are built from a fetch at play time, so
+        without this they keep offering the deleted track forever.
+        """
+        removed = self.client.remove_from_playlist_queue(playlist_id, video_id)
+        return {"updated": removed is not None, "queued_removed": removed or 0}
+
     def play_album(self, album_id: str, start_index: int = 0) -> StreamInfo:
         """Play an album from ``start_index``; the client queues the remainder."""
         self._downloads_context = None

@@ -1871,7 +1871,7 @@ def test_remove_track_from_playlist_tree(monkeypatch):
     from music_cli.tui.components import LibraryTree
     from music_cli.tui.screens.modals import ConfirmScreen
 
-    install_daemon(monkeypatch)
+    fake = install_daemon(monkeypatch)
 
     async def scenario():
         client = make_client()
@@ -1894,6 +1894,11 @@ def test_remove_track_from_playlist_tree(monkeypatch):
             for _ in range(4):
                 await pilot.pause()
             assert client.library.remove_calls == [("p1", "p1t1")]
+            assert {
+                "cmd": "playlist_track_removed",
+                "playlist_id": "p1",
+                "video_id": "p1t1",
+            } in fake.requests
 
     _run(scenario())
 

@@ -157,6 +157,10 @@ class FakeSession:
     def remove_download(self, video_id):
         self._record("remove_download", video_id)
 
+    def playlist_track_removed(self, playlist_id, video_id):
+        self._record("playlist_track_removed", playlist_id, video_id)
+        return {"updated": True, "queued_removed": 1}
+
     def commit_play(self, stream):
         self._record("commit_play", stream)
         self.client.current = stream
@@ -531,6 +535,20 @@ def test_remove_download_dispatch(session):
     response = handle_request(session, {"cmd": "remove_download", "video_id": "abc"})
     assert response == {"ok": True, "data": None}
     assert ("remove_download", ("abc",), {}) in session.calls
+
+
+def test_playlist_track_removed_dispatch(session):
+    response = handle_request(
+        session,
+        {"cmd": "playlist_track_removed", "playlist_id": "PL1", "video_id": "abc"},
+    )
+    assert response == {"ok": True, "data": {"updated": True, "queued_removed": 1}}
+    assert ("playlist_track_removed", ("PL1", "abc"), {}) in session.calls
+
+
+def test_playlist_track_removed_missing_keys_fails_cleanly(session):
+    response = handle_request(session, {"cmd": "playlist_track_removed"})
+    assert response["ok"] is False
 
 
 def test_player_error_becomes_error_response(session):

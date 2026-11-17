@@ -120,6 +120,13 @@ def _dispatch(session: PlaybackSession, request: dict) -> dict:
     elif cmd == "remove_download":
         session.remove_download(request["video_id"])
         return {"ok": True, "data": None}
+    elif cmd == "playlist_track_removed":
+        return {
+            "ok": True,
+            "data": session.playlist_track_removed(
+                request["playlist_id"], request["video_id"]
+            ),
+        }
     elif cmd == "quit":
         return {"ok": True, "data": None}
     elif cmd != "status":

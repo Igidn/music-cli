@@ -51,6 +51,9 @@ class MusicClient:
         self.queue: list[PlaylistTrack] = []
         self.current: StreamInfo | None = None
         self._playlist: list[PlaylistTrack] = []
+        # The library playlist feeding ``self._playlist`` (None for albums and
+        # radio/watch queues), so a playlist edit can find its active queue.
+        self._playlist_id: str | None = None
         self._in_flight: set[str] = set()
         self._play_lock = threading.Lock()
         # Live download-progress hook, consulted per download. The daemon sets it
@@ -338,6 +341,7 @@ class MusicClient:
         """
         tracks = self.watch.get(video_id, radio=radio)
         self._playlist = []
+        self._playlist_id = None
         self.queue = [track for track in tracks if track.video_id != video_id]
         if not self.queue:
             self.queue = tracks
@@ -350,7 +354,9 @@ class MusicClient:
         continues the playlist in order.
         """
         tracks = self.library.tracks(playlist_id)
-        return self._play_tracklist(tracks, start_index, "Playlist is empty")
+        return self._play_tracklist(
+            tracks, start_index, "Playlist is empty", playlist_id=playlist_id
+        )
 
     def play_album(self, album_id: str, start_index: int = 0) -> StreamInfo:
         """Play ``album_id`` from ``start_index``, queueing the remainder.
@@ -363,7 +369,12 @@ class MusicClient:
         return self._play_tracklist(tracks, start_index, "Album is empty")
 
     def _play_tracklist(
-        self, tracks: list[PlaylistTrack], start_index: int, empty_error: str
+        self,
+        tracks: list[PlaylistTrack],
+        start_index: int,
+        empty_error: str,
+        *,
+        playlist_id: str | None = None,
     ) -> StreamInfo:
         """Play ``tracks`` from ``start_index``; the rest become up-next."""
         if not tracks:
@@ -371,6 +382,7 @@ class MusicClient:
         if not 0 <= start_index < len(tracks):
             start_index = 0
         self._playlist = tracks
+        self._playlist_id = playlist_id
         self.queue = tracks[start_index + 1 :]
         self.play_track(tracks[start_index])
         return self.current  # type: ignore[return-value]
@@ -413,6 +425,24 @@ class MusicClient:
             return False
         self.queue = list(self._playlist)
         return True
+
+    def remove_from_playlist_queue(self, playlist_id: str, video_id: str) -> int | None:
+        """Drop every occurrence of ``video_id`` from the active playlist.
+
+        Updates both the loop snapshot (``_playlist``) and the up-next
+        queue, so auto-next — including the playlist loop refill — stops
+        offering the removed track. The currently playing track is left
+        alone; it simply never comes back around. Returns the number of
+        queued tracks dropped, or ``None`` when ``playlist_id`` is not the
+        playlist feeding the queue.
+        """
+        if self._playlist_id != playlist_id:
+            return None
+        self._playlist = [track for track in self._playlist if track.video_id != video_id]
+        kept = [track for track in self.queue if track.video_id != video_id]
+        removed = len(self.queue) - len(kept)
+        self.queue = kept
+        return removed
 
     def close(self) -> None:
         self.player.close()
