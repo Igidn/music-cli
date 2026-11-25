@@ -138,8 +138,10 @@ class TestActivity:
 
         assert payload == {
             "activity_type": rpc.ACTIVITY_LISTENING,
-            "details": "Some Song",
-            "state": "Some Artist",
+            # Discord renders the activity as "Listening to <name>", so the
+            # track title has to be the name, not the application's own.
+            "name": "Some Song",
+            "details": "Some Artist",
             "large_image": "https://i.ytimg.com/vi/abc/hqdefault.jpg",
             "large_text": "Some Song",
             "buttons": [
@@ -151,13 +153,15 @@ class TestActivity:
             "start": 970,
             "end": 1170,
         }
+        assert "state" not in payload
 
     def test_paused_omits_timestamps(self):
         payload = rpc.activity(status(state="paused"), started=970.0)
 
         assert "start" not in payload
         assert "end" not in payload
-        assert payload["state"].startswith("Paused")
+        assert payload["state"] == "Paused"
+        assert payload["name"] == "Some Song"
 
     def test_nothing_loaded(self):
         assert rpc.activity({"state": "stopped", "track": None}) is None
@@ -174,16 +178,16 @@ class TestActivity:
             started=970.0,
         )
 
-        assert len(payload["details"]) == 128
+        assert len(payload["name"]) == 128
         assert len(payload["large_text"]) == 128
-        assert payload["state"] == "Unknown artist"
+        assert payload["details"] == "Unknown artist"
 
     def test_multiple_artists_are_joined(self):
         payload = rpc.activity(
             status(track={"video_id": "abc", "title": "T", "artists": ["A", "B"]})
         )
 
-        assert payload["state"] == "A, B"
+        assert payload["details"] == "A, B"
 
 
 class TestDisabled:
@@ -237,7 +241,7 @@ class TestLifecycle:
 
         assert len(discord.updates) == 1
         update = discord.updates[0]
-        assert update["details"] == "Some Song"
+        assert update["name"] == "Some Song"
         assert update["activity_type"] is FakeActivityType.LISTENING
         # Clock 1000 minus the 30s already played.
         assert update["start"] == 970
@@ -269,7 +273,7 @@ class TestLifecycle:
         presence.tick(status(track={"video_id": "xyz", "title": "Next Song"}))
 
         assert len(discord.updates) == 2
-        assert discord.updates[1]["details"] == "Next Song"
+        assert discord.updates[1]["name"] == "Next Song"
 
     def test_seek_reanchors_the_elapsed_timer(self, fake_pypresence, store, clock):
         enabled(store)
@@ -294,11 +298,42 @@ class TestLifecycle:
         clock.advance(5)
         presence.tick(status(state="paused", position=35.0))
         assert "start" not in discord.updates[1]
-        assert discord.updates[1]["state"].startswith("Paused")
+        assert discord.updates[1]["state"] == "Paused"
 
         clock.advance(5)
         presence.tick(status(state="playing", position=35.0))
         assert discord.updates[2]["start"] == 975  # 1010 - 35
+
+    def test_pause_is_not_throttled(self, fake_pypresence, store, clock):
+        """A pause must drop the timestamps at once, not after 5s.
+
+        Discord counts elapsed time from ``start``, so a throttled pause
+        leaves the counter running on a track that is already silent.
+        """
+        enabled(store)
+        presence = rpc.DiscordPresence(store, clock=clock)
+        presence.tick(status(position=30.0))
+        discord = fake_pypresence.instances[0]
+
+        clock.advance(1)  # inside the throttle window
+        presence.tick(status(state="paused", position=31.0))
+
+        assert len(discord.updates) == 2
+        assert "start" not in discord.updates[1]
+
+    def test_resume_is_not_throttled(self, fake_pypresence, store, clock):
+        enabled(store)
+        presence = rpc.DiscordPresence(store, clock=clock)
+        presence.tick(status(position=30.0))
+        discord = fake_pypresence.instances[0]
+
+        clock.advance(1)
+        presence.tick(status(state="paused", position=31.0))
+        clock.advance(1)
+        presence.tick(status(state="playing", position=31.0))
+
+        assert len(discord.updates) == 3
+        assert discord.updates[2]["start"] == 971  # 1002 - 31
 
     def test_stop_clears_presence(self, fake_pypresence, store, clock):
         enabled(store)

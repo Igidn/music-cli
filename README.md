@@ -82,6 +82,10 @@ whether or not the TUI is open, and disappears when playback stops. If Discord
 is not running, the player keeps working and retries the connection later;
 `music-cli rpc toggle` reports whether it connected.
 
+While a track plays, Discord shows **Listening to <track title>** with the
+artists, elapsed/remaining time, the thumbnail and a *Listen on YouTube Music*
+button. Pausing freezes the card and drops the timer; stopping clears it.
+
 ## Keybindings
 
 | Key | Action |

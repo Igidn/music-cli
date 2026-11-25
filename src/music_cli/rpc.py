@@ -69,13 +69,18 @@ def activity(
         return None
     video_id = str(track["video_id"])
     title = _clip(str(track.get("title") or "Unknown track"))
-    artists = ", ".join(str(artist) for artist in track.get("artists") or ())
-    artists = _clip(artists or "Unknown artist")
+    artists = _clip(
+        ", ".join(str(artist) for artist in track.get("artists") or ())
+        or "Unknown artist"
+    )
     paused = status.get("state") == "paused"
     payload: dict[str, Any] = {
         "activity_type": activity_type,
-        "details": title,
-        "state": _clip(f"Paused · {artists}" if paused else artists),
+        # Discord renders this as "Listening to <name>". pypresence drops
+        # unset fields, so leaving it out falls back to the application's
+        # own name rather than the track.
+        "name": title,
+        "details": artists,
         "large_image": _THUMBNAIL_URL.format(video_id=video_id),
         "large_text": title,
         "buttons": [
@@ -85,6 +90,10 @@ def activity(
             }
         ],
     }
+    if paused:
+        # Discord has no paused state: dropping the timestamps is what stops
+        # its elapsed counter, and the label says why the card is frozen.
+        payload["state"] = "Paused"
     if not paused and started is not None:
         payload["start"] = int(started)
         duration = status.get("duration") or track.get("duration")
@@ -154,6 +163,7 @@ class DiscordPresence:
         self._retry_at = 0.0
         self._last_update = 0.0
         self._signature: tuple[Any, ...] | None = None
+        self._state: str | None = None
         self._pending: dict[str, Any] | None = None
         self._cleared = True
         self._started: float | None = None
@@ -192,6 +202,12 @@ class DiscordPresence:
                 return
         if self._needs_update(status, now):
             self._pending = status
+            # Pause/resume/stop are deliberate user actions, and a paused
+            # track must drop its timestamps at once — Discord counts from
+            # them, so a throttled pause leaves the counter running.
+            if status.get("state") != self._state or status.get("track") is None:
+                self._flush(now)
+                return
         if self._pending is None:
             return
         if now - self._last_update < MIN_UPDATE_INTERVAL:
@@ -250,6 +266,7 @@ class DiscordPresence:
             self._retry_at = now + RETRY_INTERVAL
             return
         self._signature = _signature(status)
+        self._state = status.get("state")
         self._last_update = now
         self._cleared = False
         self._error = None
@@ -265,6 +282,7 @@ class DiscordPresence:
             return
         self._cleared = True
         self._signature = None
+        self._state = None
         self._last_update = self._clock()
         self._error = None
 
@@ -301,6 +319,7 @@ class DiscordPresence:
         self._retry_at = 0.0
         self._last_update = 0.0
         self._signature = None
+        self._state = None
         self._cleared = True
         logger.info("connected to Discord RPC as %s", self._app_id)
         return True
@@ -310,6 +329,7 @@ class DiscordPresence:
         was_showing = not self._cleared
         self._connected = False
         self._signature = None
+        self._state = None
         self._pending = None
         self._cleared = True
         self._started = None
