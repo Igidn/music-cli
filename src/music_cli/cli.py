@@ -21,7 +21,12 @@ from music_cli import build_client
 
 from . import ipc
 from .core.errors import PlayerError
-from .storage.state import PlayHistoryStore
+from .storage.state import (
+    SETTING_DISCORD_RPC,
+    SETTING_DISCORD_RPC_APP_ID,
+    PlayHistoryStore,
+    SettingsStore,
+)
 from .yt.search import format_duration
 
 _console = Console()
@@ -170,6 +175,18 @@ def register_subcommands(subparsers: argparse._SubParsersAction) -> None:
         "--limit", type=int, default=15, metavar="N", help="max entries (default: 15)"
     )
     _add_json(history)
+
+    rpc = subparsers.add_parser("rpc", help="control Discord Rich Presence")
+    rpc_commands = rpc.add_subparsers(dest="rpc_command", required=True)
+    rpc_setup = rpc_commands.add_parser(
+        "setup", help="set the Discord application id used for Rich Presence"
+    )
+    rpc_setup.add_argument(
+        "application_id",
+        metavar="APPLICATION_ID",
+        help="the numeric Client ID from discord.com/developers/applications",
+    )
+    rpc_commands.add_parser("toggle", help="turn Discord Rich Presence on or off")
 
 
 def run(args: argparse.Namespace) -> int:
@@ -777,6 +794,104 @@ def _cmd_history(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_rpc(args: argparse.Namespace) -> int:
+    """Configure or toggle Discord Rich Presence.
+
+    Settings live in the shared database so they apply to the daemon whether
+    it is already running or starts later. A running daemon is asked to
+    reload them immediately; when none is running the saved settings simply
+    take effect on the next playback session.
+    """
+    store = SettingsStore()
+    try:
+        if args.rpc_command == "setup":
+            return _rpc_setup(args, store)
+        return _rpc_toggle(store)
+    finally:
+        store.close()
+
+
+def _rpc_setup(args: argparse.Namespace, store: SettingsStore) -> int:
+    application_id = args.application_id.strip()
+    if not (application_id.isdigit() and 17 <= len(application_id) <= 20):
+        _errors.print(
+            "music-cli: the application id must be the numeric Client ID "
+            "from discord.com/developers/applications",
+            style="bold red",
+        )
+        return 2
+    store.set(SETTING_DISCORD_RPC_APP_ID, application_id)
+    if not store.get_bool(SETTING_DISCORD_RPC):
+        _console.print(
+            "Discord RPC application id saved — enable it with 'music-cli rpc toggle'"
+        )
+        return 0
+    data = _reload_rpc()
+    if data is None:
+        _console.print(
+            "Discord RPC application id saved — it will apply when the player restarts"
+        )
+        return 0
+    return _print_rpc_state(data, prefix="Discord RPC application id saved — ")
+
+
+def _rpc_toggle(store: SettingsStore) -> int:
+    application_id = (store.get(SETTING_DISCORD_RPC_APP_ID) or "").strip()
+    if not application_id:
+        _errors.print(
+            "music-cli: set a Discord application id first with "
+            "'music-cli rpc setup <application-id>'",
+            style="bold red",
+        )
+        return 1
+    enabled = not store.get_bool(SETTING_DISCORD_RPC)
+    store.set(SETTING_DISCORD_RPC, enabled)
+    data = _reload_rpc()
+    if data is not None:
+        return _print_rpc_state(data)
+    if enabled:
+        _console.print("Discord RPC on — it will connect when the player starts")
+    else:
+        _console.print("Discord RPC off")
+    return 0
+
+
+def _reload_rpc() -> dict[str, Any] | None:
+    """Ask a running daemon to apply the saved RPC settings.
+
+    Returns its state dict, or ``None`` when no daemon is running (the
+    settings are still persisted and apply on the next daemon start).
+    """
+    try:
+        # The daemon answers this inline, and a Discord handshake can take a
+        # few seconds, so allow more than the usual request timeout.
+        response = ipc.send_request({"cmd": "rpc_reload"}, timeout=10.0)
+    except PlayerError:
+        return None
+    if not response.get("ok"):
+        _errors.print(
+            f"music-cli: {response.get('error', 'unknown error')}", style="bold red"
+        )
+        return None
+    data = response.get("data")
+    return data if isinstance(data, dict) else None
+
+
+def _print_rpc_state(data: dict[str, Any], *, prefix: str = "") -> int:
+    if not data.get("enabled"):
+        _console.print(f"{prefix}Discord RPC off")
+    elif data.get("connected"):
+        _console.print(f"{prefix}Discord RPC on — connected to Discord")
+    elif data.get("error"):
+        _console.print(
+            f"{prefix}Discord RPC on, but not connected: {escape(str(data['error']))}",
+            style="yellow",
+        )
+    else:
+        _console.print(f"{prefix}Discord RPC on — waiting for Discord")
+    return 0
+
+
 _DISPATCH = {
     "play": _cmd_play,
     "download": _cmd_download,
@@ -795,4 +910,5 @@ _DISPATCH = {
     "search": _cmd_search,
     "playlists": _cmd_playlists,
     "history": _cmd_history,
+    "rpc": _cmd_rpc,
 }

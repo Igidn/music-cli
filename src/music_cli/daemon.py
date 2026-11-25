@@ -68,14 +68,16 @@ def _push_download_progress(
             _flush_subscriber(conn, subscribers)
 
 
-def handle_request(session: PlaybackSession, request: dict) -> dict:
+def handle_request(session: PlaybackSession, request: dict, rpc: Any = None) -> dict:
     """Pure dispatch: one request dict -> one response dict. No socket I/O.
 
     Every failure is reported in the response, never raised: the daemon must
-    survive bad requests and buggy commands alike.
+    survive bad requests and buggy commands alike. ``rpc`` is the daemon's
+    Discord presence manager; it is optional so dispatch stays testable
+    without one.
     """
     try:
-        return _dispatch(session, request)
+        return _dispatch(session, request, rpc)
     except PlayerError as error:
         return {"ok": False, "error": str(error)}
     except Exception as error:  # noqa: BLE001 — daemon boundary: a bug in one
@@ -83,7 +85,7 @@ def handle_request(session: PlaybackSession, request: dict) -> dict:
         return {"ok": False, "error": f"{type(error).__name__}: {error}"}
 
 
-def _dispatch(session: PlaybackSession, request: dict) -> dict:
+def _dispatch(session: PlaybackSession, request: dict, rpc: Any = None) -> dict:
     cmd = request.get("cmd")
     if cmd == "play":
         return _play(session, request)
@@ -127,6 +129,10 @@ def _dispatch(session: PlaybackSession, request: dict) -> dict:
                 request["playlist_id"], request["video_id"]
             ),
         }
+    elif cmd == "rpc_reload":
+        if rpc is None:
+            return {"ok": False, "error": "Discord RPC is not available"}
+        return {"ok": True, "data": rpc.reload()}
     elif cmd == "quit":
         return {"ok": True, "data": None}
     elif cmd != "status":
@@ -313,6 +319,7 @@ def main(argv: list[str] | None = None) -> None:
     args = _parse_args(argv)
     from .client import MusicClient
     from .player import create_media_control
+    from .rpc import DiscordPresence
     from .session import PlaybackSession  # lazy: absent at module-import time
     from .storage.cache import AudioCache
     from .yt.cookies import Cookies
@@ -320,6 +327,9 @@ def main(argv: list[str] | None = None) -> None:
     cookies = Cookies.from_file(args.cookies) if args.cookies else None
     client = MusicClient(cookies=cookies, volume=args.volume, cache=AudioCache())
     session = PlaybackSession(client)
+    # Discord presence is daemon-owned: it must survive the CLI command that
+    # started playback and follow every track change without a frontend.
+    presence = DiscordPresence(session.settings)
     media = create_media_control()
     if media is not None:
         try:
@@ -349,6 +359,7 @@ def main(argv: list[str] | None = None) -> None:
             stop,
             args.idle_timeout,
             media=media,
+            presence=presence,
         )
     finally:
         server.close()
@@ -357,6 +368,7 @@ def main(argv: list[str] | None = None) -> None:
         events_path.unlink(missing_ok=True)
         if media is not None:
             media.close()
+        presence.close()
         session.close()
 
 
@@ -728,6 +740,7 @@ def _serve(
     stop: threading.Event,
     idle_timeout: float,
     media: Any | None = None,
+    presence: Any | None = None,
 ) -> None:
     """Serve control requests and push state events until quit/idle/signal.
 
@@ -795,7 +808,7 @@ def _serve(
                     last_activity = time.monotonic()
                     continue
                 try:
-                    response = handle_request(session, request)
+                    response = handle_request(session, request, presence)
                     try:
                         ipc.send_message(conn, response)
                     except OSError:
@@ -850,6 +863,10 @@ def _serve(
         elif time.monotonic() - last_heartbeat >= _HEARTBEAT:
             last_heartbeat = time.monotonic()
             _push(subscribers, status)
+        if presence is not None:
+            # Mirror the same snapshot the TUI sees; the manager no-ops when
+            # the track/state did not change and throttles Discord writes.
+            presence.tick(status)
         if _idle(
             session,
             subscribers,

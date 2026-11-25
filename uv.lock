@@ -358,6 +358,7 @@ dependencies = [
     { name = "pygobject", marker = "sys_platform != 'darwin'" },
     { name = "pyobjc-framework-avfoundation", marker = "sys_platform == 'darwin'" },
     { name = "pyobjc-framework-mediaplayer", marker = "sys_platform == 'darwin'" },
+    { name = "pypresence" },
     { name = "requests" },
     { name = "textual" },
     { name = "yt-dlp" },
@@ -376,6 +377,7 @@ requires-dist = [
     { name = "pygobject", marker = "sys_platform != 'darwin'", specifier = ">=3.50" },
     { name = "pyobjc-framework-avfoundation", marker = "sys_platform == 'darwin'", specifier = ">=12.2.2" },
     { name = "pyobjc-framework-mediaplayer", marker = "sys_platform == 'darwin'", specifier = ">=12.2.2" },
+    { name = "pypresence", specifier = ">=4.6.2" },
     { name = "requests", specifier = ">=2.32" },
     { name = "textual", specifier = ">=8.2.8" },
     { name = "yt-dlp", specifier = ">=2026.7.4" },
@@ -628,6 +630,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/25/eb/7482fdd384521916e98a6164be220494b1f7794792b1d60fa3f5207d84a4/pyobjc_framework_quartz-12.2.2-cp314-cp314t-macosx_10_15_universal2.whl", hash = "sha256:ebf8167ca2096cf3a05199decfa517be0df4c56048f49cf132bd6b1a6ab9c086", size = 224726, upload-time = "2026-08-11T19:40:28.718Z" },
     { url = "https://files.pythonhosted.org/packages/33/67/b4b0ffc486b08492bfef4b33731d044b295f1696c8fb7d119c8367079139/pyobjc_framework_quartz-12.2.2-cp315-cp315-macosx_10_15_universal2.whl", hash = "sha256:cee63b891c2b6b7ccf98f233175411529f3e80286f58438793b3634af79858f1", size = 219827, upload-time = "2026-08-11T19:40:29.764Z" },
     { url = "https://files.pythonhosted.org/packages/aa/eb/5fb627c2457046883c6fd12d25c44db40c12bcde4622dc0f30851108e106/pyobjc_framework_quartz-12.2.2-cp315-cp315t-macosx_10_15_universal2.whl", hash = "sha256:8f58c589b5a76ba98f186b1f3b19fb1c8b730e82351f81fb62e6194f64a71622", size = 224767, upload-time = "2026-08-11T19:40:30.991Z" },
+]
+
+[[package]]
+name = "pypresence"
+version = "4.6.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/22/ce/4ce38b7f36f4eec77b3d21a5885228bbe8ea6d5ea35ff0876f7889c3bbbd/pypresence-4.6.2.tar.gz", hash = "sha256:7e7e93de0e94a42314300ef6d15dd2c44c64ef74b7c749243bc226be2ab90687", size = 21335, upload-time = "2026-07-08T05:05:02.006Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/05/61/69bf5ed7393fc314b7129d509ec1bc9622ce98d7300a780d52fa3b95bc88/pypresence-4.6.2-py3-none-any.whl", hash = "sha256:6587e525a663699ca5fb8621ea147a9c264c135650c50afbccd7b5d9b4e28dc0", size = 13734, upload-time = "2026-07-08T05:05:00.67Z" },
 ]
 
 [[package]]

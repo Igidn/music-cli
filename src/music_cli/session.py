@@ -84,6 +84,11 @@ class PlaybackSession:
         self._auto_next = value
         self._settings.set(SETTING_AUTO_NEXT, value)
 
+    @property
+    def settings(self) -> SettingsStore:
+        """The shared settings store (the daemon also reads RPC settings)."""
+        return self._settings
+
     def play_query(self, query: str) -> StreamInfo:
         """Play the first playable search result for ``query``.
 

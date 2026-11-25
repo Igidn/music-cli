@@ -60,6 +60,27 @@ music-cli login
 | `playlists list` / `playlists play <id>` | List and play playlists |
 | `playlists downloaded` | List offline downloads |
 | `history` | Recently played tracks |
+| `rpc setup <application id>` | Set the Discord application id for Rich Presence |
+| `rpc toggle` | Turn Discord Rich Presence on or off |
+
+## Discord Rich Presence
+
+Presence is **off by default** and needs your own Discord application, so it
+never shows up under someone else's app name:
+
+1. Create an application at <https://discord.com/developers/applications>.
+2. Copy its **Client ID** (a numeric snowflake).
+3. Enable presence with:
+
+```sh
+music-cli rpc setup <application id>
+music-cli rpc toggle
+```
+
+The background player owns the connection, so presence follows playback
+whether or not the TUI is open, and disappears when playback stops. If Discord
+is not running, the player keeps working and retries the connection later;
+`music-cli rpc toggle` reports whether it connected.
 
 ## Keybindings
 

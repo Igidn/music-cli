@@ -7,7 +7,13 @@ import pytest
 import music_cli.cli as cli
 from music_cli import build_parser, ipc
 from music_cli.core.errors import PlayerError
-from music_cli.storage.state import PlayedTrack, PlayHistoryStore
+from music_cli.storage.state import (
+    SETTING_DISCORD_RPC,
+    SETTING_DISCORD_RPC_APP_ID,
+    PlayedTrack,
+    PlayHistoryStore,
+    SettingsStore,
+)
 from music_cli.yt.extract import PlaylistTrack
 from music_cli.yt.playlists import LibraryPlaylist
 from music_cli.yt.search import SearchResult
@@ -635,3 +641,117 @@ class TestDownloads:
     def test_empty(self, capsys):
         assert cli.run(parse("playlists", "downloaded")) == 0
         assert "No downloads yet" in capsys.readouterr().out
+
+
+APP_ID = "123456789012345678"
+RPC_CONNECTED = {
+    "enabled": True,
+    "application_id": APP_ID,
+    "connected": True,
+    "error": None,
+}
+RPC_DISABLED = {
+    "enabled": False,
+    "application_id": APP_ID,
+    "connected": False,
+    "error": None,
+}
+
+
+class TestRpc:
+    def seed(self, *, enabled=False):
+        store = SettingsStore()
+        store.set(SETTING_DISCORD_RPC_APP_ID, APP_ID)
+        if enabled:
+            store.set(SETTING_DISCORD_RPC, True)
+        store.close()
+
+    def read(self):
+        store = SettingsStore()
+        try:
+            return (
+                store.get_bool(SETTING_DISCORD_RPC),
+                store.get(SETTING_DISCORD_RPC_APP_ID),
+            )
+        finally:
+            store.close()
+
+    def test_setup_rejects_non_numeric_id(self, daemon, capsys):
+        assert cli.run(parse("rpc", "setup", "not-an-id")) == 2
+        assert daemon.requests == []
+        assert "numeric Client ID" in capsys.readouterr().err
+
+    def test_setup_rejects_a_short_id(self, daemon, capsys):
+        assert cli.run(parse("rpc", "setup", "12345")) == 2
+        assert daemon.requests == []
+        assert "numeric Client ID" in capsys.readouterr().err
+
+    def test_setup_saves_without_enabling(self, daemon, capsys):
+        assert cli.run(parse("rpc", "setup", APP_ID)) == 0
+
+        assert daemon.requests == []
+        assert self.read() == (False, APP_ID)
+        assert "rpc toggle" in capsys.readouterr().out
+
+    def test_setup_reloads_a_running_daemon(self, daemon, capsys):
+        self.seed(enabled=True)
+        daemon.data = RPC_CONNECTED
+
+        assert cli.run(parse("rpc", "setup", APP_ID)) == 0
+
+        assert daemon.requests == [{"cmd": "rpc_reload"}]
+        assert self.read() == (True, APP_ID)
+        assert "connected to Discord" in capsys.readouterr().out
+
+    def test_setup_reports_a_daemon_that_cannot_connect(self, daemon, capsys):
+        self.seed(enabled=True)
+        daemon.data = {
+            "enabled": True,
+            "application_id": APP_ID,
+            "connected": False,
+            "error": "Could not find Discord",
+        }
+
+        assert cli.run(parse("rpc", "setup", APP_ID)) == 0
+
+        out = " ".join(capsys.readouterr().out.split())
+        assert "not connected" in out
+        assert "Could not find Discord" in out
+
+    def test_toggle_requires_an_application_id(self, daemon, capsys):
+        assert cli.run(parse("rpc", "toggle")) == 1
+        assert daemon.requests == []
+        assert "rpc setup" in capsys.readouterr().err
+
+    def test_toggle_enables_and_reloads(self, daemon, capsys):
+        self.seed()
+        daemon.data = RPC_CONNECTED
+
+        assert cli.run(parse("rpc", "toggle")) == 0
+
+        assert daemon.requests == [{"cmd": "rpc_reload"}]
+        assert self.read() == (True, APP_ID)
+        assert "connected to Discord" in capsys.readouterr().out
+
+    def test_toggle_disables(self, daemon, capsys):
+        self.seed(enabled=True)
+        daemon.data = RPC_DISABLED
+
+        assert cli.run(parse("rpc", "toggle")) == 0
+
+        assert daemon.requests == [{"cmd": "rpc_reload"}]
+        assert self.read() == (False, APP_ID)
+        assert "Discord RPC off" in capsys.readouterr().out
+
+    def test_toggle_without_a_running_daemon(self, monkeypatch, capsys):
+        self.seed()
+
+        def dead(*args, **kwargs):
+            raise PlayerError("the daemon is not running")
+
+        monkeypatch.setattr(ipc, "send_request", dead, raising=False)
+
+        assert cli.run(parse("rpc", "toggle")) == 0
+
+        assert self.read() == (True, APP_ID)
+        assert "when the player starts" in capsys.readouterr().out

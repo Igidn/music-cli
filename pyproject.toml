@@ -12,6 +12,7 @@ dependencies = [
     "pygobject>=3.50; sys_platform != 'darwin'",
     "pyobjc-framework-avfoundation>=12.2.2; sys_platform == 'darwin'",
     "pyobjc-framework-mediaplayer>=12.2.2; sys_platform == 'darwin'",
+    "pypresence>=4.6.2",
     "requests>=2.32",
     "textual>=8.2.8",
     "yt-dlp>=2026.7.4",
