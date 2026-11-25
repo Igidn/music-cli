@@ -551,6 +551,36 @@ def test_playlist_track_removed_missing_keys_fails_cleanly(session):
     assert response["ok"] is False
 
 
+class FakeRpc:
+    """Stands in for the daemon's Discord presence manager."""
+
+    def __init__(self):
+        self.reloads = 0
+        self.state = {
+            "enabled": True,
+            "application_id": "123456789012345678",
+            "connected": True,
+            "error": None,
+        }
+
+    def reload(self):
+        self.reloads += 1
+        return self.state
+
+
+def test_rpc_reload_dispatch(session):
+    rpc = FakeRpc()
+    response = handle_request(session, {"cmd": "rpc_reload"}, rpc)
+    assert response == {"ok": True, "data": rpc.state}
+    assert rpc.reloads == 1
+
+
+def test_rpc_reload_without_manager(session):
+    response = handle_request(session, {"cmd": "rpc_reload"})
+    assert response["ok"] is False
+    assert "not available" in response["error"]
+
+
 def test_player_error_becomes_error_response(session):
     session.fail_with = PlayerError("no streams found")
     response = handle_request(session, {"cmd": "play", "query": "x"})

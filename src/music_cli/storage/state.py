@@ -30,6 +30,8 @@ SETTING_MUTED = "muted"
 SETTING_LOOP = "loop"
 SETTING_AUTO_NEXT = "auto_next"
 SETTING_THEME = "theme"
+SETTING_DISCORD_RPC = "discord_rpc_enabled"
+SETTING_DISCORD_RPC_APP_ID = "discord_rpc_application_id"
 
 
 @dataclass(frozen=True)
