@@ -30,6 +30,8 @@ SETTING_MUTED = "muted"
 SETTING_LOOP = "loop"
 SETTING_AUTO_NEXT = "auto_next"
 SETTING_THEME = "theme"
+SETTING_RPC_ENABLED = "rpc_enabled"
+SETTING_RPC_CLIENT_ID = "rpc_client_id"
 
 
 @dataclass(frozen=True)

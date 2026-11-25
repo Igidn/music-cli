@@ -17,6 +17,8 @@ from .storage.state import (
     SETTING_AUTO_NEXT,
     SETTING_LOOP,
     SETTING_MUTED,
+    SETTING_RPC_CLIENT_ID,
+    SETTING_RPC_ENABLED,
     SETTING_VOLUME,
     DownloadedTrack,
     PlayedTrack,
@@ -83,6 +85,16 @@ class PlaybackSession:
     def auto_next(self, value: bool) -> None:
         self._auto_next = value
         self._settings.set(SETTING_AUTO_NEXT, value)
+
+    @property
+    def rpc_enabled(self) -> bool:
+        """Whether Discord Rich Presence is enabled in the saved settings."""
+        return self._settings.get_bool(SETTING_RPC_ENABLED)
+
+    @property
+    def rpc_client_id(self) -> str:
+        """The user's Discord application id, or empty when it is unset."""
+        return (self._settings.get(SETTING_RPC_CLIENT_ID) or "").strip()
 
     def play_query(self, query: str) -> StreamInfo:
         """Play the first playable search result for ``query``.

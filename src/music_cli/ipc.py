@@ -48,6 +48,7 @@ COMMANDS = (
     "stop",
     "quit",
     "playlist_track_removed",
+    "rpc_reload",
 )
 
 

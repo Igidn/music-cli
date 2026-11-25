@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from typing import Any
 
@@ -21,7 +22,12 @@ from music_cli import build_client
 
 from . import ipc
 from .core.errors import PlayerError
-from .storage.state import PlayHistoryStore
+from .storage.state import (
+    SETTING_RPC_CLIENT_ID,
+    SETTING_RPC_ENABLED,
+    PlayHistoryStore,
+    SettingsStore,
+)
 from .yt.search import format_duration
 
 _console = Console()
@@ -29,6 +35,7 @@ _errors = Console(stderr=True)
 
 STATES = ("on", "off", "toggle")
 SEARCH_FILTERS = ("songs", "videos", "albums", "artists", "playlists")
+_APPLICATION_ID = re.compile(r"[0-9]{17,20}")
 
 
 def register_subcommands(subparsers: argparse._SubParsersAction) -> None:
@@ -97,6 +104,22 @@ def register_subcommands(subparsers: argparse._SubParsersAction) -> None:
     ):
         state_parser = subparsers.add_parser(name, help=help_text)
         state_parser.add_argument("state", choices=STATES, nargs="?", default="toggle")
+
+    rpc = subparsers.add_parser("rpc", help="Discord Rich Presence settings")
+    rpc_commands = rpc.add_subparsers(dest="rpc_command", required=True)
+    rpc_setup = rpc_commands.add_parser(
+        "setup", help="set the Discord application id used for Rich Presence"
+    )
+    rpc_setup.add_argument(
+        "application_id",
+        nargs="?",
+        metavar="APPLICATION_ID",
+        help="application id from discord.com/developers/applications",
+    )
+    rpc_toggle = rpc_commands.add_parser(
+        "toggle", help="turn Discord Rich Presence on or off (default: toggle)"
+    )
+    rpc_toggle.add_argument("state", choices=STATES, nargs="?", default="toggle")
 
     _add_json(subparsers.add_parser("status", help="show what is playing"))
     queue = subparsers.add_parser("queue", help="show the up-next queue, or add to it")
@@ -397,6 +420,106 @@ def _cmd_state(args: argparse.Namespace) -> int:
     _console.print(
         (on_label if on else off_label) if on is not None else f"{name} toggled"
     )
+    return 0
+
+
+def _notify_rpc_reload() -> bool:
+    """Best-effort: ask a running daemon to apply the new RPC settings.
+
+    Never spawns a daemon just for a config change; the next playback reads
+    the saved settings anyway.
+    """
+    try:
+        response = ipc.send_request({"cmd": "rpc_reload"}, timeout=2.0)
+    except (OSError, PlayerError):
+        return False
+    return bool(response.get("ok"))
+
+
+def _cmd_rpc(args: argparse.Namespace) -> int:
+    action = getattr(args, "rpc_command", None)
+    if action == "setup":
+        return _rpc_setup(args)
+    if action == "toggle":
+        return _rpc_toggle(args)
+    _errors.print("music-cli: rpc requires 'setup' or 'toggle'", style="bold red")
+    return 2
+
+
+def _rpc_setup(args: argparse.Namespace) -> int:
+    """Show the current setup, or validate and save a new application id."""
+    store = SettingsStore()
+    try:
+        application_id = (store.get(SETTING_RPC_CLIENT_ID) or "").strip()
+        enabled = store.get_bool(SETTING_RPC_ENABLED)
+        if args.application_id is None:
+            _print_rpc_status(application_id, enabled)
+            return 0
+        application_id = args.application_id.strip()
+        if not _APPLICATION_ID.fullmatch(application_id):
+            _errors.print(
+                "music-cli: invalid Discord application id — expected 17-20 digits",
+                style="bold red",
+            )
+            return 2
+        store.set(SETTING_RPC_CLIENT_ID, application_id)
+    finally:
+        store.close()
+
+    running = _notify_rpc_reload()
+    _console.print(f"Discord RPC application id set to {application_id}")
+    if enabled:
+        _console.print(
+            "Discord RPC is on — the daemon will reconnect."
+            if running
+            else "Discord RPC is on — it will connect on the next playback."
+        )
+    else:
+        _console.print("Next: music-cli rpc toggle")
+    return 0
+
+
+def _print_rpc_status(application_id: str, enabled: bool) -> None:
+    if application_id:
+        state = "on" if enabled else "off"
+        _console.print(f"Discord RPC is {state} (application {application_id})")
+        if not enabled:
+            _console.print("Turn it on with: music-cli rpc toggle")
+        return
+    _console.print("Discord RPC is off — no application id configured.")
+    _console.print("")
+    _console.print("Set it up:")
+    _console.print(
+        "  1. Create an application at https://discord.com/developers/applications"
+    )
+    _console.print("  2. Copy its Application ID")
+    _console.print("  3. Run: music-cli rpc setup <application-id>")
+    _console.print("  4. Run: music-cli rpc toggle")
+
+
+def _rpc_toggle(args: argparse.Namespace) -> int:
+    store = SettingsStore()
+    try:
+        enabled = store.get_bool(SETTING_RPC_ENABLED)
+        application_id = (store.get(SETTING_RPC_CLIENT_ID) or "").strip()
+        target = {"on": True, "off": False, "toggle": not enabled}[args.state]
+        if target and not application_id:
+            _errors.print(
+                "music-cli: no Discord application id configured — "
+                "run 'music-cli rpc setup <application-id>' first",
+                style="bold red",
+            )
+            return 1
+        store.set(SETTING_RPC_ENABLED, target)
+    finally:
+        store.close()
+
+    running = _notify_rpc_reload()
+    if target:
+        suffix = "" if running else " (connects on the next playback)"
+        _console.print(f"Discord RPC on{suffix}")
+    else:
+        _console.print("Discord RPC off")
     return 0
 
 
@@ -790,6 +913,7 @@ _DISPATCH = {
     "mute": _cmd_state,
     "loop": _cmd_state,
     "auto-next": _cmd_state,
+    "rpc": _cmd_rpc,
     "status": _cmd_status,
     "queue": _cmd_queue,
     "search": _cmd_search,

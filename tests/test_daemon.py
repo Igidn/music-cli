@@ -52,6 +52,8 @@ class FakeSession:
         self.muted = False
         self.loop = False
         self.auto_next = True
+        self.rpc_enabled = False
+        self.rpc_client_id = ""
         self._status = {
             "state": "playing",
             "track": {"video_id": "abc", "title": "Some Song"},
@@ -549,6 +551,43 @@ def test_playlist_track_removed_dispatch(session):
 def test_playlist_track_removed_missing_keys_fails_cleanly(session):
     response = handle_request(session, {"cmd": "playlist_track_removed"})
     assert response["ok"] is False
+
+
+class FakePresence:
+    def __init__(self):
+        self.calls = []
+
+    def configure(self, *, enabled, client_id):
+        self.calls.append((enabled, client_id))
+
+
+def test_rpc_reload_enables_presence(session):
+    session.rpc_enabled = True
+    session.rpc_client_id = "123456789012345678"
+    presence = FakePresence()
+
+    response = handle_request(session, {"cmd": "rpc_reload"}, presence=presence)
+
+    assert response == {"ok": True, "data": {"enabled": True}}
+    assert presence.calls == [(True, "123456789012345678")]
+
+
+def test_rpc_reload_without_an_id_stays_off(session):
+    session.rpc_enabled = True
+    session.rpc_client_id = ""
+    presence = FakePresence()
+
+    response = handle_request(session, {"cmd": "rpc_reload"}, presence=presence)
+
+    assert response == {"ok": True, "data": {"enabled": False}}
+    assert presence.calls == [(False, "")]
+
+
+def test_rpc_reload_without_a_manager_fails(session):
+    response = handle_request(session, {"cmd": "rpc_reload"})
+
+    assert response["ok"] is False
+    assert "not available" in response["error"]
 
 
 def test_player_error_becomes_error_response(session):

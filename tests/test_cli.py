@@ -7,7 +7,13 @@ import pytest
 import music_cli.cli as cli
 from music_cli import build_parser, ipc
 from music_cli.core.errors import PlayerError
-from music_cli.storage.state import PlayedTrack, PlayHistoryStore
+from music_cli.storage.state import (
+    SETTING_RPC_CLIENT_ID,
+    SETTING_RPC_ENABLED,
+    PlayedTrack,
+    PlayHistoryStore,
+    SettingsStore,
+)
 from music_cli.yt.extract import PlaylistTrack
 from music_cli.yt.playlists import LibraryPlaylist
 from music_cli.yt.search import SearchResult
@@ -179,6 +185,18 @@ class TestArgParsing:
         assert args.queue_command == "add"
         assert args.query == []
         assert args.video_id == "vid"
+
+    def test_rpc_toggle_grammar(self):
+        assert parse("rpc", "toggle").state == "toggle"
+        assert parse("rpc", "toggle", "on").state == "on"
+        setup = parse("rpc", "setup", "123456789012345678")
+        assert setup.application_id == "123456789012345678"
+        assert parse("rpc", "setup").application_id is None
+
+    def test_rpc_requires_a_subcommand(self):
+        with pytest.raises(SystemExit) as error:
+            parse("rpc")
+        assert error.value.code == 2
 
 
 class TestDaemonCommands:
@@ -435,6 +453,99 @@ class TestEnsureBeforeCommands:
         monkeypatch.setattr(ipc, "send_request", fake.send)
         assert cli.run(parse("resume")) == 0
         assert len(calls) == 1
+
+
+class TestRpc:
+    def save_id(self, application_id="123456789012345678"):
+        store = SettingsStore()
+        try:
+            store.set(SETTING_RPC_CLIENT_ID, application_id)
+        finally:
+            store.close()
+
+    def read(self, key):
+        store = SettingsStore()
+        try:
+            return store.get(key)
+        finally:
+            store.close()
+
+    def test_setup_saves_and_notifies_the_daemon(self, daemon, capsys):
+        assert cli.run(parse("rpc", "setup", "123456789012345678")) == 0
+
+        assert self.read(SETTING_RPC_CLIENT_ID) == "123456789012345678"
+        assert daemon.requests == [{"cmd": "rpc_reload"}]
+        out = capsys.readouterr().out
+        assert "123456789012345678" in out
+        assert "rpc toggle" in out
+
+    def test_setup_replaces_an_existing_id(self, daemon, capsys):
+        self.save_id("111111111111111111")
+
+        assert cli.run(parse("rpc", "setup", "222222222222222222")) == 0
+
+        assert self.read(SETTING_RPC_CLIENT_ID) == "222222222222222222"
+        assert "222222222222222222" in capsys.readouterr().out
+
+    @pytest.mark.parametrize("value", ["123", "not-an-id", "123456789012345678901"])
+    def test_setup_rejects_invalid_ids(self, daemon, capsys, value):
+        assert cli.run(parse("rpc", "setup", value)) == 2
+
+        assert self.read(SETTING_RPC_CLIENT_ID) is None
+        assert daemon.requests == []
+        assert "invalid" in capsys.readouterr().err
+
+    def test_setup_without_id_shows_instructions(self, capsys):
+        assert cli.run(parse("rpc", "setup")) == 0
+
+        out = capsys.readouterr().out
+        assert "no application id configured" in out
+        assert "discord.com/developers/applications" in out
+        assert "rpc setup" in out
+
+    def test_setup_without_id_shows_current_settings(self, capsys):
+        self.save_id()
+
+        assert cli.run(parse("rpc", "setup")) == 0
+
+        out = capsys.readouterr().out
+        assert "123456789012345678" in out
+        assert "off" in out
+
+    def test_toggle_on_requires_an_application_id(self, daemon, capsys):
+        assert cli.run(parse("rpc", "toggle", "on")) == 1
+
+        assert self.read(SETTING_RPC_ENABLED) is None
+        assert daemon.requests == []
+        assert "rpc setup" in capsys.readouterr().err
+
+    def test_toggle_on_then_off(self, daemon, capsys):
+        self.save_id()
+
+        assert cli.run(parse("rpc", "toggle", "on")) == 0
+        assert "Discord RPC on" in capsys.readouterr().out
+        assert self.read(SETTING_RPC_ENABLED) == "1"
+
+        assert cli.run(parse("rpc", "toggle")) == 0
+        assert "Discord RPC off" in capsys.readouterr().out
+        assert self.read(SETTING_RPC_ENABLED) == "0"
+
+        assert [request["cmd"] for request in daemon.requests] == [
+            "rpc_reload",
+            "rpc_reload",
+        ]
+
+    def test_toggle_works_without_a_running_daemon(self, monkeypatch, capsys):
+        def dead(request, timeout=2.0):
+            raise PlayerError("the daemon is not running")
+
+        monkeypatch.setattr(ipc, "send_request", dead)
+        self.save_id()
+
+        assert cli.run(parse("rpc", "toggle", "on")) == 0
+
+        assert self.read(SETTING_RPC_ENABLED) == "1"
+        assert "next playback" in capsys.readouterr().out
 
 
 class TestSearch:

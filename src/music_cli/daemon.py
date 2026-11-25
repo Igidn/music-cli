@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any
 
 from . import ipc
 from .core.errors import PlayerError
+from .presence import PresenceManager
 
 if TYPE_CHECKING:
     from .player.base import MediaCommand
@@ -68,14 +69,19 @@ def _push_download_progress(
             _flush_subscriber(conn, subscribers)
 
 
-def handle_request(session: PlaybackSession, request: dict) -> dict:
+def handle_request(
+    session: PlaybackSession,
+    request: dict,
+    *,
+    presence: PresenceManager | None = None,
+) -> dict:
     """Pure dispatch: one request dict -> one response dict. No socket I/O.
 
     Every failure is reported in the response, never raised: the daemon must
     survive bad requests and buggy commands alike.
     """
     try:
-        return _dispatch(session, request)
+        return _dispatch(session, request, presence=presence)
     except PlayerError as error:
         return {"ok": False, "error": str(error)}
     except Exception as error:  # noqa: BLE001 — daemon boundary: a bug in one
@@ -83,7 +89,12 @@ def handle_request(session: PlaybackSession, request: dict) -> dict:
         return {"ok": False, "error": f"{type(error).__name__}: {error}"}
 
 
-def _dispatch(session: PlaybackSession, request: dict) -> dict:
+def _dispatch(
+    session: PlaybackSession,
+    request: dict,
+    *,
+    presence: PresenceManager | None = None,
+) -> dict:
     cmd = request.get("cmd")
     if cmd == "play":
         return _play(session, request)
@@ -127,6 +138,10 @@ def _dispatch(session: PlaybackSession, request: dict) -> dict:
                 request["playlist_id"], request["video_id"]
             ),
         }
+    elif cmd == "rpc_reload":
+        if presence is None:
+            return {"ok": False, "error": "Discord RPC is not available"}
+        return {"ok": True, "data": _configure_presence(session, presence)}
     elif cmd == "quit":
         return {"ok": True, "data": None}
     elif cmd != "status":
@@ -267,6 +282,20 @@ def _toggle_state(session: PlaybackSession, cmd: str, request: dict) -> dict:
     return {"ok": True, "data": {cmd: setter(state)}}
 
 
+def _configure_presence(
+    session: PlaybackSession, presence: PresenceManager
+) -> dict[str, Any]:
+    """Apply the saved RPC settings to the presence worker."""
+    enabled = session.rpc_enabled
+    client_id = session.rpc_client_id
+    # Enabled without an application id is not usable; keep it off instead of
+    # retrying a handshake Discord can only reject.
+    if enabled and not client_id:
+        enabled = False
+    presence.configure(enabled=enabled, client_id=client_id)
+    return {"enabled": enabled}
+
+
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="music-cli-daemon",
@@ -333,6 +362,8 @@ def main(argv: list[str] | None = None) -> None:
     server = _claim_socket(path)
     events_path = ipc.events_socket_path()
     event_server = _claim_socket(events_path)
+    presence = PresenceManager()
+    _configure_presence(session, presence)
     # Track-end fires from a player notification; the flag lets the
     # serve loop run auto-next on the main thread, where pump() runs.
     eof = threading.Event()
@@ -349,6 +380,7 @@ def main(argv: list[str] | None = None) -> None:
             stop,
             args.idle_timeout,
             media=media,
+            presence=presence,
         )
     finally:
         server.close()
@@ -357,6 +389,7 @@ def main(argv: list[str] | None = None) -> None:
         events_path.unlink(missing_ok=True)
         if media is not None:
             media.close()
+        presence.close()
         session.close()
 
 
@@ -728,6 +761,7 @@ def _serve(
     stop: threading.Event,
     idle_timeout: float,
     media: Any | None = None,
+    presence: PresenceManager | None = None,
 ) -> None:
     """Serve control requests and push state events until quit/idle/signal.
 
@@ -795,7 +829,7 @@ def _serve(
                     last_activity = time.monotonic()
                     continue
                 try:
-                    response = handle_request(session, request)
+                    response = handle_request(session, request, presence=presence)
                     try:
                         ipc.send_message(conn, response)
                     except OSError:
@@ -842,6 +876,8 @@ def _serve(
             except PlayerError:
                 pass  # a failed auto-next must not kill the daemon
         status = session.status()
+        if presence is not None:
+            presence.update(status)
         signature = _status_signature(status)
         if signature != last_signature:
             last_signature = signature

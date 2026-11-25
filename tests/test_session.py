@@ -14,6 +14,8 @@ from music_cli.storage.state import (
     SETTING_AUTO_NEXT,
     SETTING_LOOP,
     SETTING_MUTED,
+    SETTING_RPC_CLIENT_ID,
+    SETTING_RPC_ENABLED,
     SETTING_VOLUME,
     PlayedTrack,
     PlayHistoryStore,
@@ -214,6 +216,22 @@ class TestSettingsRestore:
         assert client.loop is False
         assert session.auto_next is True
         assert session.last_video_id == ""
+
+
+class TestRpcSettings:
+    def test_saved_values_are_exposed(self, client, settings):
+        settings.set(SETTING_RPC_ENABLED, True)
+        settings.set(SETTING_RPC_CLIENT_ID, "123456789012345678")
+        session = PlaybackSession(client, settings_store=settings)
+
+        assert session.rpc_enabled is True
+        assert session.rpc_client_id == "123456789012345678"
+
+    def test_defaults_are_off_and_empty(self, client, settings):
+        session = PlaybackSession(client, settings_store=settings)
+
+        assert session.rpc_enabled is False
+        assert session.rpc_client_id == ""
 
 
 class TestPlay:

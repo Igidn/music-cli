@@ -54,12 +54,41 @@ music-cli login
 | `seek +30` / `seek 120` | Skip forward or jump to a position |
 | `volume 50` / `volume +10` | Set or adjust the volume |
 | `mute on` / `loop on` / `auto-next on` | Toggle settings |
+| `rpc setup <application-id>` / `rpc toggle` | Discord Rich Presence (optional) |
 | `status` / `queue` | Current track and up-next list |
 | `queue add <query>` / `queue add --video-id <id>` | Queue a track to play next |
 | `search "..."` | Search YouTube Music |
 | `playlists list` / `playlists play <id>` | List and play playlists |
 | `playlists downloaded` | List offline downloads |
 | `history` | Recently played tracks |
+
+### Discord Rich Presence
+
+Rich Presence is opt-in and uses your own Discord application, so nothing is
+shared until you configure it. It works for both the TUI and the CLI because
+the background daemon owns playback.
+
+1. Create an application at
+   [discord.com/developers/applications](https://discord.com/developers/applications).
+2. Give it a name (Discord uses it as the app name) and optionally an icon,
+   which is used when a track has no thumbnail.
+3. Copy its **Application ID** and run:
+
+```sh
+music-cli rpc setup <application-id>
+music-cli rpc toggle
+```
+
+`music-cli rpc toggle off` turns it back off, and `music-cli rpc setup` with no
+id shows the current configuration. While a track plays, Discord shows its
+title, artist, elapsed and remaining time, the YouTube thumbnail, and a single
+"Listen on YouTube Music" button.
+
+Notes: Discord must be running; if it starts later, the presence reappears
+within a minute or so. Discord only shows presence buttons to other people,
+not on your own profile. External image URLs render in the official client;
+some third-party clients do not resolve them. If nothing appears, check that
+the Application ID belongs to the app you created.
 
 ## Keybindings
 
