@@ -820,9 +820,13 @@ def _duration_seconds(raw: Any) -> float | None:
         return None
     if len(parts) == 2:
         minutes, seconds = parts
+        if seconds < 0 or seconds >= 60 or minutes < 0:
+            return None
         return minutes * 60 + seconds
     if len(parts) == 3:
         hours, minutes, seconds = parts
+        if seconds < 0 or seconds >= 60 or minutes < 0 or minutes >= 60 or hours < 0:
+            return None
         return hours * 3600 + minutes * 60 + seconds
     return None
 
@@ -840,12 +844,13 @@ def _active_line_index(synced: list[tuple[float, str]], position: float) -> int:
 
 def _cmd_lyrics(args: argparse.Namespace) -> int:
     title, artists, duration, position = None, None, None, None
-    if args.query:
+    query = " ".join(args.query).strip()
+    if query:
         client = build_client(args)
-        results = client.search(" ".join(args.query), limit=1, filter="songs")
+        results = client.search(query, limit=1, filter="songs")
         if not results:
             _console.print(
-                f"No results for “{escape(' '.join(args.query))}”",
+                f"No results for “{escape(query)}”",
                 style="dim",
             )
             return 0
@@ -874,12 +879,17 @@ def _cmd_lyrics(args: argparse.Namespace) -> int:
         position = _duration_seconds(data.get("position"))
 
     fetched = fetch_lyrics(title, tuple(artists), duration)
+    active = (
+        _active_line_index(fetched.synced, position) if position is not None else None
+    )
     if args.json:
         _print_json(
             {
                 "title": title,
                 "artists": artists,
                 "duration": duration,
+                "position": position,
+                "active_line": active,
                 "synced": [[t, line] for t, line in fetched.synced],
                 "plain": fetched.plain,
             }
@@ -892,9 +902,6 @@ def _cmd_lyrics(args: argparse.Namespace) -> int:
         line.append(f" — {', '.join(artists)}", style="dim")
     _console.print(line)
     if fetched.synced:
-        active = (
-            _active_line_index(fetched.synced, position) if position is not None else -1
-        )
         for i, (start, text) in enumerate(fetched.synced):
             row = Text()
             row.append(f"[{format_duration(start) or '--:--'}] ", style="dim")

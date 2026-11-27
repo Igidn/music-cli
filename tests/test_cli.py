@@ -687,10 +687,9 @@ class TestLyrics:
         assert "line three" in out
 
     def test_current_track_highlight_uses_position(self, daemon, fetched, capsys):
-        daemon.data["position"] = 72.0  # line two (starts at 60s) is live
-        assert cli.run(parse("lyrics")) == 0
-        out = " ".join(capsys.readouterr().out.split())
-        assert "line two" in out
+        assert cli.run(parse("lyrics", "--json")) == 0
+        obj = json.loads(capsys.readouterr().out)
+        assert obj["active_line"] == 1  # line two (starts at 60s) is live
 
     def test_current_track_duration_passed_through(self, daemon, fetched):
         daemon.data["track"] = {**STATUS["track"], "duration": 95.0}

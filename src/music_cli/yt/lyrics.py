@@ -65,9 +65,11 @@ def parse_lrc(lrc: str) -> list[tuple[float, str]]:
     lines: list[tuple[float, str]] = []
     for raw in lrc.splitlines():
         text = raw.strip()
-        starts = [
-            int(m.group(1)) * 60 + int(m.group(2)) for m in _TIMESTAMP.finditer(text)
-        ]
+        starts = []
+        for m in _TIMESTAMP.finditer(text):
+            frac = m.group(3)
+            ms = int((frac + "00")[:3]) / 1000 if frac else 0.0
+            starts.append(int(m.group(1)) * 60 + int(m.group(2)) + ms)
         if not starts:
             continue
         text = _TIMESTAMP.sub("", text).strip()
