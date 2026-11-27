@@ -27,6 +27,7 @@ from .storage.state import (
     PlayHistoryStore,
     SettingsStore,
 )
+from .yt.lyrics import fetch_lyrics
 from .yt.search import format_duration
 
 _console = Console()
@@ -175,6 +176,17 @@ def register_subcommands(subparsers: argparse._SubParsersAction) -> None:
         "--limit", type=int, default=15, metavar="N", help="max entries (default: 15)"
     )
     _add_json(history)
+
+    lyrics = subparsers.add_parser(
+        "lyrics", help="print a track's lyrics (current track, or a search query)"
+    )
+    lyrics.add_argument(
+        "query",
+        nargs="*",
+        metavar="QUERY",
+        help="search terms; omit to use the currently playing track",
+    )
+    _add_json(lyrics)
 
     rpc = subparsers.add_parser("rpc", help="control Discord Rich Presence")
     rpc_commands = rpc.add_subparsers(dest="rpc_command", required=True)
@@ -794,6 +806,107 @@ def _cmd_history(args: argparse.Namespace) -> int:
     return 0
 
 
+def _duration_seconds(raw: Any) -> float | None:
+    """Normalize a duration to seconds: numbers pass through, "m:ss"/"h:mm:ss" strings parse."""
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, (int, float)):
+        return float(raw) if raw >= 0 else None
+    if not isinstance(raw, str):
+        return None
+    try:
+        parts = [int(part) for part in raw.split(":")]
+    except ValueError:
+        return None
+    if len(parts) == 2:
+        minutes, seconds = parts
+        return minutes * 60 + seconds
+    if len(parts) == 3:
+        hours, minutes, seconds = parts
+        return hours * 3600 + minutes * 60 + seconds
+    return None
+
+
+def _active_line_index(synced: list[tuple[float, str]], position: float) -> int:
+    """Index of the synced line currently sounding at ``position``."""
+    index = -1
+    for i, (start, _line) in enumerate(synced):
+        if start <= position:
+            index = i
+        else:
+            break
+    return index
+
+
+def _cmd_lyrics(args: argparse.Namespace) -> int:
+    title, artists, duration, position = None, None, None, None
+    if args.query:
+        client = build_client(args)
+        results = client.search(" ".join(args.query), limit=1, filter="songs")
+        if not results:
+            _console.print(
+                f"No results for “{escape(' '.join(args.query))}”",
+                style="dim",
+            )
+            return 0
+        result = results[0]
+        title = result.title
+        artists = list(result.artists)
+        duration = _duration_seconds(result.duration)
+    else:
+        _ensure_daemon(args)
+        data = _send(args, {"cmd": "status"})
+        if data is None:
+            return 1
+        track = data.get("track")
+        if not track:
+            _errors.print(
+                "music-cli: nothing is playing — pass a query to fetch lyrics "
+                "for another track",
+                style="bold red",
+            )
+            return 1
+        title = track.get("title") or "Unknown"
+        artists = list(track.get("artists") or [])
+        duration = _duration_seconds(track.get("duration")) or _duration_seconds(
+            data.get("duration")
+        )
+        position = _duration_seconds(data.get("position"))
+
+    fetched = fetch_lyrics(title, tuple(artists), duration)
+    if args.json:
+        _print_json(
+            {
+                "title": title,
+                "artists": artists,
+                "duration": duration,
+                "synced": [[t, line] for t, line in fetched.synced],
+                "plain": fetched.plain,
+            }
+        )
+        return 0
+
+    line = Text()
+    line.append(title, style="bold")
+    if artists:
+        line.append(f" — {', '.join(artists)}", style="dim")
+    _console.print(line)
+    if fetched.synced:
+        active = (
+            _active_line_index(fetched.synced, position) if position is not None else -1
+        )
+        for i, (start, text) in enumerate(fetched.synced):
+            row = Text()
+            row.append(f"[{format_duration(start) or '--:--'}] ", style="dim")
+            row.append(text, style="bold green" if i == active else "")
+            _console.print(row)
+    elif fetched.plain:
+        _console.print(fetched.plain)
+    else:
+        _console.print(f"No lyrics found for “{escape(title)}”", style="dim")
+    return 0
+
+
 def _cmd_rpc(args: argparse.Namespace) -> int:
     """Configure or toggle Discord Rich Presence.
 
@@ -910,5 +1023,6 @@ _DISPATCH = {
     "search": _cmd_search,
     "playlists": _cmd_playlists,
     "history": _cmd_history,
+    "lyrics": _cmd_lyrics,
     "rpc": _cmd_rpc,
 }

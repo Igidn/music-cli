@@ -15,6 +15,7 @@ from music_cli.storage.state import (
     SettingsStore,
 )
 from music_cli.yt.extract import PlaylistTrack
+from music_cli.yt.lyrics import Lyrics
 from music_cli.yt.playlists import LibraryPlaylist
 from music_cli.yt.search import SearchResult
 
@@ -656,6 +657,95 @@ RPC_DISABLED = {
     "connected": False,
     "error": None,
 }
+
+LYRICS = Lyrics(
+    synced=[(0.0, "line one"), (60.0, "line two"), (120.0, "line three")],
+    plain=None,
+)
+
+
+class TestLyrics:
+    @pytest.fixture
+    def fetched(self, monkeypatch):
+        """Replace the lrclib call; records the arguments it receives."""
+        calls = []
+
+        def fake_fetch(title, artists, duration):
+            calls.append((title, artists, duration))
+            return LYRICS
+
+        monkeypatch.setattr(cli, "fetch_lyrics", fake_fetch)
+        return calls
+
+    def test_current_track_renders_lines(self, daemon, fetched, capsys):
+        assert cli.run(parse("lyrics")) == 0
+        assert fetched == [("Some Song", ("Some Artist",), 201.0)]
+        out = capsys.readouterr().out
+        assert "Some Song" in out
+        assert "line one" in out
+        assert "line two" in out
+        assert "line three" in out
+
+    def test_current_track_highlight_uses_position(self, daemon, fetched, capsys):
+        daemon.data["position"] = 72.0  # line two (starts at 60s) is live
+        assert cli.run(parse("lyrics")) == 0
+        out = " ".join(capsys.readouterr().out.split())
+        assert "line two" in out
+
+    def test_current_track_duration_passed_through(self, daemon, fetched):
+        daemon.data["track"] = {**STATUS["track"], "duration": 95.0}
+        assert cli.run(parse("lyrics")) == 0
+        assert fetched[0][2] == 95.0
+
+    def test_nothing_playing(self, daemon, fetched, capsys):
+        daemon.data["track"] = None
+        daemon.data["state"] = "stopped"
+        assert cli.run(parse("lyrics")) == 1
+        assert "nothing is playing" in capsys.readouterr().err
+        assert fetched == []
+
+    def test_query_takes_top_result(self, fake_client, fetched, capsys):
+        assert cli.run(parse("lyrics", "some", "query")) == 0
+        assert fake_client.search_calls == [("some query", 1, "songs")]
+        assert fetched == [("Some Song", ("Some Artist",), 201.0)]
+
+    def test_query_no_results(self, fake_client, fetched, capsys):
+        fake_client.results = []
+        assert cli.run(parse("lyrics", "some", "query")) == 0
+        assert "No results" in capsys.readouterr().out
+        assert fetched == []
+
+    def test_plain_only(self, daemon, monkeypatch, capsys):
+        monkeypatch.setattr(
+            cli, "fetch_lyrics", lambda *a: Lyrics(synced=[], plain="plain words")
+        )
+        assert cli.run(parse("lyrics")) == 0
+        assert "plain words" in capsys.readouterr().out
+
+    def test_no_lyrics_at_all(self, daemon, monkeypatch, capsys):
+        monkeypatch.setattr(
+            cli, "fetch_lyrics", lambda *a: Lyrics(synced=[], plain=None)
+        )
+        assert cli.run(parse("lyrics")) == 0
+        assert "No lyrics found" in capsys.readouterr().out
+
+    def test_json_output(self, daemon, fetched, capsys):
+        assert cli.run(parse("lyrics", "--json")) == 0
+        out = capsys.readouterr().out.strip()
+        obj = json.loads(out)
+        assert obj["title"] == "Some Song"
+        assert obj["artists"] == ["Some Artist"]
+        assert obj["duration"] == 201.0
+        assert obj["synced"] == [
+            [0.0, "line one"],
+            [60.0, "line two"],
+            [120.0, "line three"],
+        ]
+        assert obj["plain"] is None
+
+    def test_empty_query_uses_current_track(self, daemon, fetched):
+        assert cli.run(parse("lyrics")) == 0
+        assert fetched[0][0] == "Some Song"
 
 
 class TestRpc:
