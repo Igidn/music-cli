@@ -1,6 +1,6 @@
 [project]
 name = "music-cli"
-version = "0.5.0"
+version = "0.6.0"
 description = "Ad-free YouTube Music player for the terminal"
 readme = "README.md"
 authors = [

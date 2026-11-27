@@ -2103,8 +2103,8 @@ def test_parse_lrc_synced_lines():
 
     lrc = "[00:05.50]first\n[00:12]second line\nnot timed\n[01:02.3]later"
     assert parse_lrc(lrc) == [
-        (5.0, "first"),
+        (5.5, "first"),
         (12.0, "second line"),
-        (62.0, "later"),
+        (62.3, "later"),
     ]
     assert parse_lrc("no timestamps here") == []

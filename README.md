@@ -60,6 +60,7 @@ music-cli login
 | `playlists list` / `playlists play <id>` | List and play playlists |
 | `playlists downloaded` | List offline downloads |
 | `history` | Recently played tracks |
+| `lyrics [query]` | Print a track's lyrics (current track, or top search result) |
 | `rpc setup <application id>` | Set the Discord application id for Rich Presence |
 | `rpc toggle` | Turn Discord Rich Presence on or off |
 
